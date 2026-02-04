@@ -1,0 +1,21 @@
+python-dotenv>=1.0.0
+neo4j>=5.14.0
+openai>=1.12.0
+pydantic>=2.0.0
+tree-sitter>=0.21.0
+tree-sitter-python>=0.21.0
+tree-sitter-javascript>=0.21.0
+tree-sitter-typescript>=0.23.0
+llama-index-core>=0.11.0
+llama-index-embeddings-openai>=0.2.0
+llama-index-vector-stores-neo4jvector>=0.2.0
+llama-index-storage-docstore-postgres>=0.1.0
+psycopg2-binary>=2.9.0
+llama-index-readers-file>=0.5.5
+llama-index-core>=0.11.0
+llama-index-graph-stores-neo4j>=0.2.0
+llama-index-embeddings-openai>=0.2.0
+llama-index-llms-openai-like>=0.2.0
+llama-index-readers-file>=0.2.0
+# ADD THESE:
+llama-index-embeddings-jinaai

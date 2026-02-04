@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentic-Memory"
+version = "0.1.0"
+description = "Structural Memory Layer for AI Agents"
+authors = [{ name = "Joshua", email = "josh@mutdashboard.com" }]
+dependencies = [
+    "neo4j>=5.0.0",
+    "openai>=1.0.0",
+    "tree-sitter>=0.21.0",
+    "tree-sitter-python",
+    "tree-sitter-javascript",
+    "python-dotenv",
+    "mcp[fastapi]>=0.1.0"  # The MCP SDK
+]
+requires-python = ">=3.10"
+
+[project.scripts]
+# This creates the 'codemem' terminal command
+codemem = "codememory.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

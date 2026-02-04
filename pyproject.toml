@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentic-memory"
+version = "0.1.0"
+description = "Agentic Memory: Structural Code Graph with Neo4j and MCP"
+requires-python = ">=3.10"
+dependencies = [
+    "neo4j",
+    "openai",
+    "tree-sitter",
+    "tree-sitter-python",
+    "tree-sitter-javascript",
+    "watchdog",
+    "python-dotenv",
+    "mcp",
+]
+
+[project.scripts]
+codememory = "codememory.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/codememory"]

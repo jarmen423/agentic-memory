@@ -8,134 +8,169 @@ Agentic Memory is not just "RAG" for code. It is an **active, structural memory 
 
 ---
 
+## ✨ Features
+
+| Feature | Description |
+|---------|-------------|
+| **📊 Structural Graph** | Understands imports, dependencies, call graphs - not just text similarity |
+| **🔍 Semantic Search** | Vector embeddings with contextual prefixing for accurate results |
+| **⚡ Real-time Sync** | File watcher automatically updates the graph as you code |
+| **🤖 MCP Protocol** | Drop-in integration with Claude, Cursor, Windsurf, and any MCP-compatible AI |
+| **💥 Impact Analysis** | See the blast radius of changes before you make them |
+
+---
+
+## 🚀 Quick Start (One Command Setup)
+
+### 1. Install globally
+
+```bash
+# Recommended: Use pipx for isolated global installation
+pipx install agentic-memory
+
+# Or use pip
+pip install agentic-memory
+```
+
+### 2. Initialize in any repository
+
+```bash
+cd /path/to/your/repo
+codememory init
+```
+
+The interactive wizard will guide you through:
+- Neo4j setup (local Docker, Aura cloud, or custom)
+- OpenAI API key (for semantic search)
+- File extensions to index
+
+That's it! Your repository is now indexed and ready for AI agents.
+
+---
+
+## 📖 Usage
+
+### In any initialized repository:
+
+```bash
+# Show repository status and statistics
+codememory status
+
+# One-time full index (e.g., after major changes)
+codememory index
+
+# Watch for changes and continuously update
+codememory watch
+
+# Start MCP server for AI agents
+codememory serve
+
+# Test semantic search
+codememory search "where is the auth logic?"
+```
+
+---
+
 ## 🏗️ Architecture
 
-```mermaid
-graph LR
-    UserRepo[(User Repository)] -->|Watches| CLI[Ingestion Service]
-    CLI -->|Writes Nodes/Vectors| DB[(Neo4j Cortex)]
-    
-    Agent[AI Agent / Claude] <-->|MCP Protocol| MCPServer[MCP Server]
-    MCPServer -->|Reads/Traverses| DB
+```
+┌─────────────────┐     Watches      ┌──────────────────┐
+│  User Repository│ ───────────────> │ Ingestion Service│
+│                 │                  │ (Observer)       │
+└─────────────────┘                  └────────┬─────────┘
+                                              │ Writes
+                                              ▼
+                                       ┌──────────────┐
+                                       │  Neo4j       │
+                                       │  Cortex      │
+                                       └──────┬───────┘
+                                              │ Reads
+                                              ▼
+┌─────────────────┐     MCP Protocol  ┌──────────────────┐
+│   AI Agent /    │ <───────────────> │  MCP Server      │
+│   Claude        │                   │  (Interface)     │
+└─────────────────┘                   └──────────────────┘
 ```
 
 ### Components
 
 | Component | Role | Description |
 |-----------|------|-------------|
-| **Observer** (`cli.py` + `watcher.py`) | The "Writer" | Watches filesystem changes and keeps the graph in sync |
+| **Observer** (`watcher.py`) | The "Writer" | Watches filesystem changes and keeps the graph in sync |
 | **Graph Builder** (`graph.py`) | The "Mapper" | Parses code with Tree-sitter, builds Neo4j graph with embeddings |
-| **MCP Server** (`app.py` + `tools.py`) | The "Interface" | Exposes high-level skills to AI agents via MCP protocol |
+| **MCP Server** (`app.py`) | The "Interface" | Exposes high-level skills to AI agents via MCP protocol |
 
 ---
 
-## 🚀 Quick Start
-
-### Prerequisites
-
-- Python 3.10+
-- Neo4j Database (local or Aura)
-- OpenAI API key
-
-### Installation
-
-```bash
-# Clone the repository
-git clone <repo-url>
-cd agentic-memory
-
-# Install the package
-pip install -e .
-
-# Configure environment
-cp .env.example .env
-# Edit .env with your Neo4j and OpenAI credentials
-```
-
-### Configuration (.env)
-
-```ini
-NEO4J_URI=bolt://localhost:7687
-NEO4J_USER=neo4j
-NEO4J_PASSWORD=your-password
-OPENAI_API_KEY=sk-...
-```
-
----
-
-## 📖 Usage
-
-### 1. Watch Mode (Continuous Ingestion)
-
-Watch a repository for changes and continuously update the knowledge graph:
-
-```bash
-# Watch current directory
-codememory watch .
-
-# Watch specific path with custom Neo4j URI
-codememory watch /path/to/repo --neo4j-uri bolt://localhost:7687
-```
-
-### 2. MCP Server Mode
-
-Start the MCP server for AI agent integration:
-
-```bash
-codememory serve --port 8000
-```
-
-### Available MCP Tools
+## 🔌 MCP Tools Available to AI Agents
 
 | Tool | Description |
 |------|-------------|
 | `search_codebase(query)` | Semantic search for code functionality |
 | `get_file_dependencies(path)` | Returns imports and dependents for a file |
+| `identify_impact(path, depth)` | Blast radius analysis for changes |
+| `get_file_info(path)` | File structure overview (classes, functions) |
 
 ---
 
-## 📦 Project Structure
+## 🐳 Docker Setup (Neo4j)
 
-```
-agentic-memory/
-├── src/codememory/
-│   ├── __init__.py
-│   ├── cli.py                    # CLI entry point
-│   ├── ingestion/
-│   │   ├── __init__.py
-│   │   ├── graph.py              # KnowledgeGraphBuilder (Neo4j interface)
-│   │   ├── parser.py             # Tree-sitter parsing logic
-│   │   └── watcher.py            # Filesystem watcher
-│   └── server/
-│       ├── __init__.py
-│       ├── app.py                # FastMCP server
-│       └── tools.py              # MCP tool implementations
-├── pyproject.toml                # Package configuration
-├── graphrag_requirements.txt     # Legacy scripts dependencies
-└── README.md                     # This file
-```
-
----
-
-## 🔧 Legacy GraphRAG Scripts
-
-The repository includes standalone scripts for one-time ingestion:
-
-| Script | Purpose |
-|--------|---------|
-| `4_pass_ingestion_with_prep_hybridgraphRAG.py` | Day 0 full ingestion (4-pass hybrid chunking) |
-| `5_continuous_ingestion.py` | Day N continuous daemon (legacy) |
-| `5_continuous_ingestion_jina.py` | Jina AI embeddings variant |
-
-**⚠️ Python 3.11 Required for legacy scripts**
-
-These scripts use `llama-index` and `tree-sitter` bindings that require Python 3.11:
+### Quick Start
 
 ```bash
-# Create dedicated environment for legacy scripts
-python3.11 -m venv .venv-graphrag
-source .venv-graphrag/bin/activate  # On Windows: .venv-graphrag\Scripts\activate
-pip install -r graphrag_requirements.txt
+# Start Neo4j
+docker-compose up -d neo4j
+
+# Neo4j will be available at:
+# HTTP: http://localhost:7474
+# Bolt: bolt://localhost:7687
+# Username: neo4j
+# Password: password (change this in production!)
+```
+
+### Neo4j Aura (Cloud)
+
+Get a free instance at [neo4j.com/cloud/aura/](https://neo4j.com/cloud/aura/)
+
+---
+
+## 📁 Configuration
+
+Per-repository configuration is stored in `.codememory/config.json`:
+
+```json
+{
+  "neo4j": {
+    "uri": "bolt://localhost:7687",
+    "user": "neo4j",
+    "password": "password"
+  },
+  "openai": {
+    "api_key": "sk-..."  // Optional - can use OPENAI_API_KEY env var
+  },
+  "indexing": {
+    "ignore_dirs": ["node_modules", "__pycache__", ".git"],
+    "extensions": [".py", ".js", ".ts", ".tsx", ".jsx"]
+  }
+}
+```
+
+**Note:** `.codememory/` is gitignored by default to prevent committing API keys.
+
+---
+
+## 🔧 Installation from Source
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/agentic-memory.git
+cd agentic-memory
+
+# Install in editable mode
+pip install -e .
+
+# Run the init wizard in any repo
+codememory init
 ```
 
 ---
@@ -143,10 +178,10 @@ pip install -r graphrag_requirements.txt
 ## 🧪 Development
 
 ```bash
-# Install in editable mode with dev dependencies
-pip install -e ".[dev]"
+# Install in editable mode
+pip install -e .
 
-# Run type checking
+# Run type checking (when mypy is configured)
 mypy src/codememory
 
 # Run tests (when added)
@@ -155,9 +190,33 @@ pytest
 
 ---
 
+## 📊 What Gets Indexed?
+
+| Entity | Description | Relationships |
+|--------|-------------|---------------|
+| **Files** | Source code files | `[:DEFINES]`→ Functions/Classes, `[:IMPORTS]`→ Files |
+| **Functions** | Function definitions | `[:CALLS]`→ Functions, `[:HAS_METHOD]`← Classes |
+| **Classes** | Class definitions | `[:HAS_METHOD]`→ Methods |
+| **Chunks** | Semantic embeddings | `[:DESCRIBES]`→ Functions/Classes |
+
+---
+
 ## 🔌 MCP Integration
 
-Configure your AI agent (Cursor, Windsurf, Claude Desktop) to use the MCP server:
+### Claude Desktop
+
+```json
+{
+  "mcpServers": {
+    "agentic-memory": {
+      "command": "codememory",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+### Cursor IDE
 
 ```json
 {
@@ -170,17 +229,27 @@ Configure your AI agent (Cursor, Windsurf, Claude Desktop) to use the MCP server
 }
 ```
 
+### Windsurf
+
+Add to your MCP configuration file.
+
 ---
 
 ## 📝 License
 
-[Your License Here]
+MIT License - see LICENSE file for details.
 
 ---
 
 ## 🤝 Contributing
 
-Contributions welcome! Please ensure:
-- Code follows the existing type hint patterns
-- No circular imports introduced
-- `close()` methods properly registered for resource cleanup
+Contributions welcome! Please see TODO.md for the roadmap.
+
+---
+
+## 🙏 Acknowledgments
+
+- **Neo4j** - Graph database with vector search
+- **Tree-sitter** - Incremental parsing for code
+- **OpenAI** - Embeddings for semantic search
+- **MCP (Model Context Protocol)** - Standard interface for AI tools

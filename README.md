@@ -1,4 +1,5 @@
 # 🧠 Agentic Memory
+https://github.com/jarmen423/agentic-memory
 
 > **Active, Structural Memory System for AI Coding Agents**
 

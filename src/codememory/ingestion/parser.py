@@ -25,7 +25,7 @@ class CodeParser:
             for ext in ['.js', '.jsx', '.ts', '.tsx']:
                 self.languages[ext] = js_lang
                 self.parsers[ext] = Parser(js_lang)
-        except Exception as e:
+        except (ImportError, RuntimeError) as e:
             logger.error(f"Failed to initialize parsers: {e}")
 
     def parse_file(self, code: str, extension: str) -> Dict[str, Any]:
@@ -45,7 +45,7 @@ class CodeParser:
                 "calls": self._extract_calls(tree, code, lang, extension),
                 "env_vars": self._extract_env_vars(tree, code, lang, extension)
             }
-        except Exception as e:
+        except (ValueError, RuntimeError) as e:
             logger.error(f"Error parsing file with extension {extension}: {e}")
             return {}
 
@@ -81,7 +81,7 @@ class CodeParser:
                     "start_line": def_node.start_point[0] + 1
                 })
 
-        except Exception as e:
+        except (RuntimeError, AttributeError, IndexError) as e:
             logger.error(f"Error extracting classes: {e}")
 
         return classes
@@ -121,7 +121,7 @@ class CodeParser:
                     "parent_class": parent_class,
                     "start_line": def_node.start_point[0] + 1
                 })
-        except Exception as e:
+        except (RuntimeError, AttributeError, IndexError) as e:
             logger.error(f"Error extracting functions: {e}")
 
         return functions
@@ -145,7 +145,7 @@ class CodeParser:
                 if name == 'module':
                     module_name = code[node.start_byte:node.end_byte]
                     imports.append(module_name)
-        except Exception as e:
+        except (RuntimeError, AttributeError, IndexError) as e:
             logger.error(f"Error extracting imports: {e}")
 
         return imports
@@ -164,7 +164,7 @@ class CodeParser:
                 for node in nodes:
                     call_name = code[node.start_byte:node.end_byte]
                     calls.append(call_name)
-        except Exception as e:
+        except (RuntimeError, AttributeError) as e:
             logger.error(f"Error extracting calls: {e}")
 
         return calls
@@ -202,7 +202,7 @@ class CodeParser:
                         "name": var_name,
                         "line": method_node.start_point[0] + 1
                     })
-        except Exception as e:
+        except (RuntimeError, AttributeError, IndexError) as e:
             logger.error(f"Error extracting env vars (read): {e}")
 
         # Query 2: load_dotenv
@@ -228,7 +228,7 @@ class CodeParser:
                         "type": "load",
                         "line": func_node.start_point[0] + 1
                     })
-        except Exception as e:
+        except (RuntimeError, AttributeError, IndexError) as e:
              logger.error(f"Error extracting env vars (load): {e}")
 
         return env_vars

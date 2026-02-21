@@ -27,7 +27,7 @@ class Toolkit:
                 report += f"#### 📄 {r['name']} (Score: {r['score']:.2f})\n"
                 report += f"**Signature:** `{r['sig']}`\n"
             return report
-        except Exception as e:
+        except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
             logger.error(f"search failed:{e}")
             return f"Error executing search: {str(e)}"
     
@@ -60,5 +60,5 @@ class Toolkit:
                     f"**Imports (outgoing):** {dep_list if dep_list else 'None'}\n"
                     f"**Used By (incoming):** {caller_list if caller_list else 'None'}"
                 )
-        except Exception as e:
+        except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
             return f"Error analyzing dependencies: {str(e)}"

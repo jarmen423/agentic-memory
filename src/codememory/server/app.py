@@ -7,9 +7,13 @@ Exposes high-level skills to AI agents via the Model Context Protocol.
 import os
 import atexit
 import logging
-from typing import Optional
+import time
+from typing import Optional, Dict, Any
+from functools import wraps
+from datetime import datetime, timedelta
 
 from mcp.server.fastmcp import FastMCP
+import neo4j
 from codememory.ingestion.graph import KnowledgeGraphBuilder
 
 logger = logging.getLogger(__name__)
@@ -19,6 +23,61 @@ mcp = FastMCP("Agentic Memory")
 
 # Global Graph Connection (initialized when server starts)
 graph: Optional[KnowledgeGraphBuilder] = None
+
+# Rate limiting configuration
+RATE_LIMIT_REQUESTS = 100  # Max requests per window
+RATE_LIMIT_WINDOW = 60     # Window in seconds
+_request_log: Dict[str, list] = {}
+
+
+def rate_limit(func):
+    """Rate limiting decorator for MCP tools."""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        # Use function name as key
+        key = func.__name__
+        now = datetime.now()
+        
+        # Initialize or clean old requests
+        if key not in _request_log:
+            _request_log[key] = []
+        
+        # Remove requests outside the window
+        window_start = now - timedelta(seconds=RATE_LIMIT_WINDOW)
+        _request_log[key] = [t for t in _request_log[key] if t > window_start]
+        
+        # Check if rate limit exceeded
+        if len(_request_log[key]) >= RATE_LIMIT_REQUESTS:
+            logger.warning(f"Rate limit exceeded for {key}")
+            return "❌ Rate limit exceeded. Please try again later."
+        
+        # Log this request
+        _request_log[key].append(now)
+        
+        return func(*args, **kwargs)
+    return wrapper
+
+
+def log_tool_call(func):
+    """Decorator to log tool calls for debugging."""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        tool_name = func.__name__
+        
+        logger.info(f"🔧 Tool called: {tool_name}")
+        logger.debug(f"   Args: {args}, Kwargs: {kwargs}")
+        
+        try:
+            result = func(*args, **kwargs)
+            duration = time.time() - start_time
+            logger.info(f"✅ Tool {tool_name} completed in {duration:.2f}s")
+            return result
+        except Exception as e:
+            duration = time.time() - start_time
+            logger.error(f"❌ Tool {tool_name} failed after {duration:.2f}s: {e}")
+            raise
+    return wrapper
 
 
 def init_graph():
@@ -67,7 +126,31 @@ init_graph()
 atexit.register(lambda: graph.close() if graph else None)
 
 
+def validate_tool_output(output: str, max_length: int = 8000) -> str:
+    """
+    Validate and truncate tool output to ensure LLM-readable format.
+    
+    Args:
+        output: The raw output string
+        max_length: Maximum length for LLM consumption
+        
+    Returns:
+        Validated and potentially truncated output
+    """
+    if not output or not isinstance(output, str):
+        return "❌ Tool returned invalid output"
+    
+    if len(output) > max_length:
+        truncated = output[:max_length]
+        truncated += f"\n\n... [Output truncated: {len(output) - max_length} chars omitted]"
+        return truncated
+    
+    return output
+
+
 @mcp.tool()
+@rate_limit
+@log_tool_call
 def search_codebase(query: str, limit: int = 5) -> str:
     """
     Semantically search the codebase for functionality.
@@ -103,13 +186,15 @@ def search_codebase(query: str, limit: int = 5) -> str:
             output += f" [Score: {score:.2f}]\n"
             output += f"   ```\n{text}...\n   ```\n\n"
 
-        return output.strip()
-    except Exception as e:
+        return validate_tool_output(output.strip())
+    except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
         logger.error(f"Search error: {e}")
         return f"❌ Search failed: {str(e)}"
 
 
 @mcp.tool()
+@rate_limit
+@log_tool_call
 def get_file_dependencies(file_path: str) -> str:
     """
     Returns a list of files that this file IMPORTS and files that IMPORT this file.
@@ -149,13 +234,15 @@ def get_file_dependencies(file_path: str) -> str:
         else:
             output += "### 📤 Imported By\n files depend on this.\n"
 
-        return output.strip()
-    except Exception as e:
+        return validate_tool_output(output.strip())
+    except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
         logger.error(f"Dependencies error: {e}")
         return f"❌ Failed to get dependencies: {str(e)}"
 
 
 @mcp.tool()
+@rate_limit
+@log_tool_call
 def identify_impact(file_path: str, max_depth: int = 3) -> str:
     """
     Identify the blast radius of changes to a file.
@@ -202,13 +289,15 @@ def identify_impact(file_path: str, max_depth: int = 3) -> str:
                 output += f"- `{path}`\n"
             output += "\n"
 
-        return output.strip()
-    except Exception as e:
+        return validate_tool_output(output.strip())
+    except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
         logger.error(f"Impact analysis error: {e}")
         return f"❌ Failed to analyze impact: {str(e)}"
 
 
 @mcp.tool()
+@rate_limit
+@log_tool_call
 def get_file_info(file_path: str) -> str:
     """
     Get detailed information about a file including its entities and relationships.
@@ -283,8 +372,8 @@ def get_file_info(file_path: str) -> str:
             if not classes and not functions and not imports:
                 output += "*No entities found. File may not be parsed yet.*\n"
 
-            return output.strip()
-    except Exception as e:
+            return validate_tool_output(output.strip())
+    except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
         logger.error(f"File info error: {e}")
         return f"❌ Failed to get file info: {str(e)}"
 

@@ -65,7 +65,7 @@ class CodeChangeHandler(FileSystemEventHandler):
 
             logger.info(f"✅ Updated graph for: {rel_path}")
 
-        except Exception as e:
+        except (OSError, IOError, neo4j.exceptions.DatabaseError) as e:
             logger.error(f"❌ Failed to ingest {path.name}: {e}")
 
     def on_created(self, event):
@@ -84,7 +84,7 @@ class CodeChangeHandler(FileSystemEventHandler):
             self._process_single_file(path, rel_path)
             logger.info(f"✅ Indexed new file: {rel_path}")
 
-        except Exception as e:
+        except (OSError, IOError, neo4j.exceptions.DatabaseError) as e:
             logger.error(f"❌ Failed to ingest new file {path.name}: {e}")
 
     def on_deleted(self, event):
@@ -108,7 +108,7 @@ class CodeChangeHandler(FileSystemEventHandler):
 
             logger.info(f"✅ Removed from graph: {rel_path}")
 
-        except Exception as e:
+        except (OSError, neo4j.exceptions.DatabaseError) as e:
             logger.error(f"❌ Failed to delete {path.name} from graph: {e}")
 
     def _delete_file_entities(self, rel_path: str):

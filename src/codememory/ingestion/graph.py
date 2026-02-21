@@ -11,6 +11,7 @@ import logging
 import time
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Set
+from functools import wraps
 
 import neo4j
 from openai import OpenAI
@@ -21,6 +22,83 @@ import tree_sitter_python
 import tree_sitter_javascript
 
 logger = logging.getLogger(__name__)
+
+
+class CircuitBreaker:
+    """
+    Circuit breaker pattern for handling repeated Neo4j connection failures.
+    
+    After a threshold of failures, the circuit opens and subsequent calls
+    fail fast until a timeout period passes.
+    """
+    
+    def __init__(self, failure_threshold=5, recovery_timeout=30):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.failure_count = 0
+        self.last_failure_time = None
+        self.state = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
+        
+    def call(self, func, *args, **kwargs):
+        """Execute function with circuit breaker protection."""
+        if self.state == "OPEN":
+            if time.time() - self.last_failure_time > self.recovery_timeout:
+                self.state = "HALF_OPEN"
+                logger.info("Circuit breaker entering HALF_OPEN state")
+            else:
+                raise neo4j.exceptions.ServiceUnavailable(
+                    "Circuit breaker is OPEN - Neo4j connection temporarily disabled"
+                )
+        
+        try:
+            result = func(*args, **kwargs)
+            if self.state == "HALF_OPEN":
+                self.state = "CLOSED"
+                self.failure_count = 0
+                logger.info("Circuit breaker reset to CLOSED")
+            return result
+        except neo4j.exceptions.ServiceUnavailable as e:
+            self._record_failure()
+            raise e
+            
+    def _record_failure(self):
+        """Record a failure and potentially open the circuit."""
+        self.failure_count += 1
+        self.last_failure_time = time.time()
+        
+        if self.failure_count >= self.failure_threshold:
+            if self.state != "OPEN":
+                self.state = "OPEN"
+                logger.error(f"Circuit breaker OPENED after {self.failure_count} failures")
+
+
+def retry_on_openai_error(max_retries=3, delay=1.0):
+    """
+    Decorator to retry OpenAI API calls on transient errors.
+    
+    Args:
+        max_retries: Maximum number of retry attempts
+        delay: Delay between retries in seconds (with exponential backoff)
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except (openai.RateLimitError, openai.APIConnectionError, openai.APITimeoutError) as e:
+                    last_exception = e
+                    if attempt < max_retries - 1:
+                        wait_time = delay * (2 ** attempt)  # Exponential backoff
+                        logger.warning(f"OpenAI API error (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {wait_time:.1f}s...")
+                        time.sleep(wait_time)
+                    else:
+                        logger.error(f"OpenAI API failed after {max_retries} attempts: {e}")
+                        raise
+            raise last_exception
+        return wrapper
+    return decorator
 
 
 class KnowledgeGraphBuilder:
@@ -62,7 +140,18 @@ class KnowledgeGraphBuilder:
             ignore_dirs: Set of directory names to ignore during indexing
             ignore_files: Set of file patterns to ignore during indexing
         """
-        self.driver = neo4j.GraphDatabase.driver(uri, auth=(user, password))
+        # Configure connection pool for better performance
+        self.driver = neo4j.GraphDatabase.driver(
+            uri, 
+            auth=(user, password),
+            max_connection_pool_size=50,
+            connection_acquisition_timeout=60,
+            connection_timeout=30,
+            max_transaction_retry_time=30.0,
+        )
+        
+        # Circuit breaker for Neo4j connection failures
+        self.circuit_breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=30)
         self.openai_client = OpenAI(api_key=openai_key)
         self.parsers = self._init_parsers()
         self.repo_root = repo_root
@@ -145,7 +234,7 @@ class KnowledgeGraphBuilder:
             for q in queries:
                 try:
                     session.run(q)
-                except Exception as e:
+                except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
                     logger.warning(f"Constraint/Index check: {e}")
         logger.info("✅ Database configured.")
 
@@ -157,9 +246,10 @@ class KnowledgeGraphBuilder:
         """Calculates MD5 hash of file content for change detection."""
         try:
             return hashlib.md5(file_path.read_bytes()).hexdigest()
-        except Exception:
+        except (OSError, IOError):
             return ""
 
+    @retry_on_openai_error(max_retries=3, delay=1.0)
     def get_embedding(self, text: str) -> List[float]:
         """
         Generates embedding using OpenAI text-embedding-3-large with token tracking and truncation.
@@ -196,7 +286,7 @@ class KnowledgeGraphBuilder:
             ) * self.COST_PER_1M_TOKENS
 
             return response.data[0].embedding
-        except Exception as e:
+        except (openai.APIError, openai.RateLimitError, openai.APIConnectionError) as e:
             logger.error(f"❌ OpenAI Embedding Error: {e}")
             # Return zero-vector on failure to allow pipeline to continue
             return [0.0] * self.VECTOR_DIMENSIONS
@@ -619,7 +709,7 @@ class KnowledgeGraphBuilder:
                             calls=calls_in_file,
                         )
 
-                except Exception as e:
+                except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
                     logger.warning(f"⚠️ Failed to process calls in {rel_path}: {e}")
 
             print(f"\n✅ [Pass 4] Call Graph approximation complete. Processed {total_files} files.")
@@ -690,17 +780,20 @@ class KnowledgeGraphBuilder:
         Returns:
             List of dicts with name, signature, score, and text
         """
-        vector = self.get_embedding(query)
-        cypher = """
-        CALL db.index.vector.queryNodes('code_embeddings', $limit, $vec)
-        YIELD node, score
-        MATCH (node)-[:DESCRIBES]->(target)
-        RETURN target.name as name, target.signature as sig, score, node.text as text
-        ORDER BY score DESC
-        """
-        with self.driver.session() as session:
-            res = session.run(cypher, limit=limit, vec=vector)
-            return [dict(r) for r in res]
+        def _execute_search():
+            vector = self.get_embedding(query)
+            cypher = """
+            CALL db.index.vector.queryNodes('code_embeddings', $limit, $vec)
+            YIELD node, score
+            MATCH (node)-[:DESCRIBES]->(target)
+            RETURN target.name as name, target.signature as sig, score, node.text as text
+            ORDER BY score DESC
+            """
+            with self.driver.session() as session:
+                res = session.run(cypher, limit=limit, vec=vector)
+                return [dict(r) for r in res]
+        
+        return self.circuit_breaker.call(_execute_search)
 
     # =========================================================================
     # DEPENDENCY ANALYSIS (for MCP Server)
@@ -747,18 +840,21 @@ class KnowledgeGraphBuilder:
         Returns:
             Dict with 'affected_files' list containing path, depth, and impact_type
         """
-        cypher = """
-        MATCH path = (f:File {path: $path})<-[:IMPORTS*1..{max_depth}]-(dependent)
-        RETURN DISTINCT
-            dependent.path as path,
-            length(path) as depth,
-            'dependents' as impact_type
-        ORDER BY depth, path
-        """
-        with self.driver.session() as session:
-            result = session.run(cypher, path=file_path, max_depth=max_depth)
-            affected_files = [
-                {"path": r["path"], "depth": r["depth"], "impact_type": r["impact_type"]}
-                for r in result
-            ]
-            return {"affected_files": affected_files, "total_count": len(affected_files)}
+        def _execute_impact_analysis():
+            cypher = """
+            MATCH path = (f:File {path: $path})<-[:IMPORTS*1..{max_depth}]-(dependent)
+            RETURN DISTINCT
+                dependent.path as path,
+                length(path) as depth,
+                'dependents' as impact_type
+            ORDER BY depth, path
+            """
+            with self.driver.session() as session:
+                result = session.run(cypher, path=file_path, max_depth=max_depth)
+                affected_files = [
+                    {"path": r["path"], "depth": r["depth"], "impact_type": r["impact_type"]}
+                    for r in result
+                ]
+                return {"affected_files": affected_files, "total_count": len(affected_files)}
+        
+        return self.circuit_breaker.call(_execute_impact_analysis)

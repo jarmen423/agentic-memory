@@ -192,7 +192,7 @@ def cmd_init(args):
             print(f"   Processed {metrics['embedding_calls']} entities")
             print(f"   Cost: ${metrics['cost_usd']:.4f} USD")
 
-        except Exception as e:
+        except (OSError, IOError) as e:
             print(f"\n❌ Error during indexing: {e}")
             print(f"   Your config has been saved. You can index later with:")
             print(f"   codememory index")
@@ -264,7 +264,7 @@ def cmd_status(args):
 
         builder.close()
 
-    except Exception as e:
+    except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ServiceUnavailable) as e:
         print(f"\n⚠️  Could not connect to Neo4j: {e}")
         print(f"   Make sure Neo4j is running and check your config.")
 

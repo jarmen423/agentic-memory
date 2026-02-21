@@ -140,9 +140,11 @@ class CodeParser:
             cursor = QueryCursor(query)
             captures = cursor.captures(tree.root_node)
 
-            # captures returns dict {name: [nodes]}
-            if isinstance(captures, dict):
-                nodes = captures.get('module', [])
+            # captures returns list of (node, name) tuples
+            for node, name in captures:
+                if name == 'module':
+                    module_name = code[node.start_byte:node.end_byte]
+                    imports.append(module_name)
                 for node in nodes:
                     module_name = code[node.start_byte:node.end_byte]
                     imports.append(module_name)

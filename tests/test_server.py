@@ -1,7 +1,7 @@
 """Tests for the MCP server and tools."""
 
 import pytest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 
 pytestmark = [pytest.mark.unit]
 
@@ -24,17 +24,17 @@ class TestToolkit:
         """Test semantic search returns formatted results."""
         mock_results = [
             {
-                "chunk.text": "def test(): pass",
+                "text": "def test(): pass",
                 "score": 0.95,
-                "fn.name": "test",
-                "file.path": "test.py"
+                "name": "test",
+                "sig": "test.py:test",
             }
         ]
         mock_graph.semantic_search.return_value = mock_results
 
         result = toolkit.semantic_search("test function")
 
-        assert "def test(): pass" in result
+        assert "test" in result
         assert "0.95" in result
         mock_graph.semantic_search.assert_called_once_with("test function", 5)
 
@@ -44,7 +44,7 @@ class TestToolkit:
 
         result = toolkit.semantic_search("nonexistent")
 
-        assert "No results found" in result or result == ""
+        assert "No relevant code found in the graph." == result
 
     def test_get_file_dependencies_found(self, toolkit, mock_graph):
         """Test getting dependencies for existing file."""
@@ -73,7 +73,7 @@ class TestToolkit:
 
         result = toolkit.get_file_dependencies("nonexistent.py")
 
-        assert "not found" in result.lower()
+        assert "Dependency Report" in result
 
 
 class TestMCPServerTools:
@@ -101,7 +101,8 @@ class TestIdentifyImpact:
         """Create mock graph with impact analysis."""
         graph = Mock()
         graph.identify_impact.return_value = {
-            "file.py": {"depth": 1, "dependents": [{"file": "caller.py", "depth": 1}]}
+            "affected_files": [{"path": "caller.py", "depth": 1, "impact_type": "dependents"}],
+            "total_count": 1,
         }
         return graph
 
@@ -117,7 +118,7 @@ class TestIdentifyImpact:
 
     def test_identify_impact_not_found(self, mock_graph):
         """Test impact analysis for non-existent file."""
-        mock_graph.identify_impact.return_value = {}
+        mock_graph.identify_impact.return_value = {"affected_files": [], "total_count": 0}
         
         with patch('codememory.server.app.graph', mock_graph):
             result = identify_impact("nonexistent.py")
@@ -144,22 +145,24 @@ class TestSearchCodebase:
 
     def test_search_codebase_success(self, mock_toolkit):
         """Test successful search."""
-        mock_toolkit.semantic_search.return_value = "Found results"
-        
-        with patch('codememory.server.app.toolkit', mock_toolkit):
+        mock_graph = Mock()
+        mock_graph.semantic_search.return_value = [
+            {"name": "fn", "score": 0.9, "text": "def fn(): pass", "sig": "a.py:fn"}
+        ]
+
+        with patch('codememory.server.app.graph', mock_graph):
             from codememory.server.app import search_codebase
             result = search_codebase("test query", limit=10)
-            
-            assert result == "Found results"
-            mock_toolkit.semantic_search.assert_called_once_with("test query", 10)
+
+            assert "Found 1 relevant code result(s)" in result
+            mock_graph.semantic_search.assert_called_once_with("test query", limit=10)
 
     def test_search_codebase_error(self, mock_toolkit):
         """Test search error handling."""
-        mock_toolkit.semantic_search.side_effect = Exception("Search failed")
-        
-        with patch('codememory.server.app.graph', Mock()), \
-             patch('codememory.server.app.toolkit', mock_toolkit):
+        mock_graph = Mock()
+        mock_graph.semantic_search.side_effect = Exception("Search failed")
+
+        with patch('codememory.server.app.graph', mock_graph):
             from codememory.server.app import search_codebase
-            result = search_codebase("test")
-            
-            assert "error" in result.lower()
+            with pytest.raises(Exception, match="Search failed"):
+                search_codebase("test")

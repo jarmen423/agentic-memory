@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Set
 from functools import wraps
 
+import openai
 import neo4j
 from openai import OpenAI
 from tree_sitter import Language, Parser, Query, QueryCursor
@@ -841,8 +842,9 @@ class KnowledgeGraphBuilder:
             Dict with 'affected_files' list containing path, depth, and impact_type
         """
         def _execute_impact_analysis():
-            cypher = """
-            MATCH path = (f:File {path: $path})<-[:IMPORTS*1..{max_depth}]-(dependent)
+            depth = max(1, int(max_depth))
+            cypher = f"""
+            MATCH path = (f:File {{path: $path}})<-[:IMPORTS*1..{depth}]-(dependent)
             RETURN DISTINCT
                 dependent.path as path,
                 length(path) as depth,
@@ -850,7 +852,7 @@ class KnowledgeGraphBuilder:
             ORDER BY depth, path
             """
             with self.driver.session() as session:
-                result = session.run(cypher, path=file_path, max_depth=max_depth)
+                result = session.run(cypher, path=file_path)
                 affected_files = [
                     {"path": r["path"], "depth": r["depth"], "impact_type": r["impact_type"]}
                     for r in result

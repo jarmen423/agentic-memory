@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 from typing import Optional, Set
 
+import neo4j
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 

@@ -1,8 +1,7 @@
 """Tests for the KnowledgeGraphBuilder module."""
 
 import pytest
-from unittest.mock import Mock, MagicMock, patch
-from pathlib import Path
+from unittest.mock import Mock, patch
 
 # Skip if neo4j is not available
 pytestmark = [
@@ -30,7 +29,7 @@ class TestKnowledgeGraphBuilder:
         driver, session = mock_driver
         with patch('neo4j.GraphDatabase.driver', return_value=driver), \
              patch.object(KnowledgeGraphBuilder, '_init_parsers'), \
-             patch('openai.OpenAI') as mock_openai:
+             patch('codememory.ingestion.graph.OpenAI'):
             
             builder = KnowledgeGraphBuilder(
                 uri="bolt://localhost:7687",
@@ -43,15 +42,16 @@ class TestKnowledgeGraphBuilder:
 
     def test_initialization(self, builder):
         """Test that builder initializes correctly."""
-        assert builder.EMBEDDING_MODEL == "text-embedding-3-small"
+        assert builder.EMBEDDING_MODEL == "text-embedding-3-large"
         assert builder.driver is not None
 
     def test_get_embedding(self, builder):
         """Test embedding generation."""
-        mock_embedding = [0.1] * 1536
+        mock_embedding = [0.1] * builder.VECTOR_DIMENSIONS
         builder.openai_client = Mock()
         builder.openai_client.embeddings.create.return_value = Mock(
-            data=[Mock(embedding=mock_embedding)]
+            data=[Mock(embedding=mock_embedding)],
+            usage=Mock(total_tokens=42),
         )
 
         result = builder.get_embedding("test text")
@@ -60,13 +60,11 @@ class TestKnowledgeGraphBuilder:
         builder.openai_client.embeddings.create.assert_called_once()
 
     def test_get_embedding_error_handling(self, builder):
-        """Test embedding error handling returns zero vector."""
+        """Test unexpected embedding errors propagate."""
         builder.openai_client = Mock()
         builder.openai_client.embeddings.create.side_effect = Exception("API Error")
-
-        result = builder.get_embedding("test text")
-
-        assert result == [0.0] * 1536
+        with pytest.raises(Exception, match="API Error"):
+            builder.get_embedding("test text")
 
     def test_close(self, builder):
         """Test driver cleanup."""
@@ -77,8 +75,8 @@ class TestKnowledgeGraphBuilder:
 class TestCypherQueries:
     """Test Cypher query generation and execution."""
 
-    def test_setup_indexes_cypher(self):
-        """Test that setup_indexes creates correct constraints."""
+    def test_setup_database_cypher(self):
+        """Test that setup_database query strings remain well-formed."""
         # This would test the actual Cypher queries
         # For unit test, we verify the query strings are well-formed
         expected_queries = [
@@ -119,14 +117,18 @@ class TestGraphIntegration:
         except Exception as e:
             pytest.skip(f"Neo4j not available: {e}")
 
-    def test_setup_indexes_integration(self, neo4j_builder):
+    def test_setup_database_integration(self, neo4j_builder):
         """Test index creation on real Neo4j."""
         # Should not raise
-        neo4j_builder.setup_indexes()
+        neo4j_builder.setup_database()
 
     def test_semantic_search_query(self, neo4j_builder):
         """Test semantic search generates valid Cypher."""
         # Mock embedding to avoid API call
-        with patch.object(neo4j_builder, 'get_embedding', return_value=[0.1] * 1536):
+        with patch.object(
+            neo4j_builder,
+            'get_embedding',
+            return_value=[0.1] * neo4j_builder.VECTOR_DIMENSIONS,
+        ):
             results = neo4j_builder.semantic_search("test query", limit=5)
             assert isinstance(results, list)

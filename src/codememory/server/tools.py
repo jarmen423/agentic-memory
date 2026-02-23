@@ -1,5 +1,6 @@
 from typing import List, Dict, Optional
 import logging
+import neo4j
 from codememory.ingestion.graph import KnowledgeGraphBuilder
 
 logger = logging.getLogger(__name__)

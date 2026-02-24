@@ -5,10 +5,10 @@
 > This document tracks all work needed before Agentic Memory can be considered a shippable, production-ready product.
 
 ---
-
+[ ] Add CLI support for `codememory --version`
 ## Next Session Reminder
 
-- [ ] Publish updated release before further validation:
+- [X] Publish updated release before further validation:
   - [ ] Bump version
   - [ ] Build + upload to TestPyPI
   - [ ] Install that version on test machine and verify `codememory --help` reflects latest flags/fixes

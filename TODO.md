@@ -190,11 +190,11 @@
   - [ ] **Gate:** Agent can parse command output without brittle string matching
 
 - [ ] **PR 2: Explicit Repo Targeting**
-  - [ ] Add `--repo /abs/path` (or `--config /abs/path/.codememory/config.json`) to relevant commands
-  - [ ] Ensure `serve` can run deterministically without host `cwd` assumptions
-  - [ ] Bake wrapper behavior into CLI so users can keep MCP config as `command: "codememory"` + args only
-  - [ ] Add `--env-file` support (default to `<repo>/.env` when `--repo` is provided) for deterministic key loading
-  - [ ] Add `CODEMEMORY_REPO` / `CODEMEMORY_ENV_FILE` environment fallbacks for host apps with limited config fields
+  - [x] Add `--repo /abs/path` (or `--config /abs/path/.codememory/config.json`) to relevant commands
+  - [x] Ensure `serve` can run deterministically without host `cwd` assumptions
+  - [x] Bake wrapper behavior into CLI so users can keep MCP config as `command: "codememory"` + args only
+  - [x] Add `--env-file` support (default to `<repo>/.env` when `--repo` is provided) for deterministic key loading
+  - [x] Add `CODEMEMORY_REPO` / `CODEMEMORY_ENV_FILE` environment fallbacks for host apps with limited config fields
   - [ ] Add tests for path resolution and missing/invalid repo handling
   - [ ] Add tests proving `OPENAI_API_KEY` is loaded from repo-root `.env` in `serve` mode when explicitly targeted
   - [ ] Publish a new TestPyPI version after merge (current versions do not support `--repo`)

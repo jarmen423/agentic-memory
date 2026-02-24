@@ -359,14 +359,40 @@ def cmd_serve(args):
     """Start the MCP server."""
     from codememory.server.app import run_server
 
-    repo_root = find_repo_root()
-    config = Config(repo_root)
+    repo_root = None
+    if args.repo:
+        repo_root = Path(args.repo).expanduser().resolve()
+        if not repo_root.exists() or not repo_root.is_dir():
+            print(f"❌ Invalid --repo path: {repo_root}")
+            sys.exit(1)
 
-    if not config.exists():
-        print(f"⚠️  No local config found, using environment variables")
+    env_file_arg = args.env_file or os.getenv("CODEMEMORY_ENV_FILE")
+    if env_file_arg:
+        env_file = Path(env_file_arg).expanduser().resolve()
+        if not env_file.exists():
+            print(f"❌ Invalid --env-file path: {env_file}")
+            sys.exit(1)
+        load_dotenv(dotenv_path=env_file, override=False)
+    elif repo_root:
+        repo_env = repo_root / ".env"
+        if repo_env.exists():
+            # Ensure repo-local env is loaded even when launched from another cwd.
+            load_dotenv(dotenv_path=repo_env, override=False)
+
+    if repo_root:
+        config = Config(repo_root)
+        if not config.exists():
+            print(f"⚠️  No .codememory/config.json found in {repo_root}, using environment variables")
+    else:
+        auto_root = find_repo_root()
+        config = Config(auto_root)
+        if not config.exists():
+            print(f"⚠️  No local config found, using environment variables")
 
     print(f"🧠 Starting MCP Interface on port {args.port}")
-    run_server(port=args.port)
+    if repo_root:
+        print(f"📂 Using repository root: {repo_root}")
+    run_server(port=args.port, repo_root=repo_root)
 
 
 def cmd_search(args):
@@ -466,6 +492,16 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
     # Command: serve (MCP server)
     serve_parser = subparsers.add_parser("serve", help="Start the MCP server")
     serve_parser.add_argument("--port", type=int, default=8000, help="Port to listen on")
+    serve_parser.add_argument(
+        "--repo",
+        type=str,
+        help="Repository root to use for .codememory/config.json resolution",
+    )
+    serve_parser.add_argument(
+        "--env-file",
+        type=str,
+        help="Optional .env file to load before starting the server",
+    )
 
     # Command: search (test semantic search)
     search_parser = subparsers.add_parser(

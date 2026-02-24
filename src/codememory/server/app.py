@@ -11,6 +11,7 @@ import time
 from typing import Optional, Dict, Any
 from functools import wraps
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 import neo4j
@@ -23,6 +24,7 @@ mcp = FastMCP("Agentic Memory")
 
 # Global Graph Connection (initialized when server starts)
 graph: Optional[KnowledgeGraphBuilder] = None
+_repo_override: Optional[Path] = None
 
 # Rate limiting configuration
 RATE_LIMIT_REQUESTS = 100  # Max requests per window
@@ -87,7 +89,13 @@ def init_graph():
     # Try to load from local config first
     from codememory.config import find_repo_root, Config
 
-    repo_root = find_repo_root()
+    repo_root_env = os.getenv("CODEMEMORY_REPO")
+    if _repo_override:
+        repo_root = _repo_override.resolve()
+    elif repo_root_env:
+        repo_root = Path(repo_root_env).expanduser().resolve()
+    else:
+        repo_root = find_repo_root()
     config = Config(repo_root) if repo_root else None
 
     if config and config.exists():
@@ -408,14 +416,19 @@ def get_file_info(file_path: str) -> str:
         return f"❌ Failed to get file info: {str(e)}"
 
 
-def run_server(port: int):
+def run_server(port: int, repo_root: Optional[Path] = None):
     """
     Start the MCP server.
 
     Args:
         port: Port number to listen on
+        repo_root: Optional explicit repository root for config resolution
     """
+    global _repo_override
+    _repo_override = repo_root.resolve() if repo_root else None
     logger.info(f"🚀 Starting Agentic Memory MCP server on port {port}")
+    if _repo_override:
+        logger.info(f"📂 Repository override set to {_repo_override}")
     if not get_graph():
         logger.warning("⚠️ Starting MCP server without active graph connection.")
     mcp.run()

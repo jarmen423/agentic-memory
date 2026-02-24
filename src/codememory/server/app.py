@@ -119,11 +119,27 @@ def init_graph():
     return graph
 
 
-# Initialize on module load
-init_graph()
+def get_graph() -> Optional[KnowledgeGraphBuilder]:
+    """Lazily initialize and return the graph connection."""
+    global graph
+    if graph is not None:
+        return graph
+
+    try:
+        return init_graph()
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize graph connection: {e}")
+        return None
+
+
+def _close_graph_on_exit():
+    """Close graph connection on process exit if initialized."""
+    if graph:
+        graph.close()
+
 
 # Register cleanup on exit
-atexit.register(lambda: graph.close() if graph else None)
+atexit.register(_close_graph_on_exit)
 
 
 def validate_tool_output(output: str, max_length: int = 8000) -> str:
@@ -165,11 +181,12 @@ def search_codebase(query: str, limit: int = 5) -> str:
     Returns:
         Formatted string with search results including scores and code snippets
     """
-    if not graph:
+    current_graph = get_graph()
+    if not current_graph:
         return "❌ Graph not initialized. Check Neo4j connection."
 
     try:
-        results = graph.semantic_search(query, limit=limit)
+        results = current_graph.semantic_search(query, limit=limit)
         if not results:
             return "No relevant code found."
 
@@ -189,6 +206,9 @@ def search_codebase(query: str, limit: int = 5) -> str:
         return validate_tool_output(output.strip())
     except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
         logger.error(f"Search error: {e}")
+        return f"❌ Search failed: {str(e)}"
+    except Exception as e:
+        logger.error(f"Unexpected search error: {e}")
         return f"❌ Search failed: {str(e)}"
 
 
@@ -210,11 +230,12 @@ def get_file_dependencies(file_path: str) -> str:
     Returns:
         Formatted string with import dependencies
     """
-    if not graph:
+    current_graph = get_graph()
+    if not current_graph:
         return "❌ Graph not initialized. Check Neo4j connection."
 
     try:
-        deps = graph.get_file_dependencies(file_path)
+        deps = current_graph.get_file_dependencies(file_path)
 
         output = f"## Dependencies for `{file_path}`\n\n"
 
@@ -238,6 +259,9 @@ def get_file_dependencies(file_path: str) -> str:
     except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
         logger.error(f"Dependencies error: {e}")
         return f"❌ Failed to get dependencies: {str(e)}"
+    except Exception as e:
+        logger.error(f"Unexpected dependencies error: {e}")
+        return f"❌ Failed to get dependencies: {str(e)}"
 
 
 @mcp.tool()
@@ -257,11 +281,12 @@ def identify_impact(file_path: str, max_depth: int = 3) -> str:
     Returns:
         Formatted string with affected files organized by depth
     """
-    if not graph:
+    current_graph = get_graph()
+    if not current_graph:
         return "❌ Graph not initialized. Check Neo4j connection."
 
     try:
-        result = graph.identify_impact(file_path, max_depth=max_depth)
+        result = current_graph.identify_impact(file_path, max_depth=max_depth)
         affected = result["affected_files"]
         total = result["total_count"]
 
@@ -293,6 +318,9 @@ def identify_impact(file_path: str, max_depth: int = 3) -> str:
     except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
         logger.error(f"Impact analysis error: {e}")
         return f"❌ Failed to analyze impact: {str(e)}"
+    except Exception as e:
+        logger.error(f"Unexpected impact analysis error: {e}")
+        return f"❌ Failed to analyze impact: {str(e)}"
 
 
 @mcp.tool()
@@ -313,13 +341,12 @@ def get_file_info(file_path: str) -> str:
     Returns:
         Formatted string with file structure information
     """
-    if not graph:
+    current_graph = get_graph()
+    if not current_graph:
         return "❌ Graph not initialized. Check Neo4j connection."
 
     try:
-        from neo4j import GraphDatabase
-
-        with graph.driver.session() as session:
+        with current_graph.driver.session() as session:
             # Get file info
             result = session.run(
                 """
@@ -376,6 +403,9 @@ def get_file_info(file_path: str) -> str:
     except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
         logger.error(f"File info error: {e}")
         return f"❌ Failed to get file info: {str(e)}"
+    except Exception as e:
+        logger.error(f"Unexpected file info error: {e}")
+        return f"❌ Failed to get file info: {str(e)}"
 
 
 def run_server(port: int):
@@ -386,4 +416,6 @@ def run_server(port: int):
         port: Port number to listen on
     """
     logger.info(f"🚀 Starting Agentic Memory MCP server on port {port}")
+    if not get_graph():
+        logger.warning("⚠️ Starting MCP server without active graph connection.")
     mcp.run()

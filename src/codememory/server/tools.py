@@ -18,7 +18,7 @@ class Toolkit:
         Performs hybrid search and formats the result as a readable string for the Agent.
         """
         try:
-            results = self.graph.semantic_search(query, limit=limit)
+            results = self.graph.semantic_search(query, limit)
             if not results:
                 return "No relevant code found in the graph."
 
@@ -36,30 +36,15 @@ class Toolkit:
         """
         Returns what this file imports and what calls it.
         """
-        # We need a direct Cypher query here that isn't in the generic graph builder yet.
-        # Ideally, we add a method to KnowledgeGraphBuilder, but we can access driver here too.
-        query_imports = """
-        MATCH (f:File {path: $path})-[:IMPORTS]->(dep)
-        RETURN dep.path as dependency
-        """
-        
-        query_callers = """
-        MATCH (f:File {path: $path})<-[:IMPORTS]-(caller)
-        RETURN caller.path as caller
-        """
-
         try:
-            with self.graph.driver.session() as session:
-                deps = session.run(query_imports, path=file_path)
-                callers = session.run(query_callers, path=file_path)
-                
-                dep_list = [r["dependency"] for r in deps]
-                caller_list = [r["caller"] for r in callers]
-                
-                return (
-                    f"### Dependency Report for `{file_path}`\n"
-                    f"**Imports (outgoing):** {dep_list if dep_list else 'None'}\n"
-                    f"**Used By (incoming):** {caller_list if caller_list else 'None'}"
-                )
+            deps = self.graph.get_file_dependencies(file_path)
+            dep_list = deps.get("imports", [])
+            caller_list = deps.get("imported_by", [])
+
+            return (
+                f"### Dependency Report for `{file_path}`\n"
+                f"**Imports (outgoing):** {dep_list if dep_list else 'None'}\n"
+                f"**Used By (incoming):** {caller_list if caller_list else 'None'}"
+            )
         except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
             return f"Error analyzing dependencies: {str(e)}"

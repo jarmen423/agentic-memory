@@ -401,7 +401,7 @@ Commands:
   codememory serve             # Start MCP server
   codememory search <query>    # Test semantic search
 
-For more information, visit: https://github.com/yourusername/agentic-memory
+For more information, visit: https://github.com/jarmen423/agentic-memory
         """,
     )
 

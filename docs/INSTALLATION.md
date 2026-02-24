@@ -54,7 +54,7 @@ python -m pip install --user pipx
 export PATH="$PATH:$HOME/.local/bin"
 
 # Install Agentic Memory
-pipx install agentic-memory
+pipx install codememory
 
 # Verify installation
 codememory --version
@@ -63,25 +63,39 @@ codememory --version
 **Advantages:**
 - Isolated from system Python
 - No dependency conflicts
-- Easy to uninstall: `pipx uninstall agentic-memory`
+- Easy to uninstall: `pipx uninstall codememory`
 
-### Method 2: pip (System-wide Installation)
+### Method 2: uv / uvx (Global Tooling)
+
+```bash
+# Install globally as a Python tool
+uv tool install codememory
+
+# Run without installing globally
+uvx codememory --help
+```
+
+**Advantages:**
+- Fast dependency resolution and installs
+- Great for ephemeral tool usage via `uvx`
+
+### Method 3: pip (System-wide Installation)
 
 ```bash
 # Install directly
-pip install agentic-memory
+pip install codememory
 
 # Or with user-only installation
-pip install --user agentic-memory
+pip install --user codememory
 ```
 
 **Note:** This may conflict with other packages requiring different versions of dependencies.
 
-### Method 3: From Source (For Developers)
+### Method 4: From Source (For Developers)
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/agentic-memory.git
+git clone https://github.com/jarmen423/agentic-memory.git
 cd agentic-memory
 
 # Create virtual environment
@@ -388,7 +402,7 @@ ModuleNotFoundError: No module named 'codememory'
 **Solution:**
 ```bash
 # Reinstall the package
-pip install --force-reinstall agentic-memory
+pip install --force-reinstall codememory
 
 # Or if installing from source
 pip install -e .
@@ -610,7 +624,7 @@ codememory index
 ```
 
 3. **Report issues:**
-- GitHub Issues: https://github.com/yourusername/agentic-memory/issues
+- GitHub Issues: https://github.com/jarmen423/agentic-memory/issues
 - Include: OS, Python version, Neo4j version, error messages
 
 ---
@@ -630,7 +644,7 @@ After successful installation:
 
 ```bash
 # Install
-pipx install agentic-memory
+pipx install codememory
 
 # Initialize
 codememory init

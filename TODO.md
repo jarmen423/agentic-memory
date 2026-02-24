@@ -183,10 +183,10 @@
 #### Execution Checklist (PR Order)
 
 - [ ] **PR 1: CLI JSON Contract Foundation**
-  - [ ] Add `--json` to `status`, `search`, `index`, and dependency/impact command surfaces
-  - [ ] Standardize JSON envelope: `ok`, `error`, `data`, `metrics`
-  - [ ] Ensure all hard failures return non-zero exit code
-  - [ ] Add regression tests for JSON schema shape and failure paths
+  - [x] Add `--json` to `status`, `search`, `index`, and dependency/impact command surfaces
+  - [x] Standardize JSON envelope: `ok`, `error`, `data`, `metrics`
+  - [x] Ensure all hard failures return non-zero exit code
+  - [x] Add regression tests for JSON schema shape and failure paths
   - [ ] **Gate:** Agent can parse command output without brittle string matching
 
 - [ ] **PR 2: Explicit Repo Targeting**
@@ -195,8 +195,8 @@
   - [x] Bake wrapper behavior into CLI so users can keep MCP config as `command: "codememory"` + args only
   - [x] Add `--env-file` support (default to `<repo>/.env` when `--repo` is provided) for deterministic key loading
   - [x] Add `CODEMEMORY_REPO` / `CODEMEMORY_ENV_FILE` environment fallbacks for host apps with limited config fields
-  - [ ] Add tests for path resolution and missing/invalid repo handling
-  - [ ] Add tests proving `OPENAI_API_KEY` is loaded from repo-root `.env` in `serve` mode when explicitly targeted
+  - [x] Add tests for path resolution and missing/invalid repo handling
+  - [x] Add tests proving `OPENAI_API_KEY` is loaded from repo-root `.env` in `serve` mode when explicitly targeted
   - [ ] Publish a new TestPyPI version after merge (current versions do not support `--repo`)
   - [ ] Promote same build to PyPI after smoke-testing MCP client launch with `--repo`
   - [ ] **Gate:** Same command works from any current directory

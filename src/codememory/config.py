@@ -6,9 +6,9 @@ Handles per-repository configuration stored in .codememory/ directory.
 
 import os
 import json
+import copy
 from pathlib import Path
 from typing import Optional, Dict, Any
-
 
 DEFAULT_CONFIG = {
     "neo4j": {
@@ -37,6 +37,18 @@ DEFAULT_CONFIG = {
         "ignore_files": [],
         "extensions": [".py", ".js", ".ts", ".tsx", ".jsx"],
     },
+    "git": {
+        "enabled": False,
+        "auto_incremental": True,
+        "sync_trigger": "commit",
+        "github_enrichment": {
+            "enabled": False,
+            "repo": None,
+        },
+        "checkpoint": {
+            "last_sha": None,
+        },
+    },
 }
 
 
@@ -62,7 +74,7 @@ class Config:
     def load(self) -> Dict[str, Any]:
         """Load config from file, or return defaults if not exists."""
         if not self.exists():
-            return DEFAULT_CONFIG.copy()
+            return copy.deepcopy(DEFAULT_CONFIG)
 
         try:
             with open(self.config_file, "r") as f:
@@ -75,13 +87,14 @@ class Config:
     def save(self, config: Dict[str, Any]) -> None:
         """Save config to file."""
         self.config_dir.mkdir(exist_ok=True)
+        payload = copy.deepcopy(config)
 
         # Don't save empty api_key - let it fall back to env var
-        if config.get("openai", {}).get("api_key") == "":
-            config["openai"]["api_key"] = None
+        if payload.get("openai", {}).get("api_key") == "":
+            payload["openai"]["api_key"] = None
 
         with open(self.config_file, "w") as f:
-            json.dump(config, f, indent=2)
+            json.dump(payload, f, indent=2)
 
     def ensure_graphignore(self, ignore_dirs: Optional[list[str]] = None) -> None:
         """Create .graphignore with sensible defaults if it does not exist."""
@@ -126,13 +139,16 @@ class Config:
 
     def _merge_defaults(self, config: Dict[str, Any]) -> Dict[str, Any]:
         """Merge user config with defaults."""
-        result = DEFAULT_CONFIG.copy()
-        for key, value in config.items():
-            if key in result and isinstance(result[key], dict):
-                result[key] = {**result[key], **value}
+        return self._deep_merge_dicts(copy.deepcopy(DEFAULT_CONFIG), config)
+
+    def _deep_merge_dicts(self, base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
+        """Recursively merge nested dictionaries."""
+        for key, value in overrides.items():
+            if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+                base[key] = self._deep_merge_dicts(base[key], value)
             else:
-                result[key] = value
-        return result
+                base[key] = value
+        return base
 
     def get_neo4j_config(self) -> Dict[str, str]:
         """Get Neo4j connection config, with env var fallbacks."""
@@ -156,6 +172,20 @@ class Config:
     def get_indexing_config(self) -> Dict[str, Any]:
         """Get indexing configuration."""
         return self.load()["indexing"]
+
+    def get_git_config(self) -> Dict[str, Any]:
+        """Get git graph configuration."""
+        return self.load()["git"]
+
+    def save_git_config(self, git_config: Dict[str, Any]) -> None:
+        """Merge and persist git graph configuration."""
+        config = self.load()
+        merged_git = self._deep_merge_dicts(
+            copy.deepcopy(DEFAULT_CONFIG["git"]),
+            config.get("git", {}),
+        )
+        config["git"] = self._deep_merge_dicts(merged_git, git_config)
+        self.save(config)
 
 
 def find_repo_root(start_path: Path = None) -> Optional[Path]:

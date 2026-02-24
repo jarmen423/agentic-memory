@@ -3,9 +3,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import argparse
-import sys
+import json
 import os
+import sys
 from pathlib import Path
+from typing import Any, Optional
+
+import neo4j
 
 from codememory.ingestion.watcher import start_continuous_watch
 from codememory.ingestion.graph import KnowledgeGraphBuilder
@@ -28,6 +32,56 @@ def print_banner():
     ║                                                               ║
     ╚═══════════════════════════════════════════════════════════════╝
     """)
+
+
+def _is_json_mode(args: argparse.Namespace) -> bool:
+    """Return whether the current command should emit machine-readable JSON."""
+    return bool(getattr(args, "json", False))
+
+
+def _emit_json(
+    ok: bool,
+    *,
+    error: Optional[str] = None,
+    data: Any = None,
+    metrics: Optional[dict[str, Any]] = None,
+) -> None:
+    """Emit the standardized command envelope."""
+    print(
+        json.dumps(
+            {
+                "ok": ok,
+                "error": error,
+                "data": data,
+                "metrics": metrics or {},
+            },
+            default=str,
+        )
+    )
+
+
+def _exit_with_error(
+    args: argparse.Namespace,
+    *,
+    error: str,
+    human_lines: Optional[list[str]] = None,
+    exit_code: int = 1,
+) -> None:
+    """Emit a standardized failure payload and exit non-zero."""
+    if _is_json_mode(args):
+        _emit_json(ok=False, error=error, data=None, metrics={})
+    else:
+        for line in human_lines or [f"❌ {error}"]:
+            print(line)
+    raise SystemExit(exit_code)
+
+
+def _emit_success(args: argparse.Namespace, *, data: Any, metrics: Optional[dict[str, Any]] = None) -> bool:
+    """Emit success JSON if requested. Returns True when JSON output was emitted."""
+    if not _is_json_mode(args):
+        return False
+    _emit_json(ok=True, error=None, data=data, metrics=metrics or {})
+    return True
 
 
 def cmd_init(args):
@@ -231,16 +285,23 @@ def cmd_status(args):
     config = Config(repo_root)
 
     if not config.exists():
-        print(f"❌ Agentic Memory is not initialized in this repository.")
-        print(f"   Run 'codememory init' to get started.")
-        return
+        _exit_with_error(
+            args,
+            error="Agentic Memory is not initialized in this repository.",
+            human_lines=[
+                "❌ Agentic Memory is not initialized in this repository.",
+                "   Run 'codememory init' to get started.",
+            ],
+        )
 
-    print(f"📊 Agentic Memory Status")
-    print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    print(f"Repository: {repo_root}")
-    print(f"Config:     {config.config_file}")
+    if not _is_json_mode(args):
+        print(f"📊 Agentic Memory Status")
+        print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print(f"Repository: {repo_root}")
+        print(f"Config:     {config.config_file}")
 
     # Try to connect and get stats
+    builder = None
     try:
         neo4j_cfg = config.get_neo4j_config()
         openai_key = config.get_openai_key()
@@ -260,26 +321,50 @@ def cmd_status(args):
             classes = session.run("MATCH (c:Class) RETURN count(c) as count").single()["count"]
             chunks = session.run("MATCH (ch:Chunk) RETURN count(ch) as count").single()["count"]
 
-            print(f"\n📈 Graph Statistics:")
-            print(f"   Files:     {files:,}")
-            print(f"   Functions: {functions:,}")
-            print(f"   Classes:   {classes:,}")
-            print(f"   Chunks:    {chunks:,}")
-
             # Get last update
             last_update = session.run("""
                 MATCH (f:File)
                 RETURN max(f.last_updated) as last_updated
             """).single()["last_updated"]
 
+            stats = {
+                "files": files,
+                "functions": functions,
+                "classes": classes,
+                "chunks": chunks,
+                "last_sync": last_update,
+            }
+            if _emit_success(
+                args,
+                data={
+                    "repository": str(repo_root),
+                    "config": str(config.config_file),
+                    "stats": stats,
+                },
+                metrics={},
+            ):
+                return
+
+            print(f"\n📈 Graph Statistics:")
+            print(f"   Files:     {files:,}")
+            print(f"   Functions: {functions:,}")
+            print(f"   Classes:   {classes:,}")
+            print(f"   Chunks:    {chunks:,}")
             if last_update:
                 print(f"   Last sync: {last_update}")
 
-        builder.close()
-
     except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ServiceUnavailable) as e:
-        print(f"\n⚠️  Could not connect to Neo4j: {e}")
-        print(f"   Make sure Neo4j is running and check your config.")
+        _exit_with_error(
+            args,
+            error=f"Could not connect to Neo4j: {e}",
+            human_lines=[
+                f"\n⚠️  Could not connect to Neo4j: {e}",
+                "   Make sure Neo4j is running and check your config.",
+            ],
+        )
+    finally:
+        if builder is not None:
+            builder.close()
 
 
 def cmd_index(args):
@@ -288,11 +373,16 @@ def cmd_index(args):
     config = Config(repo_root)
 
     if not config.exists():
-        print(f"❌ Agentic Memory is not initialized in this repository.")
-        print(f"   Run 'codememory init' to get started.")
-        sys.exit(1)
+        _exit_with_error(
+            args,
+            error="Agentic Memory is not initialized in this repository.",
+            human_lines=[
+                "❌ Agentic Memory is not initialized in this repository.",
+                "   Run 'codememory init' to get started.",
+            ],
+        )
 
-    if not args.quiet:
+    if not args.quiet and not _is_json_mode(args):
         print(f"📂 Indexing repository: {repo_root}")
 
     neo4j_cfg = config.get_neo4j_config()
@@ -316,10 +406,22 @@ def cmd_index(args):
 
     try:
         metrics = builder.run_pipeline(repo_root, supported_extensions=extensions)
+        if _emit_success(
+            args,
+            data={"repository": str(repo_root)},
+            metrics=metrics,
+        ):
+            return
         if not args.quiet:
             print(f"\n✅ Indexing complete!")
             print(f"   Processed {metrics['embedding_calls']} entities")
             print(f"   Cost: ${metrics['cost_usd']:.4f} USD")
+    except Exception as e:
+        _exit_with_error(
+            args,
+            error=f"Indexing failed: {e}",
+            human_lines=[f"❌ Indexing failed: {e}"],
+        )
     finally:
         builder.close()
 
@@ -401,17 +503,27 @@ def cmd_search(args):
     config = Config(repo_root)
 
     if not config.exists():
-        print(f"❌ Agentic Memory is not initialized in this repository.")
-        print(f"   Run 'codememory init' to get started.")
-        sys.exit(1)
+        _exit_with_error(
+            args,
+            error="Agentic Memory is not initialized in this repository.",
+            human_lines=[
+                "❌ Agentic Memory is not initialized in this repository.",
+                "   Run 'codememory init' to get started.",
+            ],
+        )
 
     neo4j_cfg = config.get_neo4j_config()
     openai_key = config.get_openai_key()
 
     if not openai_key:
-        print(f"❌ OpenAI API key not configured.")
-        print(f"   Set OPENAI_API_KEY environment variable or add it to .codememory/config.json")
-        sys.exit(1)
+        _exit_with_error(
+            args,
+            error="OpenAI API key not configured.",
+            human_lines=[
+                "❌ OpenAI API key not configured.",
+                "   Set OPENAI_API_KEY environment variable or add it to .codememory/config.json",
+            ],
+        )
 
     builder = KnowledgeGraphBuilder(
         uri=neo4j_cfg["uri"],
@@ -422,6 +534,16 @@ def cmd_search(args):
 
     try:
         results = builder.semantic_search(args.query, limit=args.limit)
+        if _emit_success(
+            args,
+            data={
+                "query": args.query,
+                "limit": args.limit,
+                "results": results,
+            },
+            metrics={"result_count": len(results)},
+        ):
+            return
 
         if not results:
             print("No relevant code found.")
@@ -436,6 +558,140 @@ def cmd_search(args):
 
             print(f"{i}. **{name}** [`{sig}`] - Score: {score:.2f}")
             print(f"   {text}...\n")
+    except Exception as e:
+        _exit_with_error(
+            args,
+            error=f"Search failed: {e}",
+            human_lines=[f"❌ Search failed: {e}"],
+        )
+    finally:
+        builder.close()
+
+
+def cmd_deps(args):
+    """Show direct dependency relationships for a file."""
+    repo_root = find_repo_root()
+    config = Config(repo_root)
+
+    if not config.exists():
+        _exit_with_error(
+            args,
+            error="Agentic Memory is not initialized in this repository.",
+            human_lines=[
+                "❌ Agentic Memory is not initialized in this repository.",
+                "   Run 'codememory init' to get started.",
+            ],
+        )
+
+    neo4j_cfg = config.get_neo4j_config()
+    openai_key = config.get_openai_key()
+    builder = KnowledgeGraphBuilder(
+        uri=neo4j_cfg["uri"],
+        user=neo4j_cfg["user"],
+        password=neo4j_cfg["password"],
+        openai_key=openai_key,
+    )
+
+    try:
+        deps = builder.get_file_dependencies(args.path)
+        imports = deps.get("imports", [])
+        imported_by = deps.get("imported_by", [])
+
+        if _emit_success(
+            args,
+            data={
+                "path": args.path,
+                "imports": imports,
+                "imported_by": imported_by,
+            },
+            metrics={
+                "imports_count": len(imports),
+                "imported_by_count": len(imported_by),
+            },
+        ):
+            return
+
+        print(f"## Dependencies for `{args.path}`\n")
+        if imports:
+            print("### Imports")
+            for imp in imports:
+                print(f"- {imp}")
+        else:
+            print("### Imports")
+            print("No imports found.")
+
+        print()
+        if imported_by:
+            print("### Imported By")
+            for dep in imported_by:
+                print(f"- {dep}")
+        else:
+            print("### Imported By")
+            print("No dependents found.")
+    except Exception as e:
+        _exit_with_error(
+            args,
+            error=f"Dependency analysis failed: {e}",
+            human_lines=[f"❌ Dependency analysis failed: {e}"],
+        )
+    finally:
+        builder.close()
+
+
+def cmd_impact(args):
+    """Show transitive impact analysis for a file."""
+    repo_root = find_repo_root()
+    config = Config(repo_root)
+
+    if not config.exists():
+        _exit_with_error(
+            args,
+            error="Agentic Memory is not initialized in this repository.",
+            human_lines=[
+                "❌ Agentic Memory is not initialized in this repository.",
+                "   Run 'codememory init' to get started.",
+            ],
+        )
+
+    neo4j_cfg = config.get_neo4j_config()
+    openai_key = config.get_openai_key()
+    builder = KnowledgeGraphBuilder(
+        uri=neo4j_cfg["uri"],
+        user=neo4j_cfg["user"],
+        password=neo4j_cfg["password"],
+        openai_key=openai_key,
+    )
+
+    try:
+        result = builder.identify_impact(args.path, max_depth=args.max_depth)
+        affected_files = result.get("affected_files", [])
+        total_count = result.get("total_count", len(affected_files))
+
+        if _emit_success(
+            args,
+            data={
+                "path": args.path,
+                "max_depth": args.max_depth,
+                "affected_files": affected_files,
+            },
+            metrics={"total_count": total_count, "max_depth": args.max_depth},
+        ):
+            return
+
+        print(f"## Impact Analysis for `{args.path}`\n")
+        if total_count == 0:
+            print("No files depend on this file. Changes are isolated.")
+            return
+
+        print(f"Total affected files: {total_count}\n")
+        for entry in affected_files:
+            print(f"- {entry.get('path')} (depth={entry.get('depth')})")
+    except Exception as e:
+        _exit_with_error(
+            args,
+            error=f"Impact analysis failed: {e}",
+            human_lines=[f"❌ Impact analysis failed: {e}"],
+        )
     finally:
         builder.close()
 
@@ -470,6 +726,11 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
     status_parser = subparsers.add_parser(
         "status", help="Show repository status and statistics"
     )
+    status_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output",
+    )
 
     # Command: index (one-time full pipeline)
     index_parser = subparsers.add_parser(
@@ -477,6 +738,11 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
     )
     index_parser.add_argument(
         "--quiet", "-q", action="store_true", help="Suppress progress output"
+    )
+    index_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output",
     )
 
     # Command: watch (continuous monitoring)
@@ -511,6 +777,39 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
     search_parser.add_argument(
         "--limit", "-l", type=int, default=5, help="Maximum results to return"
     )
+    search_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output",
+    )
+
+    # Command: deps (file dependency checks)
+    deps_parser = subparsers.add_parser(
+        "deps", help="Show direct dependency relationships for a file"
+    )
+    deps_parser.add_argument("path", help="Relative path to a file in the graph")
+    deps_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output",
+    )
+
+    # Command: impact (transitive dependency impact)
+    impact_parser = subparsers.add_parser(
+        "impact", help="Analyze transitive impact of changing a file"
+    )
+    impact_parser.add_argument("path", help="Relative path to a file in the graph")
+    impact_parser.add_argument(
+        "--max-depth",
+        type=int,
+        default=3,
+        help="Maximum dependency depth to traverse",
+    )
+    impact_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output",
+    )
 
     args = parser.parse_args()
 
@@ -527,6 +826,10 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
         cmd_serve(args)
     elif args.command == "search":
         cmd_search(args)
+    elif args.command == "deps":
+        cmd_deps(args)
+    elif args.command == "impact":
+        cmd_impact(args)
     else:
         parser.print_help()
 

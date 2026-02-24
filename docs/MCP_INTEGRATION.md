@@ -5,6 +5,7 @@ This guide explains how to integrate Agentic Memory with AI clients using the Mo
 ## Table of Contents
 
 - [What is MCP?](#what-is-mcp)
+- [Integration Recommendation Policy (PR7)](#integration-recommendation-policy-pr7)
 - [Starting the MCP Server](#starting-the-mcp-server)
 - [Client Configuration](#client-configuration)
 - [Available Tools](#available-tools)
@@ -27,6 +28,27 @@ The **Model Context Protocol (MCP)** is a standardized protocol for connecting A
 - Structured, LLM-friendly responses
 - Works across multiple AI platforms
 - Secure and controlled
+
+---
+
+## Integration Recommendation Policy (PR7)
+
+Current recommendation policy (as of 2026-02-24):
+
+1. **Default recommendation:** use `mcp_native` integration.
+2. **Optional path:** use the `skill_adapter` workflow when you specifically want shell/script-driven operations.
+3. **Promotion criteria:** promote `skill_adapter` to first-class only after benchmark parity evidence is recorded.
+
+No new benchmark execution results are included in this PR, so the default remains `mcp_native`.
+
+Evaluation references:
+
+- [Evaluation decision memo](evaluation-decision.md)
+- [Benchmark tasks](../evaluation/tasks/benchmark_tasks.json)
+- [Metrics schema](../evaluation/schemas/benchmark_results.schema.json)
+- [Run scaffold script](../evaluation/scripts/create_run_scaffold.py)
+- [Summary script](../evaluation/scripts/summarize_results.py)
+- [Skill-adapter workflow doc](../evaluation/skills/skill-adapter-workflow.md)
 
 ---
 

@@ -1,0 +1,191 @@
+{
+  "version": "2026-02-24",
+  "name": "mcp-vs-skill-adapter-benchmark",
+  "description": "Representative benchmark set for integration parity and recommendation decisions.",
+  "tasks": [
+    {
+      "id": "T01",
+      "title": "Locate Authentication Entry Point",
+      "category": "semantic_search",
+      "prompt": "Find where authentication starts and identify the primary validation flow.",
+      "required_outputs": [
+        "At least one concrete file path",
+        "At least one concrete symbol (function or class)",
+        "Short rationale for why this location is the entry point"
+      ],
+      "max_operator_steps": 6
+    },
+    {
+      "id": "T02",
+      "title": "Find Continuous Ingestion Loop",
+      "category": "semantic_search",
+      "prompt": "Find the implementation that continuously watches for file changes and explain where the loop is managed.",
+      "required_outputs": [
+        "Concrete watcher-related file path",
+        "Method or function that controls loop lifecycle",
+        "One sentence on how loop shutdown works"
+      ],
+      "max_operator_steps": 6
+    },
+    {
+      "id": "T03",
+      "title": "Direct Dependency Lookup",
+      "category": "dependency_graph",
+      "prompt": "Show what `src/codememory/ingestion/graph.py` depends on.",
+      "required_outputs": [
+        "Dependency list for the requested file",
+        "At least one verified import relationship"
+      ],
+      "max_operator_steps": 5
+    },
+    {
+      "id": "T04",
+      "title": "Reverse Dependency Lookup",
+      "category": "dependency_graph",
+      "prompt": "Show which files depend on `src/codememory/ingestion/parser.py`.",
+      "required_outputs": [
+        "Reverse dependency list",
+        "At least one downstream file path"
+      ],
+      "max_operator_steps": 5
+    },
+    {
+      "id": "T05",
+      "title": "Blast Radius for Parser Change",
+      "category": "impact_analysis",
+      "prompt": "Estimate what breaks if `src/codememory/ingestion/parser.py` changes, using depth 2 impact analysis.",
+      "required_outputs": [
+        "Depth-annotated impact output",
+        "Total affected files count"
+      ],
+      "max_operator_steps": 6
+    },
+    {
+      "id": "T06",
+      "title": "Blast Radius for CLI Change",
+      "category": "impact_analysis",
+      "prompt": "Run impact analysis for `src/codememory/cli.py` before a breaking CLI flag rename.",
+      "required_outputs": [
+        "Transitive impact result",
+        "At least one mitigation suggestion"
+      ],
+      "max_operator_steps": 6
+    },
+    {
+      "id": "T07",
+      "title": "Search Then Trace Dependencies",
+      "category": "composed_workflow",
+      "prompt": "Find where Neo4j connection setup is implemented, then trace dependencies for that file.",
+      "required_outputs": [
+        "Semantic search result with file path",
+        "Dependency output for selected file",
+        "Combined explanation tying both together"
+      ],
+      "max_operator_steps": 8
+    },
+    {
+      "id": "T08",
+      "title": "Onboarding Architecture Tour",
+      "category": "composed_workflow",
+      "prompt": "Give a quick architecture tour starting from MCP server entry and mapping to ingestion components.",
+      "required_outputs": [
+        "At least three concrete files in sequence",
+        "One dependency or call relationship between each step"
+      ],
+      "max_operator_steps": 9
+    },
+    {
+      "id": "T09",
+      "title": "Repo Targeting Determinism",
+      "category": "integration_reliability",
+      "prompt": "Demonstrate deterministic repo targeting for server startup so behavior does not depend on shell cwd.",
+      "required_outputs": [
+        "Working launch invocation",
+        "Evidence that explicit repo targeting is used",
+        "Failure mode when repo target is invalid"
+      ],
+      "max_operator_steps": 7
+    },
+    {
+      "id": "T10",
+      "title": "Health Check Under Missing Config",
+      "category": "failure_recovery",
+      "prompt": "Start without a valid local config and recover to a healthy state using documented setup.",
+      "required_outputs": [
+        "Initial error captured",
+        "Recovery steps executed",
+        "Healthy status confirmation"
+      ],
+      "max_operator_steps": 10
+    },
+    {
+      "id": "T11",
+      "title": "Recover From Neo4j Outage",
+      "category": "failure_recovery",
+      "prompt": "Handle a Neo4j connection failure and return to successful query execution.",
+      "required_outputs": [
+        "Connection failure evidence",
+        "Recovery action list",
+        "Successful query after recovery"
+      ],
+      "max_operator_steps": 10
+    },
+    {
+      "id": "T12",
+      "title": "Recover From Missing OpenAI Key",
+      "category": "failure_recovery",
+      "prompt": "Handle missing embedding key conditions and complete a structural query path.",
+      "required_outputs": [
+        "Error or warning visibility",
+        "Fallback path for structural analysis",
+        "Completed response without semantic embedding dependency"
+      ],
+      "max_operator_steps": 9
+    },
+    {
+      "id": "T13",
+      "title": "Large Query Retry Behavior",
+      "category": "reliability",
+      "prompt": "Execute a broad query likely to require retries and report retry behavior and final outcome.",
+      "required_outputs": [
+        "Retry count",
+        "Final success or terminal failure",
+        "Operator-visible error handling quality"
+      ],
+      "max_operator_steps": 8
+    },
+    {
+      "id": "T14",
+      "title": "Index Refresh Then Search",
+      "category": "operational_workflow",
+      "prompt": "Run index refresh and then execute a targeted search to confirm refreshed availability.",
+      "required_outputs": [
+        "Index operation completion evidence",
+        "Follow-up search result from refreshed graph"
+      ],
+      "max_operator_steps": 8
+    },
+    {
+      "id": "T15",
+      "title": "Pre-Refactor Safety Check",
+      "category": "operational_workflow",
+      "prompt": "Before editing server tools, run impact analysis and list top risk files for validation.",
+      "required_outputs": [
+        "Impact output",
+        "Prioritized risk list with file paths"
+      ],
+      "max_operator_steps": 7
+    },
+    {
+      "id": "T16",
+      "title": "Choose Better Edit Point",
+      "category": "decision_support",
+      "prompt": "Compare two possible files for implementing a docs-facing feature and justify the safer edit point.",
+      "required_outputs": [
+        "Two candidate file paths",
+        "Dependency-aware rationale for chosen file"
+      ],
+      "max_operator_steps": 7
+    }
+  ]
+}

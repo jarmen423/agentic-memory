@@ -1,0 +1,270 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-memory.local/evaluation/schemas/benchmark_results.schema.json",
+  "title": "Integration Benchmark Results",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_metadata",
+    "tasks_file",
+    "results",
+    "aggregates"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "run_metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "created_at",
+        "dataset_version",
+        "workflows",
+        "operator",
+        "notes"
+      ],
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "dataset_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workflows": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "mcp_native",
+              "skill_adapter"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "operator": {
+          "type": "string",
+          "minLength": 1
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "tasks_file": {
+      "type": "string",
+      "minLength": 1
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/taskResult"
+      },
+      "minItems": 1
+    },
+    "aggregates": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "enum": [
+          "mcp_native",
+          "skill_adapter"
+        ]
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/workflowAggregate"
+      }
+    },
+    "decision_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "parity_requirements",
+        "recommendation"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "evaluated"
+          ]
+        },
+        "parity_requirements": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "success_rate_delta_max",
+            "latency_increase_ratio_max",
+            "token_cost_increase_ratio_max",
+            "operator_steps_increase_ratio_max"
+          ],
+          "properties": {
+            "success_rate_delta_max": {
+              "type": "number",
+              "minimum": 0
+            },
+            "latency_increase_ratio_max": {
+              "type": "number",
+              "minimum": 1
+            },
+            "token_cost_increase_ratio_max": {
+              "type": "number",
+              "minimum": 1
+            },
+            "operator_steps_increase_ratio_max": {
+              "type": "number",
+              "minimum": 1
+            }
+          }
+        },
+        "recommendation": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "mcp_native_default",
+            "dual_first_class"
+          ]
+        }
+      }
+    }
+  },
+  "$defs": {
+    "taskResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "task_title",
+        "workflow",
+        "status",
+        "success",
+        "latency_ms",
+        "token_cost_usd",
+        "retries",
+        "operator_steps",
+        "notes"
+      ],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workflow": {
+          "type": "string",
+          "enum": [
+            "mcp_native",
+            "skill_adapter"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "completed",
+            "failed",
+            "skipped"
+          ]
+        },
+        "success": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "latency_ms": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "token_cost_usd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "retries": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "operator_steps": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "workflowAggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_count",
+        "completed_count",
+        "success_count",
+        "success_rate",
+        "avg_latency_ms",
+        "avg_token_cost_usd",
+        "avg_retries",
+        "avg_operator_steps"
+      ],
+      "properties": {
+        "task_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "completed_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "success_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "success_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "avg_latency_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "avg_token_cost_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "avg_retries": {
+          "type": "number",
+          "minimum": 0
+        },
+        "avg_operator_steps": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

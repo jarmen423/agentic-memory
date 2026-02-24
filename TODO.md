@@ -221,15 +221,15 @@
   - [x] **Gate:** Security review passes for all setup examples
 
 - [ ] **PR 6: MCP vs Skill Evaluation Harness**
-  - [ ] Define benchmark task set (at least 15 representative tasks)
-  - [ ] Capture metrics: success rate, latency, token cost, retries, operator steps
+  - [x] Define benchmark task set (at least 15 representative tasks)
+  - [x] Capture metrics: success rate, latency, token cost, retries, operator steps
   - [ ] Compare native MCP integration vs skill-adapter workflow
-  - [ ] **Gate:** Decision memo with recommendation and rationale
+  - [x] **Gate:** Decision memo with recommendation and rationale
 
 - [ ] **PR 7: Docs/README Recommendation Update**
   - [ ] If skill adapter meets target metrics, document both as first-class workflows
-  - [ ] If not, keep MCP as recommended default and position skill as optional adapter
-  - [ ] Update README + MCP docs + troubleshooting with final recommendation
+  - [x] If not, keep MCP as recommended default and position skill as optional adapter
+  - [x] Update README + MCP docs + troubleshooting with final recommendation
   - [ ] **Gate:** Fresh-user validation pass on both documented paths
 
 ---

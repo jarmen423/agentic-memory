@@ -118,6 +118,26 @@ codememory search "where is the auth logic?"
 
 ---
 
+## ✅ Integration Recommendation Policy (PR7)
+
+Current recommendation policy is explicit:
+
+1. **Recommended default:** `mcp_native` integration for production reliability.
+2. **Optional path:** `skill_adapter` workflow for shell/script-driven operators.
+3. **Promotion rule:** `skill_adapter` becomes first-class only after parity evidence
+   is captured versus `mcp_native` across success rate, latency, token cost, retries,
+   and operator steps.
+
+Reference docs and evaluation artifacts:
+
+- [docs/evaluation-decision.md](docs/evaluation-decision.md)
+- [evaluation/README.md](evaluation/README.md)
+- [evaluation/tasks/benchmark_tasks.json](evaluation/tasks/benchmark_tasks.json)
+- [evaluation/schemas/benchmark_results.schema.json](evaluation/schemas/benchmark_results.schema.json)
+- [evaluation/skills/skill-adapter-workflow.md](evaluation/skills/skill-adapter-workflow.md)
+
+---
+
 ## 🐳 Docker Setup (Neo4j)
 
 ### Quick Start

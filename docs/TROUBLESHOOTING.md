@@ -10,6 +10,7 @@ Common issues and solutions when using Agentic Memory.
 - [Neo4j Connection Issues](#neo4j-connection-issues)
 - [Indexing Issues](#indexing-issues)
 - [MCP Server Issues](#mcp-server-issues)
+- [Integration Path Policy](#integration-path-policy)
 - [Performance Issues](#performance-issues)
 
 ---
@@ -248,6 +249,28 @@ codememory serve
 
 # Should see: "📂 Using config from: .codememory/config.json"
 ```
+
+---
+
+## Integration Path Policy
+
+### Should I use `mcp_native` or `skill_adapter`?
+
+Use `mcp_native` as the recommended default.
+
+Use `skill_adapter` only when you need script-driven/operator workflow control.
+It remains optional until benchmark parity is demonstrated.
+
+Policy and benchmark references:
+
+- [Integration decision memo](evaluation-decision.md)
+- [Evaluation harness overview](../evaluation/README.md)
+- [Benchmark tasks](../evaluation/tasks/benchmark_tasks.json)
+- [Metrics schema](../evaluation/schemas/benchmark_results.schema.json)
+- [Skill-adapter workflow doc](../evaluation/skills/skill-adapter-workflow.md)
+
+If both workflows eventually meet parity targets, documentation can promote them
+as first-class options. Until then, keep `mcp_native` as default.
 
 ---
 

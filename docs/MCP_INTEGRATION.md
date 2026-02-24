@@ -94,7 +94,7 @@ open ~/Library/Application\ Support/Claude
   "mcpServers": {
     "agentic-memory": {
       "command": "codememory",
-      "args": ["serve"],
+      "args": ["serve", "--repo", "/absolute/path/to/your/project"],
       "env": {
         "NEO4J_URI": "bolt://localhost:7687",
         "NEO4J_USER": "neo4j",
@@ -121,7 +121,7 @@ notepad "%APPDATA%\Claude\claude_desktop_config.json"
   "mcpServers": {
     "agentic-memory": {
       "command": "codememory",
-      "args": ["serve"],
+      "args": ["serve", "--repo", "/absolute/path/to/your/project"],
       "env": {
         "NEO4J_URI": "bolt://localhost:7687",
         "NEO4J_USER": "neo4j",
@@ -140,6 +140,13 @@ notepad "%APPDATA%\Claude\claude_desktop_config.json"
 1. **Config location:** `~/.config/Claude/claude_desktop_config.json`
 
 2. **Edit config** (same as macOS above)
+
+**Version note:** `--repo` requires the release that adds explicit repo targeting to `codememory serve`.
+If your installed version does not support `--repo`, use `cwd` if your client supports it,
+or a wrapper script that runs:
+```bash
+cd /absolute/path/to/your/project && codememory serve
+```
 
 #### Verify Claude Desktop Integration
 
@@ -175,14 +182,24 @@ Cursor is a code-focused AI editor with built-in MCP support.
   "mcpServers": {
     "agentic-memory": {
       "command": "codememory",
-      "args": ["serve", "--port", "8000"],
-      "cwd": "/path/to/your/project"
+      "args": ["serve", "--repo", "/absolute/path/to/your/project", "--port", "8000"]
     }
   }
 }
 ```
 
-**Note:** The `cwd` (current working directory) is important - it tells Cursor where to find `.codememory/config.json`.
+**Fallback for older versions:** if `--repo` is unavailable in your installed `codememory`, use:
+```json
+{
+  "mcpServers": {
+    "agentic-memory": {
+      "command": "codememory",
+      "args": ["serve", "--port", "8000"],
+      "cwd": "/absolute/path/to/your/project"
+    }
+  }
+}
+```
 
 #### Usage in Cursor
 
@@ -230,7 +247,7 @@ Windsurf is another AI-powered IDE with MCP support.
   "servers": {
     "agentic-memory": {
       "command": "codememory",
-      "args": ["serve"],
+      "args": ["serve", "--repo", "/absolute/path/to/your/project"],
       "env": {
         "NEO4J_URI": "bolt://localhost:7687"
       }
@@ -760,7 +777,19 @@ Warning: No local config found, using environment variables
 ls -la .codememory/config.json
 ```
 
-2. **Set `cwd` in Cursor config:**
+2. **Preferred: set explicit repo in args (newer versions):**
+```json
+{
+  "mcpServers": {
+    "agentic-memory": {
+      "command": "codememory",
+      "args": ["serve", "--repo", "/absolute/path/to/your/project"]
+    }
+  }
+}
+```
+
+3. **Fallback for older versions: set `cwd` in client config:**
 ```json
 {
   "mcpServers": {
@@ -773,7 +802,7 @@ ls -la .codememory/config.json
 }
 ```
 
-3. **Or use environment variables:**
+4. **Or use environment variables:**
 ```json
 {
   "mcpServers": {

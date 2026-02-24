@@ -215,7 +215,7 @@ pytest
   "mcpServers": {
     "agentic-memory": {
       "command": "codememory",
-      "args": ["serve"]
+      "args": ["serve", "--repo", "/absolute/path/to/your/project"]
     }
   }
 }
@@ -228,7 +228,7 @@ pytest
   "mcpServers": {
     "agentic-memory": {
       "command": "codememory",
-      "args": ["serve", "--port", "8000"]
+      "args": ["serve", "--repo", "/absolute/path/to/your/project", "--port", "8000"]
     }
   }
 }
@@ -237,6 +237,10 @@ pytest
 ### Windsurf
 
 Add to your MCP configuration file.
+
+> Note: `--repo` requires the upcoming release that adds explicit repo targeting for `serve`.
+> If your installed version does not support `--repo`, use your client's `cwd` setting
+> (if supported) or launch via a wrapper script that runs `cd /absolute/path/to/project && codememory serve`.
 
 ---
 

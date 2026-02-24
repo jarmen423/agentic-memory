@@ -9,6 +9,10 @@ import os
 import hashlib
 import logging
 import time
+import fnmatch
+import math
+import posixpath
+import re
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Set
 from functools import wraps
@@ -128,6 +132,7 @@ class KnowledgeGraphBuilder:
         repo_root: Optional[Path] = None,
         ignore_dirs: Optional[Set[str]] = None,
         ignore_files: Optional[Set[str]] = None,
+        ignore_patterns: Optional[Set[str]] = None,
     ):
         """
         Initialize the KnowledgeGraphBuilder.
@@ -140,6 +145,7 @@ class KnowledgeGraphBuilder:
             repo_root: Root path of repository to index (optional, can be set per-method)
             ignore_dirs: Set of directory names to ignore during indexing
             ignore_files: Set of file patterns to ignore during indexing
+            ignore_patterns: Set of .graphignore-style path/file patterns to skip
         """
         # Configure connection pool for better performance
         self.driver = neo4j.GraphDatabase.driver(
@@ -178,6 +184,67 @@ class KnowledgeGraphBuilder:
             "obj",
         }
         self.ignore_files = ignore_files or set()
+        self.ignore_patterns = ignore_patterns or set()
+
+    def _should_ignore_dir(self, dir_name: str) -> bool:
+        """Return True when a directory should be excluded from scanning."""
+        if any(fnmatch.fnmatch(dir_name, pattern) for pattern in self.ignore_dirs):
+            return True
+        # Catch common virtualenv naming patterns like .venv-foo / venv-test.
+        return dir_name.startswith(".venv") or dir_name.startswith("venv")
+
+    def _should_ignore_path(self, rel_path: str) -> bool:
+        """Return True when a relative path matches .graphignore patterns."""
+        if not self.ignore_patterns:
+            return False
+
+        normalized = rel_path.replace("\\", "/")
+        basename = Path(normalized).name
+        for pattern in self.ignore_patterns:
+            p = pattern.strip().replace("\\", "/")
+            if not p:
+                continue
+            if p.endswith("/"):
+                prefix = p.rstrip("/")
+                if normalized == prefix or normalized.startswith(prefix + "/"):
+                    return True
+            if "/" in p:
+                if fnmatch.fnmatch(normalized, p):
+                    return True
+            else:
+                if fnmatch.fnmatch(basename, p):
+                    return True
+        return False
+
+    def _should_prune_file(
+        self, rel_path: str, repo_path: Path, supported_extensions: Set[str]
+    ) -> bool:
+        """Return True if an existing File node should be removed from the graph."""
+        normalized = rel_path.replace("\\", "/")
+        rel_obj = Path(normalized)
+
+        if rel_obj.name in self.ignore_files:
+            return True
+        if rel_obj.suffix not in supported_extensions:
+            return True
+        if any(self._should_ignore_dir(part) for part in rel_obj.parts[:-1]):
+            return True
+        if self._should_ignore_path(normalized):
+            return True
+
+        return not (repo_path / rel_obj).exists()
+
+    def _delete_file_subgraph(self, session: neo4j.Session, rel_path: str):
+        """Delete one File node and all derived entities/chunks."""
+        session.run(
+            """
+            MATCH (f:File {path: $path})-[:DEFINES]->(entity)
+            OPTIONAL MATCH (chunk:Chunk)-[:DESCRIBES]->(entity)
+            DETACH DELETE chunk, entity
+            """,
+            path=rel_path,
+        )
+        session.run("MATCH (f:File {path: $path}) DETACH DELETE f", path=rel_path)
 
     def _init_parsers(self) -> Dict[str, Parser]:
         """Initializes Tree-sitter parsers for Python and JS/TS."""
@@ -320,10 +387,11 @@ class KnowledgeGraphBuilder:
         logger.info("📂 [Pass 1] Scanning Directory Structure...")
 
         count = 0
+        pruned_count = 0
         with self.driver.session() as session:
             for root, dirs, files in os.walk(repo_path):
                 # Filter directories
-                dirs[:] = [d for d in dirs if d not in self.ignore_dirs]
+                dirs[:] = [d for d in dirs if not self._should_ignore_dir(d)]
 
                 for file_name in files:
                     if file_name in self.ignore_files:
@@ -333,6 +401,8 @@ class KnowledgeGraphBuilder:
                         continue
 
                     rel_path = str(file_path.relative_to(repo_path))
+                    if self._should_ignore_path(rel_path):
+                        continue
                     current_ohash = self._calculate_ohash(file_path)
 
                     # Check if file exists and hash matches (Change Detection)
@@ -358,7 +428,19 @@ class KnowledgeGraphBuilder:
                     )
                     count += 1
 
+            # Prune File nodes that are no longer indexable under current rules.
+            existing_paths = [
+                record["path"]
+                for record in session.run("MATCH (f:File) RETURN f.path as path")
+            ]
+            for rel_path in existing_paths:
+                if self._should_prune_file(rel_path, repo_path, supported_extensions):
+                    self._delete_file_subgraph(session, rel_path)
+                    pruned_count += 1
+
         logger.info(f"✅ [Pass 1] Processed {count} new/modified files.")
+        if pruned_count:
+            logger.info(f"🧹 [Pass 1] Pruned {pruned_count} excluded/stale files from graph.")
 
     # =========================================================================
     # PASS 2: ENTITY DEFINITION & HYBRID CHUNKING
@@ -574,10 +656,129 @@ class KnowledgeGraphBuilder:
     # PASS 3: IMPORT RESOLUTION
     # =========================================================================
 
+    def _extract_python_import_modules(self, code: str) -> Set[str]:
+        """Extract Python import module names from source text."""
+        parser = self.parsers.get(".py")
+        if not parser:
+            return set()
+
+        query_scm = """
+        (import_statement name: (dotted_name) @module)
+        (import_from_statement module_name: (dotted_name) @module)
+        """
+        modules: Set[str] = set()
+
+        try:
+            tree = parser.parse(bytes(code, "utf8"))
+            lang = Language(tree_sitter_python.language())
+            query = Query(lang, query_scm)
+            cursor = QueryCursor(query)
+            captures = cursor.captures(tree.root_node)
+
+            for node in captures.get("module", []):
+                module_name = code[node.start_byte:node.end_byte].strip()
+                if module_name:
+                    modules.add(module_name)
+        except (RuntimeError, AttributeError, ValueError) as e:
+            logger.warning(f"⚠️ Failed to parse Python imports: {e}")
+
+        return modules
+
+    def _extract_js_ts_import_modules(self, code: str) -> Set[str]:
+        """Extract JS/TS/TSX module specifiers from source text using regex heuristics."""
+        patterns = [
+            # import x from "mod" / import {x} from "mod" / import type {x} from "mod"
+            r'^\s*import\s+(?:type\s+)?(?:[\w*\s{},$]+\s+from\s+)?["\']([^"\']+)["\']',
+            # export {x} from "mod" / export * from "mod"
+            r'^\s*export\s+(?:type\s+)?(?:\*|\{[^}]*\})\s+from\s+["\']([^"\']+)["\']',
+            # const x = require("mod")
+            r'require\(\s*["\']([^"\']+)["\']\s*\)',
+            # import("mod")
+            r'import\(\s*["\']([^"\']+)["\']\s*\)',
+        ]
+
+        modules: Set[str] = set()
+        for pattern in patterns:
+            for match in re.finditer(pattern, code, flags=re.MULTILINE):
+                module_name = match.group(1).strip()
+                if module_name:
+                    modules.add(module_name)
+        return modules
+
+    def _normalize_js_ts_specifier(self, module_name: str) -> str:
+        """Normalize JS/TS module specifier for matching against File.path."""
+        spec = module_name.strip().strip("'\"")
+        spec = spec.split("?", 1)[0].split("#", 1)[0]
+        if spec.startswith("@/"):
+            return spec[2:]
+        if spec.startswith("~/"):
+            return spec[2:]
+        if spec.startswith("/"):
+            return spec[1:]
+        return spec
+
+    def _resolve_import_candidates(
+        self, source_rel_path: str, module_name: str, source_ext: str
+    ) -> Set[str]:
+        """
+        Return candidate file paths for a module specifier.
+
+        For Python imports, converts dotted names to module paths.
+        For JS/TS imports, resolves relative specifiers and common extension/index variants.
+        """
+        candidates: Set[str] = set()
+
+        if source_ext == ".py":
+            normalized = module_name.strip().replace(".", "/")
+            if not normalized:
+                return candidates
+            candidates.add(normalized)
+            candidates.add(f"{normalized}.py")
+            candidates.add(f"{normalized}/__init__.py")
+            return candidates
+
+        spec = self._normalize_js_ts_specifier(module_name)
+        if not spec:
+            return candidates
+
+        source_dir = posixpath.dirname(source_rel_path)
+        if spec.startswith("."):
+            base = posixpath.normpath(posixpath.join(source_dir, spec))
+        else:
+            base = posixpath.normpath(spec)
+
+        # Avoid escaping repo root for relative imports.
+        if base.startswith("../"):
+            return candidates
+
+        js_ts_exts = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]
+        _, ext = os.path.splitext(base)
+
+        if ext:
+            candidates.add(base)
+        else:
+            candidates.add(base)
+            for candidate_ext in js_ts_exts:
+                candidates.add(f"{base}{candidate_ext}")
+                candidates.add(f"{base}/index{candidate_ext}")
+
+        return candidates
+
+    def _module_to_fuzzy_part(self, module_name: str, source_ext: str) -> str:
+        """Return a fuzzy module path fragment for fallback import linking."""
+        if source_ext == ".py":
+            return module_name.replace(".", "/").strip()
+
+        spec = self._normalize_js_ts_specifier(module_name)
+        if spec.startswith("."):
+            # For relative JS/TS imports, fallback matching is less useful than exact candidates.
+            return ""
+        return spec
+
     def pass_3_imports(self, repo_path: Optional[Path] = None):
         """
         Analyzes import statements to link File nodes.
-        Simplified for Python: Looks for 'import x' or 'from x import y'.
+        Supports Python and JS/TS import patterns.
 
         Args:
             repo_path: Path to repository root (defaults to self.repo_root)
@@ -587,18 +788,17 @@ class KnowledgeGraphBuilder:
             raise ValueError("repo_path must be provided either in __init__ or as parameter")
 
         logger.info("🕸️ [Pass 3] Linking Files via Imports...")
-
-        query_scm = """
-        (import_statement name: (dotted_name) @module)
-        (import_from_statement module_name: (dotted_name) @module)
-        """
+        supported_exts = {".py", ".js", ".jsx", ".ts", ".tsx"}
 
         with self.driver.session() as session:
             result = session.run("MATCH (f:File) RETURN f.path as path")
-            files = [r["path"] for r in result if r["path"].endswith(".py")]
+            all_paths = [r["path"] for r in result]
+            path_set = set(all_paths)
+            files = [path for path in all_paths if Path(path).suffix in supported_exts]
 
             for rel_path in files:
                 full_path = repo_path / rel_path
+                source_ext = full_path.suffix
 
                 if not full_path.exists():
                     logger.warning(
@@ -608,31 +808,56 @@ class KnowledgeGraphBuilder:
                     continue
 
                 code = full_path.read_text(errors="ignore")
-                tree = self.parsers[".py"].parse(bytes(code, "utf8"))
+                if source_ext == ".py":
+                    modules = self._extract_python_import_modules(code)
+                else:
+                    modules = self._extract_js_ts_import_modules(code)
 
-                # Initialize QueryCursor with the query object
-                lang = Language(tree_sitter_python.language())
-                query = Query(lang, query_scm)
-                cursor = QueryCursor(query)
-                captures = cursor.captures(tree.root_node)
+                # Rebuild imports for this source file to avoid stale edges.
+                session.run(
+                    """
+                    MATCH (source:File {path: $src})-[r:IMPORTS]->()
+                    DELETE r
+                    """,
+                    src=rel_path,
+                )
 
-                for tag, nodes in captures.items():
-                    for node in nodes:
-                        module_name = code[node.start_byte:node.end_byte]
-                        # Simple heuristic: convert 'command_service.app' -> 'command_service/app.py'
-                        potential_path_part = module_name.replace(".", "/")
+                exact_targets: Set[str] = set()
+                fuzzy_parts: Set[str] = set()
+                for module_name in modules:
+                    candidates = self._resolve_import_candidates(rel_path, module_name, source_ext)
+                    matched = {candidate for candidate in candidates if candidate in path_set}
+                    if matched:
+                        exact_targets.update(matched)
+                        continue
 
-                        # Create fuzzy link
-                        session.run(
-                            """
-                            MATCH (source:File {path: $src})
-                            MATCH (target:File)
-                            WHERE target.path CONTAINS $mod_part
-                            MERGE (source)-[:IMPORTS]->(target)
+                    fuzzy_part = self._module_to_fuzzy_part(module_name, source_ext)
+                    if fuzzy_part:
+                        fuzzy_parts.add(fuzzy_part)
+
+                if exact_targets:
+                    session.run(
+                        """
+                        MATCH (source:File {path: $src})
+                        UNWIND $targets as target_path
+                        MATCH (target:File {path: target_path})
+                        MERGE (source)-[:IMPORTS]->(target)
                         """,
-                            src=rel_path,
-                            mod_part=potential_path_part,
-                        )
+                        src=rel_path,
+                        targets=sorted(exact_targets),
+                    )
+
+                for mod_part in sorted(fuzzy_parts):
+                    session.run(
+                        """
+                        MATCH (source:File {path: $src})
+                        MATCH (target:File)
+                        WHERE target.path CONTAINS $mod_part
+                        MERGE (source)-[:IMPORTS]->(target)
+                        """,
+                        src=rel_path,
+                        mod_part=mod_part,
+                    )
 
             logger.info("✅ [Pass 3] Import graph built.")
 
@@ -723,12 +948,17 @@ class KnowledgeGraphBuilder:
     # FULL PIPELINE
     # =========================================================================
 
-    def run_pipeline(self, repo_path: Optional[Path] = None) -> Dict:
+    def run_pipeline(
+        self,
+        repo_path: Optional[Path] = None,
+        supported_extensions: Optional[Set[str]] = None,
+    ) -> Dict:
         """
         Executes the full 4-pass pipeline with cost tracking.
 
         Args:
             repo_path: Path to repository root (defaults to self.repo_root)
+            supported_extensions: Set of file extensions to process in Pass 1
 
         Returns:
             Dict with pipeline execution metrics
@@ -743,7 +973,7 @@ class KnowledgeGraphBuilder:
         print("=" * 60)
 
         self.setup_database()
-        self.pass_1_structure_scan(repo_path)
+        self.pass_1_structure_scan(repo_path, supported_extensions=supported_extensions)
         self.pass_2_entity_definition(repo_path)
         self.pass_3_imports(repo_path)
         self.pass_4_call_graph(repo_path)
@@ -785,8 +1015,42 @@ class KnowledgeGraphBuilder:
         Returns:
             List of dicts with name, signature, score, and text
         """
+        def _is_valid_vector(vec: List[float]) -> bool:
+            if not vec:
+                return False
+            norm_sq = 0.0
+            for v in vec:
+                if not isinstance(v, (int, float)) or not math.isfinite(v):
+                    return False
+                norm_sq += float(v) * float(v)
+            return math.isfinite(norm_sq) and norm_sq > 0.0
+
+        def _fallback_fulltext_search() -> List[Dict]:
+            cypher = """
+            CALL db.index.fulltext.queryNodes('entity_text_search', $query)
+            YIELD node, score
+            OPTIONAL MATCH (ch:Chunk)-[:DESCRIBES]->(node)
+            RETURN
+                coalesce(node.name, node.path, 'Unknown') as name,
+                coalesce(node.signature, node.qualified_name, '') as sig,
+                score,
+                coalesce(ch.text, node.docstring, node.path, '') as text
+            ORDER BY score DESC
+            LIMIT $limit
+            """
+            with self.driver.session() as session:
+                res = session.run(cypher, query=query, limit=limit)
+                return [dict(r) for r in res]
+
         def _execute_search():
             vector = self.get_embedding(query)
+            if not _is_valid_vector(vector):
+                logger.warning(
+                    "Semantic query vector invalid (likely missing OpenAI key or zero-vector); "
+                    "falling back to full-text search."
+                )
+                return _fallback_fulltext_search()
+
             cypher = """
             CALL db.index.vector.queryNodes('code_embeddings', $limit, $vec)
             YIELD node, score

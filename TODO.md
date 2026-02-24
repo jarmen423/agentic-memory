@@ -6,6 +6,20 @@
 
 ---
 
+## Next Session Reminder
+
+- [ ] Publish updated release before further validation:
+  - [ ] Bump version
+  - [ ] Build + upload to TestPyPI
+  - [ ] Install that version on test machine and verify `codememory --help` reflects latest flags/fixes
+
+- [ ] Re-test on the other machine after installing the new TestPyPI build:
+  - [ ] Run `codememory index` on `radiology-ai-video-v2`
+  - [ ] Verify `get_file_dependencies("frontend/src/components/XRayIngestion.tsx")` now returns TS/TSX imports
+  - [ ] Capture before/after output and add to validation notes/docs
+
+---
+
 ## ✅ Completed (2025-02-09)
 
 ### Critical (Blocking Release)
@@ -121,6 +135,105 @@
 
 ---
 
+### 4.1 Skill-as-Adapter Workflow (MCP + Skill Option)
+
+**Goal:** Provide two supported integration paths:
+1) Native MCP client integration (recommended default for reliability)
+2) Skill adapter that can operate via shell/scripts for users who prefer workflow-level control
+
+#### Implementation Plan
+
+- [ ] **Phase 1: Define scope and UX**
+  - [ ] Define supported adapter operations: `status`, `index`, `search`, `deps`, `impact`, `serve`, `health`
+  - [ ] Define expected output contract for each operation (human + machine-readable modes)
+  - [ ] Define failure-handling rules (missing config, bad Neo4j auth, missing OpenAI key)
+
+- [ ] **Phase 2: Add stable CLI machine output**
+  - [ ] Add `--json` output mode to `codememory` commands used by the skill adapter
+  - [ ] Ensure non-zero exit codes for all hard failures
+  - [ ] Ensure output truncation/sanitization for very large responses
+  - [ ] Add deterministic fields for parser-friendly responses (`ok`, `error`, `metrics`, `data`)
+
+- [ ] **Phase 3: Build adapter skill**
+  - [ ] Create `SKILL.md` for adapter workflow with decision tree:
+    - [ ] Use local CLI command for quick checks
+    - [ ] Use `codememory serve` + MCP tools for multi-step analysis
+  - [ ] Add helper scripts for portable command execution and error normalization
+  - [ ] Add examples for common workflows (refactor analysis, dependency tracing, impact checks)
+
+- [ ] **Phase 4: Security and config hygiene**
+  - [ ] Document secret handling: never hardcode API keys in MCP JSON
+  - [ ] Support `.env` and shell env loading patterns in skill guidance
+  - [ ] Document explicit repo targeting strategy (`--repo` or wrapper `cd`) to avoid implicit cwd issues
+
+- [ ] **Phase 5: Evaluation and recommendation policy**
+  - [ ] Run side-by-side evaluation: native MCP vs skill adapter on same tasks
+  - [ ] Track: success rate, latency, token usage, failure recovery, operator complexity
+  - [ ] Define promotion criteria for docs recommendation:
+    - [ ] If skill adapter is equal/better for reliability and UX, document both as first-class
+    - [ ] If skill adapter is weaker, keep MCP as recommended default and frame skill as optional workflow layer
+
+#### Acceptance Criteria
+
+- [ ] A user can complete end-to-end retrieval workflows using only the adapter skill
+- [ ] No secrets are required in MCP JSON for recommended setup
+- [ ] Adapter outputs are deterministic enough for agent parsing/retries
+- [ ] Documentation clearly explains when to choose MCP-native vs skill-adapter integration
+
+#### Execution Checklist (PR Order)
+
+- [ ] **PR 1: CLI JSON Contract Foundation**
+  - [ ] Add `--json` to `status`, `search`, `index`, and dependency/impact command surfaces
+  - [ ] Standardize JSON envelope: `ok`, `error`, `data`, `metrics`
+  - [ ] Ensure all hard failures return non-zero exit code
+  - [ ] Add regression tests for JSON schema shape and failure paths
+  - [ ] **Gate:** Agent can parse command output without brittle string matching
+
+- [ ] **PR 2: Explicit Repo Targeting**
+  - [ ] Add `--repo /abs/path` (or `--config /abs/path/.codememory/config.json`) to relevant commands
+  - [ ] Ensure `serve` can run deterministically without host `cwd` assumptions
+  - [ ] Bake wrapper behavior into CLI so users can keep MCP config as `command: "codememory"` + args only
+  - [ ] Add `--env-file` support (default to `<repo>/.env` when `--repo` is provided) for deterministic key loading
+  - [ ] Add `CODEMEMORY_REPO` / `CODEMEMORY_ENV_FILE` environment fallbacks for host apps with limited config fields
+  - [ ] Add tests for path resolution and missing/invalid repo handling
+  - [ ] Add tests proving `OPENAI_API_KEY` is loaded from repo-root `.env` in `serve` mode when explicitly targeted
+  - [ ] Publish a new TestPyPI version after merge (current versions do not support `--repo`)
+  - [ ] Promote same build to PyPI after smoke-testing MCP client launch with `--repo`
+  - [ ] **Gate:** Same command works from any current directory
+
+- [ ] **PR 3: Skill Adapter Skeleton**
+  - [ ] Create skill directory with `SKILL.md`
+  - [ ] Implement workflow decision tree (quick query vs deep analysis path)
+  - [ ] Add minimal helper scripts for normalized command execution
+  - [ ] Include retries/timeouts and user-facing failure recovery guidance
+  - [ ] **Gate:** Manual end-to-end run succeeds using only skill instructions
+
+- [ ] **PR 4: Workflow Coverage Expansion**
+  - [ ] Add workflows: `index + prune`, `search + deps`, `impact before refactor`, `health checks`
+  - [ ] Add copy-paste snippets for Linux/macOS/WSL
+  - [ ] Add troubleshooting matrix (Neo4j down, bad auth, missing key, stale graph)
+  - [ ] **Gate:** 80%+ of common operator tasks covered by documented skill flows
+
+- [ ] **PR 5: Security/Secrets Hardening**
+  - [ ] Ensure examples never place secrets directly in MCP JSON by default
+  - [ ] Document `.env` + shell-env + keychain patterns
+  - [ ] Add redaction guidance for logs and screenshots
+  - [ ] **Gate:** Security review passes for all setup examples
+
+- [ ] **PR 6: MCP vs Skill Evaluation Harness**
+  - [ ] Define benchmark task set (at least 15 representative tasks)
+  - [ ] Capture metrics: success rate, latency, token cost, retries, operator steps
+  - [ ] Compare native MCP integration vs skill-adapter workflow
+  - [ ] **Gate:** Decision memo with recommendation and rationale
+
+- [ ] **PR 7: Docs/README Recommendation Update**
+  - [ ] If skill adapter meets target metrics, document both as first-class workflows
+  - [ ] If not, keep MCP as recommended default and position skill as optional adapter
+  - [ ] Update README + MCP docs + troubleshooting with final recommendation
+  - [ ] **Gate:** Fresh-user validation pass on both documented paths
+
+---
+
 ### 5. Additional Language Support
 
 Current: Python, JavaScript, TypeScript
@@ -151,6 +264,9 @@ Current: Python, JavaScript, TypeScript
 - [ ] Add caching layer for frequently accessed queries
 - [ ] Optimize Cypher queries (EXPLAIN/ANALYZE and profile)
 - [ ] Add configurable embedding model (small/large tradeoff)
+- [ ] Add pluggable embedding provider interface (OpenAI, local models, hosted alternatives)
+- [ ] Add provider-specific configuration docs and env vars
+- [ ] Add parity tests across providers (dimension handling, fallback behavior, cost/latency tracking)
 - [ ] Benchmark and document expected performance
 
 ---

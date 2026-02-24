@@ -31,10 +31,29 @@ class CodeChangeHandler(FileSystemEventHandler):
     4. Updates import relationships
     """
 
-    def __init__(self, builder: KnowledgeGraphBuilder, repo_root: Path):
+    def __init__(
+        self,
+        builder: KnowledgeGraphBuilder,
+        repo_root: Path,
+        supported_extensions: Optional[Set[str]] = None,
+    ):
         self.builder = builder
         self.repo_root = repo_root
         self._debounce_cache: dict[str, float] = {}
+        self.supported_extensions = supported_extensions or {".py", ".js", ".ts", ".tsx", ".jsx"}
+
+    def _is_ignored_path(self, path: Path) -> bool:
+        """Check if any parent directory in this path should be ignored."""
+        try:
+            rel_path = path.relative_to(self.repo_root)
+            dir_parts = rel_path.parts[:-1]
+        except ValueError:
+            dir_parts = path.parts[:-1]
+            rel_path = path
+        rel_path_str = str(rel_path).replace("\\", "/")
+        if self.builder._should_ignore_path(rel_path_str):
+            return True
+        return any(self.builder._should_ignore_dir(part) for part in dir_parts)
 
     def on_modified(self, event):
         """Handle file modification events."""
@@ -44,7 +63,9 @@ class CodeChangeHandler(FileSystemEventHandler):
         path = Path(event.src_path)
 
         # Check file extension
-        if path.suffix not in {".py", ".js", ".ts", ".tsx", ".jsx"}:
+        if path.suffix not in self.supported_extensions:
+            return
+        if self._is_ignored_path(path):
             return
 
         # Simple debounce (ignore events within 1 second of last event for this file)
@@ -75,7 +96,9 @@ class CodeChangeHandler(FileSystemEventHandler):
             return
 
         path = Path(event.src_path)
-        if path.suffix not in {".py", ".js", ".ts", ".tsx", ".jsx"}:
+        if path.suffix not in self.supported_extensions:
+            return
+        if self._is_ignored_path(path):
             return
 
         try:
@@ -94,7 +117,9 @@ class CodeChangeHandler(FileSystemEventHandler):
             return
 
         path = Path(event.src_path)
-        if path.suffix not in {".py", ".js", ".ts", ".tsx", ".jsx"}:
+        if path.suffix not in self.supported_extensions:
+            return
+        if self._is_ignored_path(path):
             return
 
         try:
@@ -300,6 +325,11 @@ def start_continuous_watch(
     neo4j_uri: str,
     neo4j_user: str,
     neo4j_password: str,
+    openai_key: Optional[str] = None,
+    ignore_dirs: Optional[Set[str]] = None,
+    ignore_files: Optional[Set[str]] = None,
+    ignore_patterns: Optional[Set[str]] = None,
+    supported_extensions: Optional[Set[str]] = None,
     initial_scan: bool = True,
 ):
     """
@@ -310,6 +340,11 @@ def start_continuous_watch(
         neo4j_uri: Neo4j connection URI
         neo4j_user: Neo4j username
         neo4j_password: Neo4j password
+        openai_key: OpenAI key used for embeddings
+        ignore_dirs: Directory names/patterns to ignore
+        ignore_files: File names/patterns to ignore
+        ignore_patterns: .graphignore-style patterns to ignore
+        supported_extensions: File extensions to process
         initial_scan: Whether to run full pipeline before watching (default: True)
     """
     # Init Builder
@@ -317,8 +352,11 @@ def start_continuous_watch(
         uri=neo4j_uri,
         user=neo4j_user,
         password=neo4j_password,
-        openai_key=os.getenv("OPENAI_API_KEY"),
+        openai_key=openai_key,
         repo_root=repo_path,
+        ignore_dirs=ignore_dirs,
+        ignore_files=ignore_files,
+        ignore_patterns=ignore_patterns,
     )
 
     # Run initial setup
@@ -327,11 +365,15 @@ def start_continuous_watch(
 
     if initial_scan:
         logger.info("🚀 Running initial full pipeline...")
-        builder.run_pipeline(repo_path)
+        builder.run_pipeline(repo_path, supported_extensions=supported_extensions)
         logger.info("✅ Initial scan complete. Watching for changes...")
 
     # Start Watcher
-    event_handler = CodeChangeHandler(builder, repo_path)
+    event_handler = CodeChangeHandler(
+        builder,
+        repo_root=repo_path,
+        supported_extensions=supported_extensions,
+    )
     observer = Observer()
     observer.schedule(event_handler, str(repo_path), recursive=True)
     observer.start()

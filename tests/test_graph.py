@@ -71,6 +71,36 @@ class TestKnowledgeGraphBuilder:
         builder.close()
         builder.driver.close.assert_called_once()
 
+    def test_extract_js_ts_import_modules(self, builder):
+        """Test JS/TS import extraction supports common import syntaxes."""
+        code = """
+import React from "react";
+import type { FC } from "react";
+import { api } from "../lib/api";
+import "@/styles/global.css";
+export { helper } from "./helpers";
+const fs = require("fs");
+const lazy = import("./lazy-module");
+"""
+        modules = builder._extract_js_ts_import_modules(code)
+
+        assert "../lib/api" in modules
+        assert "@/styles/global.css" in modules
+        assert "./helpers" in modules
+        assert "fs" in modules
+        assert "./lazy-module" in modules
+
+    def test_resolve_import_candidates_for_relative_tsx(self, builder):
+        """Test relative TS/TSX imports resolve to extension/index variants."""
+        candidates = builder._resolve_import_candidates(
+            "frontend/src/components/Widget.tsx",
+            "../services/heygen_service",
+            ".tsx",
+        )
+        assert "frontend/src/services/heygen_service.ts" in candidates
+        assert "frontend/src/services/heygen_service.tsx" in candidates
+        assert "frontend/src/services/heygen_service/index.ts" in candidates
+
 
 class TestCypherQueries:
     """Test Cypher query generation and execution."""

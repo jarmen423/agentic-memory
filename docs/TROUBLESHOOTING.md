@@ -215,11 +215,14 @@ codememory serve --port 8001
      "mcpServers": {
        "agentic-memory": {
          "command": "codememory",
-         "args": ["serve"]
+         "args": ["serve", "--repo", "/absolute/path/to/your/project"]
        }
      }
    }
    ```
+
+   If `--repo` is not recognized, update to a release that includes explicit repo targeting,
+   or temporarily run from repo root / use client `cwd`.
 
    Make sure `codememory` is in your PATH.
 

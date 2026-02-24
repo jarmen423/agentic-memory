@@ -53,6 +53,7 @@ class Config:
         self.repo_root = repo_root
         self.config_dir = repo_root / ".codememory"
         self.config_file = self.config_dir / "config.json"
+        self.graphignore_file = self.config_dir / ".graphignore"
 
     def exists(self) -> bool:
         """Check if config exists for this repo."""
@@ -81,6 +82,47 @@ class Config:
 
         with open(self.config_file, "w") as f:
             json.dump(config, f, indent=2)
+
+    def ensure_graphignore(self, ignore_dirs: Optional[list[str]] = None) -> None:
+        """Create .graphignore with sensible defaults if it does not exist."""
+        if self.graphignore_file.exists():
+            return
+
+        ignore_dirs = ignore_dirs or self.load().get("indexing", {}).get("ignore_dirs", [])
+        lines = [
+            "# Patterns to exclude from codememory indexing",
+            "# Supports simple glob-style patterns.",
+            "# Examples: .venv*/, node_modules/, *.min.js",
+            "",
+        ]
+        for d in ignore_dirs:
+            # Directory-style ignore
+            lines.append(f"{d}/")
+        lines.extend(
+            [
+                ".venv*/",
+                "venv*/",
+                "__pypackages__/",
+                ".env",
+                ".env.*",
+                "*.env",
+            ]
+        )
+        with open(self.graphignore_file, "w") as f:
+            f.write("\n".join(lines).rstrip() + "\n")
+
+    def get_graphignore_patterns(self) -> list[str]:
+        """Load non-empty, non-comment patterns from .graphignore."""
+        if not self.graphignore_file.exists():
+            return []
+        patterns: list[str] = []
+        with open(self.graphignore_file, "r") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                patterns.append(line)
+        return patterns
 
     def _merge_defaults(self, config: Dict[str, Any]) -> Dict[str, Any]:
         """Merge user config with defaults."""

@@ -145,8 +145,10 @@ def cmd_init(args):
     }
 
     config.save(final_config)
+    config.ensure_graphignore(indexing_config.get("ignore_dirs", []))
 
     print(f"✅ Configuration saved to: {config.config_file}")
+    print(f"✅ Ignore patterns saved to: {config.graphignore_file}")
 
     # ============================================================
     # Step 5: Test Connection & Initial Index
@@ -160,6 +162,11 @@ def cmd_init(args):
         try:
             neo4j_cfg = config.get_neo4j_config()
             openai_key = config.get_openai_key()
+            indexing_cfg = config.get_indexing_config()
+            ignore_dirs = set(indexing_cfg.get("ignore_dirs", []))
+            ignore_files = set(indexing_cfg.get("ignore_files", []))
+            extensions = set(indexing_cfg.get("extensions", []))
+            graphignore_patterns = set(config.get_graphignore_patterns())
 
             print("\n🔍 Testing Neo4j connection...")
             builder = KnowledgeGraphBuilder(
@@ -168,6 +175,9 @@ def cmd_init(args):
                 password=neo4j_cfg["password"],
                 openai_key=openai_key,
                 repo_root=repo_root,
+                ignore_dirs=ignore_dirs,
+                ignore_files=ignore_files,
+                ignore_patterns=graphignore_patterns,
             )
 
             # Test connection
@@ -183,9 +193,12 @@ def cmd_init(args):
                 password=neo4j_cfg["password"],
                 openai_key=openai_key,
                 repo_root=repo_root,
+                ignore_dirs=ignore_dirs,
+                ignore_files=ignore_files,
+                ignore_patterns=graphignore_patterns,
             )
 
-            metrics = builder.run_pipeline(repo_root)
+            metrics = builder.run_pipeline(repo_root, supported_extensions=extensions)
             builder.close()
 
             print(f"\n✅ Indexing complete!")
@@ -284,6 +297,11 @@ def cmd_index(args):
 
     neo4j_cfg = config.get_neo4j_config()
     openai_key = config.get_openai_key()
+    indexing_cfg = config.get_indexing_config()
+    ignore_dirs = set(indexing_cfg.get("ignore_dirs", []))
+    ignore_files = set(indexing_cfg.get("ignore_files", []))
+    extensions = set(indexing_cfg.get("extensions", []))
+    graphignore_patterns = set(config.get_graphignore_patterns())
 
     builder = KnowledgeGraphBuilder(
         uri=neo4j_cfg["uri"],
@@ -291,10 +309,13 @@ def cmd_index(args):
         password=neo4j_cfg["password"],
         openai_key=openai_key,
         repo_root=repo_root,
+        ignore_dirs=ignore_dirs,
+        ignore_files=ignore_files,
+        ignore_patterns=graphignore_patterns,
     )
 
     try:
-        metrics = builder.run_pipeline(repo_root)
+        metrics = builder.run_pipeline(repo_root, supported_extensions=extensions)
         if not args.quiet:
             print(f"\n✅ Indexing complete!")
             print(f"   Processed {metrics['embedding_calls']} entities")
@@ -317,12 +338,19 @@ def cmd_watch(args):
 
     neo4j_cfg = config.get_neo4j_config()
     openai_key = config.get_openai_key()
+    indexing_cfg = config.get_indexing_config()
+    graphignore_patterns = set(config.get_graphignore_patterns())
 
     start_continuous_watch(
         repo_path=repo_root,
         neo4j_uri=neo4j_cfg["uri"],
         neo4j_user=neo4j_cfg["user"],
         neo4j_password=neo4j_cfg["password"],
+        openai_key=openai_key,
+        ignore_dirs=set(indexing_cfg.get("ignore_dirs", [])),
+        ignore_files=set(indexing_cfg.get("ignore_files", [])),
+        ignore_patterns=graphignore_patterns,
+        supported_extensions=set(indexing_cfg.get("extensions", [])),
         initial_scan=not args.no_scan,
     )
 

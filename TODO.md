@@ -201,24 +201,24 @@
   - [ ] Promote same build to PyPI after smoke-testing MCP client launch with `--repo`
   - [ ] **Gate:** Same command works from any current directory
 
-- [ ] **PR 3: Skill Adapter Skeleton**
-  - [ ] Create skill directory with `SKILL.md`
-  - [ ] Implement workflow decision tree (quick query vs deep analysis path)
-  - [ ] Add minimal helper scripts for normalized command execution
-  - [ ] Include retries/timeouts and user-facing failure recovery guidance
-  - [ ] **Gate:** Manual end-to-end run succeeds using only skill instructions
+- [x] **PR 3: Skill Adapter Skeleton**
+  - [x] Create skill directory with `SKILL.md`
+  - [x] Implement workflow decision tree (quick query vs deep analysis path)
+  - [x] Add minimal helper scripts for normalized command execution
+  - [x] Include retries/timeouts and user-facing failure recovery guidance
+  - [x] **Gate:** Manual end-to-end run succeeds using only skill instructions
 
-- [ ] **PR 4: Workflow Coverage Expansion**
-  - [ ] Add workflows: `index + prune`, `search + deps`, `impact before refactor`, `health checks`
-  - [ ] Add copy-paste snippets for Linux/macOS/WSL
-  - [ ] Add troubleshooting matrix (Neo4j down, bad auth, missing key, stale graph)
-  - [ ] **Gate:** 80%+ of common operator tasks covered by documented skill flows
+- [x] **PR 4: Workflow Coverage Expansion**
+  - [x] Add workflows: `index + prune`, `search + deps`, `impact before refactor`, `health checks`
+  - [x] Add copy-paste snippets for Linux/macOS/WSL
+  - [x] Add troubleshooting matrix (Neo4j down, bad auth, missing key, stale graph)
+  - [x] **Gate:** 80%+ of common operator tasks covered by documented skill flows
 
-- [ ] **PR 5: Security/Secrets Hardening**
-  - [ ] Ensure examples never place secrets directly in MCP JSON by default
-  - [ ] Document `.env` + shell-env + keychain patterns
-  - [ ] Add redaction guidance for logs and screenshots
-  - [ ] **Gate:** Security review passes for all setup examples
+- [x] **PR 5: Security/Secrets Hardening**
+  - [x] Ensure examples never place secrets directly in MCP JSON by default
+  - [x] Document `.env` + shell-env + keychain patterns
+  - [x] Add redaction guidance for logs and screenshots
+  - [x] **Gate:** Security review passes for all setup examples
 
 - [ ] **PR 6: MCP vs Skill Evaluation Harness**
   - [ ] Define benchmark task set (at least 15 representative tasks)

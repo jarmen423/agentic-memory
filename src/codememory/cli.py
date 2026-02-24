@@ -1,5 +1,6 @@
 # Load .env BEFORE any other imports that might need environment variables
 from dotenv import load_dotenv
+
 load_dotenv()
 
 import argparse
@@ -11,8 +12,9 @@ from typing import Any, Optional
 
 import neo4j
 
-from codememory.ingestion.watcher import start_continuous_watch
+from codememory.ingestion.git_graph import GitGraphIngestor
 from codememory.ingestion.graph import KnowledgeGraphBuilder
+from codememory.ingestion.watcher import start_continuous_watch
 from codememory.config import Config, find_repo_root, DEFAULT_CONFIG
 
 
@@ -76,12 +78,45 @@ def _exit_with_error(
     raise SystemExit(exit_code)
 
 
-def _emit_success(args: argparse.Namespace, *, data: Any, metrics: Optional[dict[str, Any]] = None) -> bool:
+def _emit_success(
+    args: argparse.Namespace, *, data: Any, metrics: Optional[dict[str, Any]] = None
+) -> bool:
     """Emit success JSON if requested. Returns True when JSON output was emitted."""
     if not _is_json_mode(args):
         return False
     _emit_json(ok=True, error=None, data=data, metrics=metrics or {})
     return True
+
+
+def _resolve_repo_and_config(
+    args: argparse.Namespace,
+    *,
+    require_initialized: bool = True,
+) -> tuple[Path, Config]:
+    """Resolve repository root and config object from optional --repo arg."""
+    if getattr(args, "repo", None):
+        repo_root = Path(args.repo).expanduser().resolve()
+        if not repo_root.exists() or not repo_root.is_dir():
+            _exit_with_error(
+                args,
+                error=f"Invalid repository path: {repo_root}",
+                human_lines=[f"❌ Invalid repository path: {repo_root}"],
+            )
+    else:
+        repo_root = find_repo_root()
+
+    config = Config(repo_root)
+    if require_initialized and not config.exists():
+        _exit_with_error(
+            args,
+            error="Agentic Memory is not initialized in this repository.",
+            human_lines=[
+                "❌ Agentic Memory is not initialized in this repository.",
+                "   Run 'codememory init' to get started.",
+            ],
+        )
+
+    return repo_root, config
 
 
 def cmd_init(args):
@@ -93,7 +128,9 @@ def cmd_init(args):
     if config.exists():
         print(f"⚠️  This repository is already initialized with Agentic Memory.")
         print(f"    Config location: {config.config_file}")
-        print(f"\n   To reconfigure, edit the config file or delete .codememory/ and run init again.")
+        print(
+            f"\n   To reconfigure, edit the config file or delete .codememory/ and run init again."
+        )
         return
 
     print_banner()
@@ -123,7 +160,9 @@ def cmd_init(args):
         print("   Start with: docker run -p 7474:7474 -p 7687:7687 neo4j:5.25")
         neo4j_config["uri"] = "bolt://localhost:7687"
         neo4j_config["user"] = "neo4j"
-        neo4j_config["password"] = input("   Enter Neo4j password (default: password): ").strip() or "password"
+        neo4j_config["password"] = (
+            input("   Enter Neo4j password (default: password): ").strip() or "password"
+        )
 
     elif neo_choice == "2":
         print("\n☁️  Using Neo4j Aura (Cloud)")
@@ -135,7 +174,9 @@ def cmd_init(args):
     elif neo_choice == "3":
         print("\n🔗 Custom Neo4j URL")
         neo4j_config["uri"] = input("   Enter Neo4j URI: ").strip()
-        neo4j_config["user"] = input("   Enter Neo4j username (default: neo4j): ").strip() or "neo4j"
+        neo4j_config["user"] = (
+            input("   Enter Neo4j username (default: neo4j): ").strip() or "neo4j"
+        )
         neo4j_config["password"] = input("   Enter Neo4j password: ").strip()
 
     else:  # choice == "4"
@@ -177,11 +218,15 @@ def cmd_init(args):
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 
     print("Supported file extensions (default: .py, .js, .ts, .tsx, .jsx)")
-    extensions_input = input("   Enter extensions (comma-separated, or press Enter for defaults): ").strip()
+    extensions_input = input(
+        "   Enter extensions (comma-separated, or press Enter for defaults): "
+    ).strip()
     if extensions_input:
         indexing_config = DEFAULT_CONFIG["indexing"].copy()
-        indexing_config["extensions"] = [e.strip() if e.strip().startswith(".") else f".{e.strip()}"
-                                         for e in extensions_input.split(",")]
+        indexing_config["extensions"] = [
+            e.strip() if e.strip().startswith(".") else f".{e.strip()}"
+            for e in extensions_input.split(",")
+        ]
     else:
         indexing_config = DEFAULT_CONFIG["indexing"].copy()
 
@@ -317,7 +362,9 @@ def cmd_status(args):
         with builder.driver.session() as session:
             # Get stats
             files = session.run("MATCH (f:File) RETURN count(f) as count").single()["count"]
-            functions = session.run("MATCH (fn:Function) RETURN count(fn) as count").single()["count"]
+            functions = session.run("MATCH (fn:Function) RETURN count(fn) as count").single()[
+                "count"
+            ]
             classes = session.run("MATCH (c:Class) RETURN count(c) as count").single()["count"]
             chunks = session.run("MATCH (ch:Chunk) RETURN count(ch) as count").single()["count"]
 
@@ -484,7 +531,9 @@ def cmd_serve(args):
     if repo_root:
         config = Config(repo_root)
         if not config.exists():
-            print(f"⚠️  No .codememory/config.json found in {repo_root}, using environment variables")
+            print(
+                f"⚠️  No .codememory/config.json found in {repo_root}, using environment variables"
+            )
     else:
         auto_root = find_repo_root()
         config = Config(auto_root)
@@ -696,6 +745,140 @@ def cmd_impact(args):
         builder.close()
 
 
+def cmd_git_init(args):
+    """Enable git graph config and initialize GitRepo metadata/constraints."""
+    repo_root, config = _resolve_repo_and_config(args, require_initialized=True)
+    git_cfg = config.get_git_config()
+    if not git_cfg.get("enabled"):
+        config.save_git_config({"enabled": True})
+
+    neo4j_cfg = config.get_neo4j_config()
+    ingestor = GitGraphIngestor(
+        uri=neo4j_cfg["uri"],
+        user=neo4j_cfg["user"],
+        password=neo4j_cfg["password"],
+        repo_root=repo_root,
+        config=config,
+    )
+
+    try:
+        repo_meta = ingestor.initialize()
+        refreshed_git_cfg = config.get_git_config()
+        data = {
+            "repository": str(repo_root),
+            "git": {
+                "enabled": bool(refreshed_git_cfg.get("enabled")),
+                "auto_incremental": bool(refreshed_git_cfg.get("auto_incremental", True)),
+                "sync_trigger": refreshed_git_cfg.get("sync_trigger", "commit"),
+                "checkpoint": refreshed_git_cfg.get("checkpoint", {}),
+            },
+            "graph": repo_meta,
+        }
+        if _emit_success(args, data=data, metrics={}):
+            return
+
+        print(f"✅ Git graph initialized for repository: {repo_root}")
+    except Exception as e:
+        _exit_with_error(
+            args,
+            error=f"Git init failed: {e}",
+            human_lines=[f"❌ Git init failed: {e}"],
+        )
+    finally:
+        ingestor.close()
+
+
+def cmd_git_sync(args):
+    """Sync git history into Neo4j as full or incremental run."""
+    repo_root, config = _resolve_repo_and_config(args, require_initialized=True)
+    git_cfg = config.get_git_config()
+    if not git_cfg.get("enabled"):
+        _exit_with_error(
+            args,
+            error="Git graph is not initialized for this repository.",
+            human_lines=[
+                "❌ Git graph is not initialized for this repository.",
+                "   Run 'codememory git-init' first.",
+            ],
+        )
+
+    neo4j_cfg = config.get_neo4j_config()
+    ingestor = GitGraphIngestor(
+        uri=neo4j_cfg["uri"],
+        user=neo4j_cfg["user"],
+        password=neo4j_cfg["password"],
+        repo_root=repo_root,
+        config=config,
+    )
+
+    try:
+        result = ingestor.sync(full=args.full)
+        if _emit_success(
+            args,
+            data={"repository": str(repo_root), "sync": result},
+            metrics={
+                "commits_seen": result["commits_seen"],
+                "commits_synced": result["commits_synced"],
+                "checkpoint_reset": result["checkpoint_reset"],
+            },
+        ):
+            return
+
+        print(f"✅ Git sync complete: {result['commits_synced']} commit(s) ingested")
+    except Exception as e:
+        _exit_with_error(
+            args,
+            error=f"Git sync failed: {e}",
+            human_lines=[f"❌ Git sync failed: {e}"],
+        )
+    finally:
+        ingestor.close()
+
+
+def cmd_git_status(args):
+    """Show git graph sync status for a repository."""
+    repo_root, config = _resolve_repo_and_config(args, require_initialized=True)
+    git_cfg = config.get_git_config()
+    if not git_cfg.get("enabled"):
+        _exit_with_error(
+            args,
+            error="Git graph is not initialized for this repository.",
+            human_lines=[
+                "❌ Git graph is not initialized for this repository.",
+                "   Run 'codememory git-init' first.",
+            ],
+        )
+
+    neo4j_cfg = config.get_neo4j_config()
+    ingestor = GitGraphIngestor(
+        uri=neo4j_cfg["uri"],
+        user=neo4j_cfg["user"],
+        password=neo4j_cfg["password"],
+        repo_root=repo_root,
+        config=config,
+    )
+
+    try:
+        status = ingestor.status()
+        if _emit_success(
+            args,
+            data={"repository": str(repo_root), "status": status},
+            metrics={"pending_commits": status["pending_commits"]},
+        ):
+            return
+
+        print(f"📌 Git checkpoint: {status['checkpoint_sha'] or 'none'}")
+        print(f"🧾 Pending commits: {status['pending_commits']}")
+    except Exception as e:
+        _exit_with_error(
+            args,
+            error=f"Git status failed: {e}",
+            human_lines=[f"❌ Git status failed: {e}"],
+        )
+    finally:
+        ingestor.close()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Agentic Memory: Structural Code Graph with Neo4j and MCP",
@@ -710,6 +893,9 @@ Commands:
   codememory watch             # Continuous monitoring
   codememory serve             # Start MCP server
   codememory search <query>    # Test semantic search
+  codememory git-init          # Enable git graph integration
+  codememory git-sync          # Sync local git history into Neo4j
+  codememory git-status        # Show git graph sync status
 
 For more information, visit: https://github.com/jarmen423/agentic-memory
         """,
@@ -723,9 +909,7 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
     )
 
     # Command: status
-    status_parser = subparsers.add_parser(
-        "status", help="Show repository status and statistics"
-    )
+    status_parser = subparsers.add_parser("status", help="Show repository status and statistics")
     status_parser.add_argument(
         "--json",
         action="store_true",
@@ -733,12 +917,8 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
     )
 
     # Command: index (one-time full pipeline)
-    index_parser = subparsers.add_parser(
-        "index", help="Run a one-time full pipeline ingestion"
-    )
-    index_parser.add_argument(
-        "--quiet", "-q", action="store_true", help="Suppress progress output"
-    )
+    index_parser = subparsers.add_parser("index", help="Run a one-time full pipeline ingestion")
+    index_parser.add_argument("--quiet", "-q", action="store_true", help="Suppress progress output")
     index_parser.add_argument(
         "--json",
         action="store_true",
@@ -746,9 +926,7 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
     )
 
     # Command: watch (continuous monitoring)
-    watch_parser = subparsers.add_parser(
-        "watch", help="Start continuous ingestion and monitoring"
-    )
+    watch_parser = subparsers.add_parser("watch", help="Start continuous ingestion and monitoring")
     watch_parser.add_argument(
         "--no-scan",
         action="store_true",
@@ -811,6 +989,56 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
         help="Emit machine-readable JSON output",
     )
 
+    # Command: git-init
+    git_init_parser = subparsers.add_parser(
+        "git-init", help="Enable git graph configuration and create repo metadata nodes"
+    )
+    git_init_parser.add_argument(
+        "--repo",
+        type=str,
+        help="Repository root path (defaults to detected current repository)",
+    )
+    git_init_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output",
+    )
+
+    # Command: git-sync
+    git_sync_parser = subparsers.add_parser(
+        "git-sync", help="Sync local git commit history into Git* graph labels"
+    )
+    git_sync_parser.add_argument(
+        "--repo",
+        type=str,
+        help="Repository root path (defaults to detected current repository)",
+    )
+    git_sync_parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Run full history sync instead of incremental checkpoint sync",
+    )
+    git_sync_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output",
+    )
+
+    # Command: git-status
+    git_status_parser = subparsers.add_parser(
+        "git-status", help="Show git graph setup and sync checkpoint status"
+    )
+    git_status_parser.add_argument(
+        "--repo",
+        type=str,
+        help="Repository root path (defaults to detected current repository)",
+    )
+    git_status_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output",
+    )
+
     args = parser.parse_args()
 
     # Dispatch to command handlers
@@ -830,6 +1058,12 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
         cmd_deps(args)
     elif args.command == "impact":
         cmd_impact(args)
+    elif args.command == "git-init":
+        cmd_git_init(args)
+    elif args.command == "git-sync":
+        cmd_git_sync(args)
+    elif args.command == "git-status":
+        cmd_git_status(args)
     else:
         parser.print_help()
 

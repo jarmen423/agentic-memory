@@ -34,6 +34,7 @@ def _mock_config(
     exists=True,
     openai_key="test-openai-key",
     indexing=None,
+    git_config=None,
 ):
     """Create a mock Config object for CLI tests."""
     config = Mock()
@@ -50,6 +51,14 @@ def _mock_config(
         "ignore_files": [],
         "extensions": [".py"],
     }
+    config.get_git_config.return_value = git_config or {
+        "enabled": False,
+        "auto_incremental": True,
+        "sync_trigger": "commit",
+        "github_enrichment": {"enabled": False, "repo": None},
+        "checkpoint": {"last_sha": None},
+    }
+    config.save_git_config = Mock()
     config.get_graphignore_patterns.return_value = []
     return config
 
@@ -338,3 +347,138 @@ def test_serve_loads_openai_key_from_repo_dotenv(monkeypatch, tmp_path):
 
     assert os.environ.get("OPENAI_API_KEY") == "from-repo-dotenv"
     run_server.assert_called_once_with(port=8000, repo_root=repo_root.resolve())
+
+
+def test_git_init_json_success_envelope(monkeypatch, capsys, tmp_path):
+    """git-init emits standard JSON envelope and enables git config."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    mock_cfg = _mock_config(exists=True)
+    mock_cfg.get_git_config.side_effect = [
+        {
+            "enabled": False,
+            "auto_incremental": True,
+            "sync_trigger": "commit",
+            "github_enrichment": {"enabled": False, "repo": None},
+            "checkpoint": {"last_sha": None},
+        },
+        {
+            "enabled": True,
+            "auto_incremental": True,
+            "sync_trigger": "commit",
+            "github_enrichment": {"enabled": False, "repo": None},
+            "checkpoint": {"last_sha": None},
+        },
+    ]
+    mock_ingestor = Mock()
+    mock_ingestor.initialize.return_value = {
+        "repo_id": str(repo_root.resolve()),
+        "root_path": str(repo_root.resolve()),
+        "remote_url": None,
+        "default_branch": "main",
+    }
+
+    monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
+    monkeypatch.setattr(cli, "GitGraphIngestor", Mock(return_value=mock_ingestor))
+
+    cli.cmd_git_init(argparse.Namespace(json=True, repo=str(repo_root)))
+
+    payload = _parse_json_stdout(capsys)
+    assert payload["ok"] is True
+    assert payload["error"] is None
+    assert payload["metrics"] == {}
+    assert payload["data"]["repository"] == str(repo_root.resolve())
+    assert payload["data"]["git"]["enabled"] is True
+    mock_cfg.save_git_config.assert_called_once_with({"enabled": True})
+    mock_ingestor.close.assert_called_once()
+
+
+def test_git_sync_json_success_envelope(monkeypatch, capsys, tmp_path):
+    """git-sync emits JSON envelope with sync metrics."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    mock_cfg = _mock_config(
+        exists=True,
+        git_config={
+            "enabled": True,
+            "auto_incremental": True,
+            "sync_trigger": "commit",
+            "github_enrichment": {"enabled": False, "repo": None},
+            "checkpoint": {"last_sha": "abc"},
+        },
+    )
+    mock_ingestor = Mock()
+    mock_ingestor.sync.return_value = {
+        "repo_id": str(repo_root.resolve()),
+        "head_sha": "def",
+        "checkpoint_before": "abc",
+        "checkpoint_after": "def",
+        "full": False,
+        "checkpoint_reset": False,
+        "commits_seen": 1,
+        "commits_synced": 1,
+    }
+
+    monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
+    monkeypatch.setattr(cli, "GitGraphIngestor", Mock(return_value=mock_ingestor))
+
+    cli.cmd_git_sync(argparse.Namespace(json=True, repo=str(repo_root), full=False))
+
+    payload = _parse_json_stdout(capsys)
+    assert payload["ok"] is True
+    assert payload["error"] is None
+    assert payload["data"]["repository"] == str(repo_root.resolve())
+    assert payload["data"]["sync"]["checkpoint_after"] == "def"
+    assert payload["metrics"] == {
+        "commits_seen": 1,
+        "commits_synced": 1,
+        "checkpoint_reset": False,
+    }
+    mock_ingestor.sync.assert_called_once_with(full=False)
+    mock_ingestor.close.assert_called_once()
+
+
+def test_git_status_json_success_envelope(monkeypatch, capsys, tmp_path):
+    """git-status emits JSON envelope with status and pending commit metric."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    mock_cfg = _mock_config(
+        exists=True,
+        git_config={
+            "enabled": True,
+            "auto_incremental": True,
+            "sync_trigger": "commit",
+            "github_enrichment": {"enabled": False, "repo": None},
+            "checkpoint": {"last_sha": "abc"},
+        },
+    )
+    mock_ingestor = Mock()
+    mock_ingestor.status.return_value = {
+        "repo_id": str(repo_root.resolve()),
+        "repo_path": str(repo_root.resolve()),
+        "enabled": True,
+        "checkpoint_sha": "abc",
+        "head_sha": "def",
+        "pending_commits": 2,
+        "graph": {
+            "repo_node_exists": True,
+            "commit_count": 10,
+            "author_count": 3,
+            "file_version_count": 20,
+        },
+    }
+
+    monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
+    monkeypatch.setattr(cli, "GitGraphIngestor", Mock(return_value=mock_ingestor))
+
+    cli.cmd_git_status(argparse.Namespace(json=True, repo=str(repo_root)))
+
+    payload = _parse_json_stdout(capsys)
+    assert payload["ok"] is True
+    assert payload["error"] is None
+    assert payload["data"]["status"]["checkpoint_sha"] == "abc"
+    assert payload["metrics"] == {"pending_commits": 2}
+    mock_ingestor.close.assert_called_once()

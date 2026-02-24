@@ -14,7 +14,7 @@ import math
 import posixpath
 import re
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple, Set
+from typing import Any, List, Dict, Optional, Tuple, Set
 from functools import wraps
 
 import openai
@@ -1128,3 +1128,149 @@ class KnowledgeGraphBuilder:
                 return {"affected_files": affected_files, "total_count": len(affected_files)}
         
         return self.circuit_breaker.call(_execute_impact_analysis)
+
+    # =========================================================================
+    # GIT GRAPH QUERIES (for MCP Server)
+    # =========================================================================
+
+    def has_git_graph_data(self) -> bool:
+        """Return True if at least one GitCommit node exists."""
+        def _execute_check() -> bool:
+            cypher = "MATCH (c:GitCommit) RETURN count(c) > 0 as has_data"
+            with self.driver.session() as session:
+                result = session.run(cypher).single()
+                return bool(result["has_data"]) if result else False
+
+        return self.circuit_breaker.call(_execute_check)
+
+    def get_git_file_history(self, file_path: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """
+        Return commit history touching a specific file.
+
+        Args:
+            file_path: Relative repository file path
+            limit: Maximum number of commits to return
+
+        Returns:
+            List of commit metadata records sorted by commit time descending
+        """
+        def _execute_history_query() -> List[Dict[str, Any]]:
+            safe_limit = max(1, int(limit))
+            cypher = """
+            MATCH (c:GitCommit)-[:TOUCHES]->(fv:GitFileVersion {path: $path})
+            OPTIONAL MATCH (c)-[:AUTHORED_BY]->(a:GitAuthor)
+            RETURN
+                c.sha as sha,
+                c.committed_at as committed_at,
+                c.message_subject as message_subject,
+                c.message_body as message_body,
+                a.name_latest as author_name,
+                a.email_norm as author_email,
+                fv.change_type as change_type,
+                coalesce(fv.additions, 0) as additions,
+                coalesce(fv.deletions, 0) as deletions
+            ORDER BY c.committed_at DESC
+            LIMIT $limit
+            """
+            with self.driver.session() as session:
+                result = session.run(cypher, path=file_path, limit=safe_limit)
+                return [dict(record) for record in result]
+
+        return self.circuit_breaker.call(_execute_history_query)
+
+    def get_commit_context(
+        self, sha: str, include_diff_stats: bool = True
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Return detailed metadata for a commit.
+
+        Args:
+            sha: Commit SHA
+            include_diff_stats: Whether to include changed file and line-change data
+
+        Returns:
+            Dict with commit metadata and optional diff stats, or None if missing
+        """
+        def _execute_commit_context_query() -> Optional[Dict[str, Any]]:
+            commit_cypher = """
+            MATCH (c:GitCommit {sha: $sha})
+            OPTIONAL MATCH (c)-[:AUTHORED_BY]->(a:GitAuthor)
+            OPTIONAL MATCH (c)-[:PARENT]->(p:GitCommit)
+            OPTIONAL MATCH (c)-[:PART_OF_PR]->(pr:GitPullRequest)
+            OPTIONAL MATCH (c)-[:REFERENCES_ISSUE]->(issue:GitIssue)
+            RETURN
+                c.sha as sha,
+                c.repo_id as repo_id,
+                c.authored_at as authored_at,
+                c.committed_at as committed_at,
+                c.message_subject as message_subject,
+                c.message_body as message_body,
+                coalesce(c.parent_count, 0) as parent_count,
+                coalesce(c.is_merge, false) as is_merge,
+                a.name_latest as author_name,
+                a.email_norm as author_email,
+                collect(DISTINCT p.sha) as parent_shas,
+                collect(DISTINCT CASE
+                    WHEN pr IS NULL THEN NULL
+                    ELSE {
+                        number: pr.number,
+                        title: pr.title,
+                        state: pr.state,
+                        url: pr.url
+                    }
+                END) as pull_requests,
+                collect(DISTINCT CASE
+                    WHEN issue IS NULL THEN NULL
+                    ELSE {
+                        number: issue.number,
+                        title: issue.title,
+                        state: issue.state,
+                        url: issue.url
+                    }
+                END) as issues
+            """
+
+            with self.driver.session() as session:
+                commit_result = session.run(commit_cypher, sha=sha).single()
+                if not commit_result:
+                    return None
+
+                context: Dict[str, Any] = dict(commit_result)
+                context["parent_shas"] = [
+                    parent_sha for parent_sha in (context.get("parent_shas") or []) if parent_sha
+                ]
+                context["pull_requests"] = [
+                    pr for pr in (context.get("pull_requests") or []) if pr is not None
+                ]
+                context["issues"] = [
+                    issue for issue in (context.get("issues") or []) if issue is not None
+                ]
+
+                if not include_diff_stats:
+                    context["files"] = []
+                    context["stats"] = {"files_changed": 0, "additions": 0, "deletions": 0}
+                    return context
+
+                files_cypher = """
+                MATCH (c:GitCommit {sha: $sha})-[:TOUCHES]->(fv:GitFileVersion)
+                RETURN
+                    fv.path as path,
+                    fv.change_type as change_type,
+                    coalesce(fv.additions, 0) as additions,
+                    coalesce(fv.deletions, 0) as deletions
+                ORDER BY fv.path
+                """
+                files_result = session.run(files_cypher, sha=sha)
+                files = [dict(record) for record in files_result]
+                additions = sum(int(file_info.get("additions", 0) or 0) for file_info in files)
+                deletions = sum(int(file_info.get("deletions", 0) or 0) for file_info in files)
+
+                context["files"] = files
+                context["stats"] = {
+                    "files_changed": len(files),
+                    "additions": additions,
+                    "deletions": deletions,
+                }
+                return context
+
+        return self.circuit_breaker.call(_execute_commit_context_query)

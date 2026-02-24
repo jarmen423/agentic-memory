@@ -1,6 +1,6 @@
 # TODO: Shippable Product Checklist
 
-> **Status:** 0.1.0-alpha (MVP) | **Last Updated:** 2025-02-09
+> **Status:** 0.1.0-alpha (MVP) | **Last Updated:** 2026-02-24
 >
 > This document tracks all work needed before Agentic Memory can be considered a shippable, production-ready product.
 
@@ -108,6 +108,23 @@
 - [ ] Add example usage walkthrough with sample repository
 - [ ] Document performance expectations (ingestion speed, query latency)
 - [ ] Fix README: Update with actual repository URL
+
+---
+
+### 2.1 Git Graph Rollout (Docs + Validation)
+
+- [X] Add `docs/GIT_GRAPH.md`:
+  - [X] Separate-label architecture in same Neo4j DB
+  - [X] CLI usage for `git-init`, `git-sync`, `git-status`
+  - [X] Local-only baseline and optional GitHub enrichment roadmap
+  - [X] Troubleshooting and expected output examples
+- [X] Update `README.md` command list and feature bullets for git graph rollout
+- [X] Update `docs/MCP_INTEGRATION.md` with `domain=code|git|hybrid` examples and new git/hybrid tools
+- [X] Update `docs/TROUBLESHOOTING.md` with a dedicated git graph issues section
+- [X] Add field test rerun template: `docs/FIELD_TEST_TEMPLATE.md`
+- [ ] Run git graph validation in user test repo and capture filled results doc
+- [ ] Record measured latency/ingestion metrics from rerun
+- [ ] Confirm command/tool availability in published package version used by testers
 
 ---
 

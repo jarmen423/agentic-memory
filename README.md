@@ -16,6 +16,7 @@ Agentic Memory is not just "RAG" for code. It is an **active, structural memory 
 | **📊 Structural Graph** | Understands imports, dependencies, call graphs - not just text similarity |
 | **🔍 Semantic Search** | Vector embeddings with contextual prefixing for accurate results |
 | **⚡ Real-time Sync** | File watcher automatically updates the graph as you code |
+| **🧬 Git Graph (Opt-in)** | Adds commit/author/file-version history in the same Neo4j DB with separate labels |
 | **🤖 MCP Protocol** | Drop-in integration with Claude, Cursor, Windsurf, and any MCP-compatible AI |
 | **💥 Impact Analysis** | See the blast radius of changes before you make them |
 
@@ -72,7 +73,14 @@ codememory serve
 
 # Test semantic search
 codememory search "where is the auth logic?"
+
+# Git graph (rollout build)
+codememory git-init --repo /absolute/path/to/repo --mode local --full-history
+codememory git-sync --repo /absolute/path/to/repo --incremental
+codememory git-status --repo /absolute/path/to/repo --json
 ```
+
+Git graph command details and rollout notes: [docs/GIT_GRAPH.md](docs/GIT_GRAPH.md)
 
 ---
 
@@ -111,10 +119,15 @@ codememory search "where is the auth logic?"
 
 | Tool | Description |
 |------|-------------|
-| `search_codebase(query)` | Semantic search for code functionality |
-| `get_file_dependencies(path)` | Returns imports and dependents for a file |
-| `identify_impact(path, depth)` | Blast radius analysis for changes |
-| `get_file_info(path)` | File structure overview (classes, functions) |
+| `search_codebase(query, limit=5, domain="code")` | Semantic search for code, git, or hybrid domain routing |
+| `get_file_dependencies(file_path, domain="code")` | Returns imports and dependents for a file |
+| `identify_impact(file_path, max_depth=3, domain="code")` | Blast radius analysis for changes |
+| `get_file_info(file_path, domain="code")` | File structure overview (classes, functions) |
+| `get_git_file_history(file_path, limit=20, domain="git")` | File-level commit history and ownership signals (git rollout) |
+| `get_commit_context(sha, include_diff_stats=true)` | Commit metadata and change statistics (git rollout) |
+| `find_recent_risky_changes(path_or_symbol, window_days, domain="hybrid")` | Recent high-risk changes using hybrid signals (git rollout) |
+
+> Note: `domain` routing and git-domain tools are part of the git graph rollout. If they are missing in your installed build, use code-domain tools only and upgrade to a git-enabled release.
 
 ---
 

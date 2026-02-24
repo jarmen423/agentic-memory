@@ -302,7 +302,8 @@ import requests
 # Call search_codebase tool
 response = requests.post("http://localhost:8000/tools/search_codebase", json={
     "query": "authentication logic",
-    "limit": 5
+    "limit": 5,
+    "domain": "code"
 })
 
 results = response.json()
@@ -319,7 +320,8 @@ const response = await fetch('http://localhost:8000/tools/search_codebase', {
   },
   body: JSON.stringify({
     query: 'authentication logic',
-    limit: 5
+    limit: 5,
+    domain: 'code'
   })
 });
 
@@ -341,7 +343,8 @@ await client.connect("stdio", command="codememory", args=["serve"])
 # Call tools
 result = await client.call_tool("search_codebase", {
     "query": "find user authentication",
-    "limit": 5
+    "limit": 5,
+    "domain": "code"
 })
 
 print(result.content)
@@ -351,250 +354,149 @@ print(result.content)
 
 ## Available Tools
 
-Agentic Memory exposes 4 MCP tools to AI agents:
+Agentic Memory supports explicit query routing:
+- `domain="code"`: code graph only (default behavior).
+- `domain="git"`: git history graph only.
+- `domain="hybrid"`: merged code + git signals.
 
-### 1. `search_codebase`
+> Compatibility note: some installed builds may not yet include `domain` parameters or git-domain tools.
+> If unavailable, continue with code-domain tools and update to a git-enabled release.
 
-**Purpose:** Semantic search for code functionality
+### Tool Matrix
 
-**Parameters:**
-- `query` (string, required): Natural language search query
-- `limit` (integer, optional): Maximum results (default: 5)
+| Tool | Domain | Status |
+|------|--------|--------|
+| `search_codebase(query, limit=5, domain="code")` | code/git/hybrid | code: available, git/hybrid: rollout |
+| `get_file_dependencies(file_path, domain="code")` | code/git/hybrid | code: available, git/hybrid: rollout |
+| `identify_impact(file_path, max_depth=3, domain="code")` | code/git/hybrid | code: available, git/hybrid: rollout |
+| `get_file_info(file_path, domain="code")` | code/git/hybrid | code: available, git/hybrid: rollout |
+| `get_git_file_history(file_path, limit=20, domain="git")` | git | rollout |
+| `get_commit_context(sha, include_diff_stats=true)` | git | rollout |
+| `find_recent_risky_changes(path_or_symbol, window_days, domain="hybrid")` | hybrid | rollout |
 
-**Example:**
+### Domain Selection Guide
+
+| If your question is about... | Use |
+|------------------------------|-----|
+| Current implementation and structure | `domain="code"` |
+| Ownership, recency, commit provenance | `domain="git"` |
+| Refactoring risk + historical churn | `domain="hybrid"` |
+
+### Core Tool Examples
+
+#### 1. Code-domain semantic search
+
 ```python
 search_codebase(
     query="Where is the JWT token validation logic?",
-    limit=3
+    limit=3,
+    domain="code",
 )
 ```
 
-**Returns:**
-```markdown
-Found 3 relevant code result(s):
+#### 2. Git-domain file history (rollout)
 
-1. **verify_token** (`src/auth/tokens.py:verify_token`) [Score: 0.94]
-   ```
-   def verify_token(token: str) -> bool:
-       """Verify JWT signature and expiration"""
-   ...
-   ```
-
-2. **decode_jwt** (`src/auth/utils.py:decode_jwt`) [Score: 0.87]
-   ```
-   def decode_jwt(encoded: str) -> dict:
-       """Decode JWT payload without verification"""
-   ...
-   ```
-```
-
-**Use cases:**
-- Finding implementation of specific features
-- Locating bug-prone code areas
-- Understanding codebase organization
-
----
-
-### 2. `get_file_dependencies`
-
-**Purpose:** Get imports and dependents for a file
-
-**Parameters:**
-- `file_path` (string, required): Relative path to file
-
-**Example:**
 ```python
-get_file_dependencies("src/services/user.py")
+get_git_file_history(
+    file_path="src/auth/tokens.py",
+    limit=10,
+    domain="git",
+)
 ```
 
-**Returns:**
-```markdown
-## Dependencies for `src/services/user.py`
+#### 3. Git-domain commit context (rollout)
 
-### 📥 Imports (this file depends on):
-- `src/models/user.py`
-- `src/database/connection.py`
-- `src/utils/hash.py`
-
-### 📤 Imported By (files that depend on this):
-- `src/api/routes/users.py`
-- `src/api/routes/auth.py`
-- `src/scripts/migrate_users.py`
+```python
+get_commit_context(
+    sha="9b31ce0",
+    include_diff_stats=True,
+)
 ```
 
-**Use cases:**
-- Understanding module dependencies
-- Refactoring without breaking imports
-- Identifying tightly coupled code
+#### 4. Hybrid risk scan (rollout)
 
----
+```python
+find_recent_risky_changes(
+    path_or_symbol="src/database/connection.py",
+    window_days=30,
+    domain="hybrid",
+)
+```
 
-### 3. `identify_impact`
+#### 5. Impact analysis with explicit domain
 
-**Purpose:** Blast radius analysis for changes
-
-**Parameters:**
-- `file_path` (string, required): Relative path to file
-- `max_depth` (integer, optional): Depth for transitive deps (default: 3)
-
-**Example:**
 ```python
 identify_impact(
     file_path="src/models/user.py",
-    max_depth=2
+    max_depth=2,
+    domain="code",
 )
 ```
 
-**Returns:**
-```markdown
-## Impact Analysis for `src/models/user.py`
-
-**Total affected files:** 8
-
-### Depth 1 (direct dependents): 3 files
-- `src/services/user.py`
-- `src/api/routes/users.py`
-- `src/api/routes/auth.py`
-
-### Depth 2 (2-hop transitive dependents): 5 files
-- `src/api/routes/admin.py`
-- `src/tests/test_users.py`
-- `src/tests/test_auth.py`
-- `src/scripts/init_db.py`
-- `src/controllers/user_controller.py`
-```
-
-**Use cases:**
-- Assessing risk before refactoring
-- Pre-commit impact checks
-- Planning incremental changes
-
----
-
-### 4. `get_file_info`
-
-**Purpose:** Get detailed file structure overview
-
-**Parameters:**
-- `file_path` (string, required): Relative path to file
-
-**Example:**
-```python
-get_file_info("src/services/user.py")
-```
-
-**Returns:**
-```markdown
-## File: `user.py`
-
-**Path:** `src/services/user.py`
-**Last Updated:** 2025-02-09 14:32:15
-
-### 📦 Classes (2)
-- `UserService`
-- `UserProfile`
-
-### ⚡ Functions (5)
-- `create_user()`
-- `get_user_by_id()`
-- `update_user()`
-- `delete_user()`
-- `list_users()`
-
-### 📥 Imports (3)
-- `src/models/user.py`
-- `src/database/connection.py`
-- `src/utils/hash.py`
-```
-
-**Use cases:**
-- Quick file overview
-- Understanding file organization
-- Navigating large codebases
-
----
-
 ## Usage Examples
 
-### Example 1: Finding Bug-Prone Code
+### Example 1: Code-Only Root Cause Analysis
 
 **Prompt to Claude:**
 ```
-Use agentic-memory to search for error handling in the authentication flow.
-I need to understand how JWT validation failures are handled.
+Use agentic-memory with domain=code to find where JWT validation failures are handled.
 ```
 
 **What happens:**
-1. Claude calls `search_codebase` with query "JWT validation error handling"
-2. Returns relevant functions with high similarity scores
-3. Claude reads the code and explains the logic
-4. You get context-aware insights without manual searching
+1. Claude calls `search_codebase(query=..., domain="code")`.
+2. Claude follows up with `get_file_dependencies(file_path=..., domain="code")`.
+3. You get concrete implementation context and callers/importers.
 
 ---
 
-### Example 2: Safe Refactoring
+### Example 2: Ownership and Commit Provenance (Git Domain)
 
 **Prompt to Cursor:**
 ```
-I want to rename the `User` model to `Account`. Use agentic-memory to identify
-all files that would be affected by this change.
+Use domain=git to show who changed src/services/payment.py most recently and summarize the commit context.
 ```
 
 **What happens:**
-1. Cursor calls `identify_impact` on `src/models/user.py`
-2. Gets a list of 15 files across 3 depth levels
-3. Cursor can now guide you through systematic refactoring
-4. Reduce risk of missing dependent files
+1. Cursor calls `get_git_file_history(file_path="src/services/payment.py", domain="git")`.
+2. Cursor selects a commit SHA from results.
+3. Cursor calls `get_commit_context(sha=...)` for message and diff stats.
 
 ---
 
-### Example 3: Understanding Legacy Code
+### Example 3: Hybrid Refactor Risk Check
 
 **Prompt to Claude:**
 ```
-Use agentic-memory to find all files related to payment processing.
-I need to understand how the payment flow works in this legacy codebase.
+Before I refactor src/database/connection.py, run a hybrid risk check over the last 30 days.
 ```
 
 **What happens:**
-1. Claude calls `search_codebase` with query "payment processing flow"
-2. Gets functions like `process_payment`, `handle_charge`, `refund_transaction`
-3. Claude then calls `get_file_dependencies` for each file
-4. Builds a mental model of the payment system
-5. Provides a detailed explanation of the architecture
+1. Claude calls `identify_impact(..., domain="code")` for blast radius.
+2. Claude calls `find_recent_risky_changes(..., domain="hybrid")` for churn and recency.
+3. You get an ordered risk view before changing critical infrastructure.
 
 ---
 
-### Example 4: Impact Analysis Before Commit
-
-**Prompt to Cursor:**
-```
-I'm about to modify src/database/connection.py. Use agentic-memory to show me
-what would break if I introduce a breaking change here.
-```
-
-**What happens:**
-1. Cursor calls `identify_impact` on `src/database/connection.py`
-2. Discovers 42 files depend on this (directly or transitively)
-3. Highlights critical paths like authentication, payment processing
-4. Suggests testing strategy and rollback plan
-
----
-
-### Example 5: Onboarding to New Codebase
+### Example 4: Codebase Onboarding with Domain Routing
 
 **Prompt to Claude:**
 ```
-Use agentic-memory to give me a tour of this codebase. Start by finding the main
-application entry point and then explore the key components.
+Give me a tour of authentication. Start with domain=code, then use domain=git for recent changes.
 ```
 
 **What happens:**
-1. Claude searches for "main application entry point"
-2. Finds `main.py`, `app.py`, or `index.py`
-3. Uses `get_file_info` to understand structure
-4. Follows `IMPORTS` relationships to map dependencies
-5. Builds an interactive "tour" of the architecture
+1. Claude maps structure with `search_codebase(..., domain="code")` and `get_file_info(..., domain="code")`.
+2. Claude pivots to `get_git_file_history(..., domain="git")` to show recent ownership/activity.
+3. You get both architecture context and change history.
+
+---
+
+### Example 5: Backward-Compatible Fallback
+
+If your build does not support `domain` yet:
+1. Call `search_codebase`, `get_file_dependencies`, `identify_impact`, and `get_file_info` without `domain`.
+2. Keep workflows code-only.
+3. Upgrade to a git-enabled build to use git/hybrid routing.
 
 ---
 
@@ -861,16 +763,20 @@ Worse: "Show me auth stuff"
 ### 3. Combine Tools
 
 Use multiple tools together:
-1. `search_codebase` to find relevant files
-2. `get_file_dependencies` to understand context
-3. `identify_impact` to assess changes
+1. `search_codebase(..., domain="code")` to find relevant files
+2. `get_file_dependencies(..., domain="code")` to understand context
+3. `identify_impact(..., domain="code")` for blast radius
+4. `get_git_file_history(..., domain="git")` when ownership/history is needed
+5. `find_recent_risky_changes(..., domain="hybrid")` for recent churn risk
 
 ### 4. Verify Before Major Changes
 
 Before refactoring:
 ```bash
 codememory search "function_name"
-codememory identify-impact path/to/file.py
+codememory impact path/to/file.py
+# Optional git graph sync (git-enabled builds)
+codememory git-sync --repo /absolute/path/to/repo --incremental
 ```
 
 ### 5. Keep Index Updated
@@ -944,7 +850,10 @@ Logs will show:
 
 | Tool | Purpose | Example |
 |------|---------|---------|
-| `search_codebase` | Semantic search | "Find authentication logic" |
-| `get_file_dependencies` | Import graph | What imports `utils.py`? |
-| `identify_impact` | Blast radius | What breaks if I change `User` model? |
-| `get_file_info` | File overview | Show structure of `app.py` |
+| `search_codebase` | Semantic retrieval with domain routing | `search_codebase(query="auth", domain="code")` |
+| `get_file_dependencies` | Dependency graph lookup | `get_file_dependencies(file_path="src/auth.py", domain="code")` |
+| `identify_impact` | Transitive blast radius | `identify_impact(file_path="src/models/user.py", domain="code")` |
+| `get_file_info` | File structure overview | `get_file_info(file_path="src/app.py", domain="code")` |
+| `get_git_file_history` | File commit history and ownership | `get_git_file_history(file_path="src/app.py", domain="git")` |
+| `get_commit_context` | Commit message + diff stats | `get_commit_context(sha="9b31ce0")` |
+| `find_recent_risky_changes` | Hybrid churn + structural risk | `find_recent_risky_changes(path_or_symbol="src/db.py", domain="hybrid")` |

@@ -10,6 +10,7 @@ Common issues and solutions when using Agentic Memory.
 - [Neo4j Connection Issues](#neo4j-connection-issues)
 - [Indexing Issues](#indexing-issues)
 - [MCP Server Issues](#mcp-server-issues)
+- [Git Graph Issues](#git-graph-issues)
 - [Integration Path Policy](#integration-path-policy)
 - [Performance Issues](#performance-issues)
 
@@ -249,6 +250,80 @@ codememory serve
 
 # Should see: "📂 Using config from: .codememory/config.json"
 ```
+
+---
+
+## Git Graph Issues
+
+### `invalid choice: 'git-init'` (or `git-sync`, `git-status`)
+
+**Symptom:** CLI does not recognize git graph commands.
+
+**Cause:** Installed package version does not include git graph command surfaces yet.
+
+**Solution:**
+```bash
+codememory --help
+# Verify git-init/git-sync/git-status appear under commands
+```
+
+If missing, upgrade to a git graph-enabled release/build.
+
+### `Not a git repository`
+
+**Symptom:** `git-init` or `git-sync` fails because repo metadata cannot be found.
+
+**Solution:**
+```bash
+codememory git-init --repo /absolute/path/to/repo --mode local --full-history
+# Confirm /absolute/path/to/repo contains a .git directory
+```
+
+### `git-sync` runs but reports zero work
+
+**Symptom:** Sync completes with no new commits.
+
+**Expected when no history delta:**
+```text
+✅ Git sync complete
+Mode: incremental
+New commits: 0
+```
+
+**Action:** create or fetch new commits, then re-run incremental sync.
+
+### `partial_history: true` in `git-status`
+
+**Symptom:** status indicates incomplete history coverage.
+
+**Cause:** shallow clone or detached history.
+
+**Solution:**
+```bash
+git fetch --unshallow
+codememory git-sync --repo /absolute/path/to/repo --full
+```
+
+### Sync errors after force push / rewritten history
+
+**Symptom:** checkpoint no longer matches reachable commit graph.
+
+**Solution:**
+```bash
+codememory git-sync --repo /absolute/path/to/repo --full
+```
+
+If your build exposes reconcile flags, use `codememory git-sync --help` and run the documented reconcile mode.
+
+### GitHub enrichment fails, local ingestion should still proceed
+
+**Symptom:** GitHub API auth/rate-limit errors during `local+github` mode.
+
+**Expected behavior:** local git ingestion still succeeds; enrichment is marked stale/disabled in status.
+
+**Action:**
+- Verify provider token and repository mapping.
+- Re-run `git-sync` later; do not block local-only ingestion.
 
 ---
 

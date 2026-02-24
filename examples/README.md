@@ -20,7 +20,7 @@ Here's a typical workflow for using Agentic Memory:
 
 ```bash
 # 1. Install globally (once)
-pipx install agentic-memory
+pipx install codememory
 
 # 2. Start Neo4j (once per session)
 docker-compose up -d neo4j

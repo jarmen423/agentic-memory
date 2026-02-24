@@ -48,28 +48,20 @@ class TestToolkit:
 
     def test_get_file_dependencies_found(self, toolkit, mock_graph):
         """Test getting dependencies for existing file."""
-        mock_imports = [{"target_path": "other.py"}]
-        mock_dependents = [{"source_path": "caller.py"}]
-        
-        mock_graph.driver.session.return_value.__enter__ = Mock(
-            return_value=Mock(run=Mock(return_value=Mock(
-                single=Mock(return_value={"imports": mock_imports, "dependents": mock_dependents})
-            )))
-        )
-        mock_graph.driver.session.return_value.__exit__ = Mock(return_value=False)
+        mock_graph.get_file_dependencies.return_value = {
+            "imports": ["other.py"],
+            "imported_by": ["caller.py"],
+        }
 
         result = toolkit.get_file_dependencies("test.py")
 
         assert isinstance(result, str)
+        assert "other.py" in result
+        assert "caller.py" in result
 
     def test_get_file_dependencies_not_found(self, toolkit, mock_graph):
         """Test getting dependencies for non-existent file."""
-        mock_graph.driver.session.return_value.__enter__ = Mock(
-            return_value=Mock(run=Mock(return_value=Mock(
-                single=Mock(return_value=None)
-            )))
-        )
-        mock_graph.driver.session.return_value.__exit__ = Mock(return_value=False)
+        mock_graph.get_file_dependencies.return_value = {"imports": [], "imported_by": []}
 
         result = toolkit.get_file_dependencies("nonexistent.py")
 
@@ -84,7 +76,7 @@ class TestMCPServerTools:
         from codememory.server.app import mcp, graph
         
         assert mcp is not None
-        assert graph is not None
+        assert graph is None
 
     def test_tool_registration(self):
         """Test that all tools are registered."""
@@ -119,20 +111,22 @@ class TestIdentifyImpact:
     def test_identify_impact_not_found(self, mock_graph):
         """Test impact analysis for non-existent file."""
         mock_graph.identify_impact.return_value = {"affected_files": [], "total_count": 0}
-        
+
+        from codememory.server.app import identify_impact
         with patch('codememory.server.app.graph', mock_graph):
             result = identify_impact("nonexistent.py")
             
-            assert "no impact" in result.lower() or "not found" in result.lower()
+            assert "isolated" in result.lower() or "no files depend" in result.lower()
 
     def test_identify_impact_error(self, mock_graph):
         """Test impact analysis error handling."""
         mock_graph.identify_impact.side_effect = Exception("Graph error")
-        
+
+        from codememory.server.app import identify_impact
         with patch('codememory.server.app.graph', mock_graph):
             result = identify_impact("file.py")
             
-            assert "error" in result.lower()
+            assert "failed" in result.lower()
 
 
 class TestSearchCodebase:
@@ -164,5 +158,5 @@ class TestSearchCodebase:
 
         with patch('codememory.server.app.graph', mock_graph):
             from codememory.server.app import search_codebase
-            with pytest.raises(Exception, match="Search failed"):
-                search_codebase("test")
+            result = search_codebase("test")
+            assert "failed" in result.lower()

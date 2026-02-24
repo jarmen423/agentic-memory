@@ -35,7 +35,7 @@ xcode-select --install
 # Use a virtual environment
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
-pip install agentic-memory
+pip install codememory
 ```
 
 ### `codememory: command not found`
@@ -48,7 +48,7 @@ pip install agentic-memory
 export PATH="$HOME/.local/bin:$PATH"
 
 # Or use pipx for isolated installation (recommended)
-pipx install agentic-memory
+pipx install codememory
 ```
 
 ---
@@ -324,7 +324,7 @@ codememory status
 
 | Error | Cause | Solution |
 |-------|-------|----------|
-| `ModuleNotFoundError: No module named 'codememory'` | Not installed or in wrong venv | `pip install agentic-memory` |
+| `ModuleNotFoundError: No module named 'codememory'` | Not installed or in wrong venv | `pip install codememory` |
 | `Neo4j timeout` | Neo4j not responding | Restart Neo4j: `docker-compose restart neo4j` |
 | `OpenAI rate limit` | Too many embedding requests | Wait 60s, re-run; costs should still be low |
 | `File not found in graph` | File not indexed yet | Run `codememory index` |

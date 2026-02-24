@@ -1,6 +1,5 @@
 import logging
-import sys
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any
 from tree_sitter import Language, Parser, Query, QueryCursor, Node, Tree
 import tree_sitter_python
 import tree_sitter_javascript
@@ -29,10 +28,17 @@ class CodeParser:
             logger.error(f"Failed to initialize parsers: {e}")
 
     def parse_file(self, code: str, extension: str) -> Dict[str, Any]:
+        default_result = {
+            "classes": [],
+            "functions": [],
+            "imports": [],
+            "calls": [],
+            "env_vars": [],
+        }
         parser = self.parsers.get(extension)
         if not parser:
             logger.warning(f"No parser found for extension {extension}")
-            return {}
+            return default_result
 
         try:
             tree = parser.parse(bytes(code, "utf8"))
@@ -45,9 +51,9 @@ class CodeParser:
                 "calls": self._extract_calls(tree, code, lang, extension),
                 "env_vars": self._extract_env_vars(tree, code, lang, extension)
             }
-        except (ValueError, RuntimeError) as e:
+        except (ValueError, RuntimeError, AttributeError, TypeError) as e:
             logger.error(f"Error parsing file with extension {extension}: {e}")
-            return {}
+            return default_result
 
     def _extract_classes(self, tree: Tree, code: str, lang: Language, extension: str) -> List[Dict[str, Any]]:
         classes = []
@@ -139,12 +145,9 @@ class CodeParser:
             query = Query(lang, query_scm)
             cursor = QueryCursor(query)
             captures = cursor.captures(tree.root_node)
-
-            # captures returns list of (node, name) tuples
-            for node, name in captures:
-                if name == 'module':
-                    module_name = code[node.start_byte:node.end_byte]
-                    imports.append(module_name)
+            for node in captures.get("module", []):
+                module_name = code[node.start_byte:node.end_byte]
+                imports.append(module_name)
         except (RuntimeError, AttributeError, IndexError) as e:
             logger.error(f"Error extracting imports: {e}")
 
@@ -152,18 +155,19 @@ class CodeParser:
 
     def _extract_calls(self, tree: Tree, code: str, lang: Language, extension: str) -> List[str]:
         calls = []
-        query_scm = """(call function: (identifier) @name)"""
+        if extension == ".py":
+            query_scm = """(call function: (identifier) @name)"""
+        else:
+            query_scm = """(call_expression function: (identifier) @name)"""
 
         try:
             query = Query(lang, query_scm)
             cursor = QueryCursor(query)
             captures = cursor.captures(tree.root_node)
 
-            if isinstance(captures, dict):
-                nodes = captures.get('name', [])
-                for node in nodes:
-                    call_name = code[node.start_byte:node.end_byte]
-                    calls.append(call_name)
+            for node in captures.get("name", []):
+                call_name = code[node.start_byte:node.end_byte]
+                calls.append(call_name)
         except (RuntimeError, AttributeError) as e:
             logger.error(f"Error extracting calls: {e}")
 

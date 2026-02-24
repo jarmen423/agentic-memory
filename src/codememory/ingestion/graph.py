@@ -124,7 +124,7 @@ class KnowledgeGraphBuilder:
         uri: str,
         user: str,
         password: str,
-        openai_key: str,
+        openai_key: Optional[str],
         repo_root: Optional[Path] = None,
         ignore_dirs: Optional[Set[str]] = None,
         ignore_files: Optional[Set[str]] = None,
@@ -136,7 +136,7 @@ class KnowledgeGraphBuilder:
             uri: Neo4j connection URI (e.g., "bolt://localhost:7687")
             user: Neo4j username
             password: Neo4j password
-            openai_key: OpenAI API key for embeddings
+            openai_key: OpenAI API key for embeddings (optional; semantic search degrades without it)
             repo_root: Root path of repository to index (optional, can be set per-method)
             ignore_dirs: Set of directory names to ignore during indexing
             ignore_files: Set of file patterns to ignore during indexing
@@ -153,7 +153,7 @@ class KnowledgeGraphBuilder:
         
         # Circuit breaker for Neo4j connection failures
         self.circuit_breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=30)
-        self.openai_client = OpenAI(api_key=openai_key)
+        self.openai_client = OpenAI(api_key=openai_key) if openai_key else None
         self.parsers = self._init_parsers()
         self.repo_root = repo_root
         self.token_usage = {
@@ -261,6 +261,10 @@ class KnowledgeGraphBuilder:
         Returns:
             List of floats representing the embedding vector
         """
+        if self.openai_client is None:
+            logger.warning("OPENAI_API_KEY not configured; returning zero-vector embedding.")
+            return [0.0] * self.VECTOR_DIMENSIONS
+
         # Truncate text to avoid OpenAI 400 Bad Request (Limit is 8192 tokens)
         # Using 24000 chars as safety margin for most code files.
         MAX_CHARS = 24000

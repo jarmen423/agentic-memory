@@ -8,7 +8,8 @@ import os
 import atexit
 import logging
 import time
-from typing import Optional, Dict, Any
+import re
+from typing import Optional, Dict, Any, List
 from functools import wraps
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -30,6 +31,11 @@ _repo_override: Optional[Path] = None
 RATE_LIMIT_REQUESTS = 100  # Max requests per window
 RATE_LIMIT_WINDOW = 60     # Window in seconds
 _request_log: Dict[str, list] = {}
+VALID_DOMAINS = {"code", "git", "hybrid"}
+GIT_GRAPH_MISSING_MESSAGE = (
+    "❌ Git graph data not found. Run git ingestion before using git-aware queries."
+)
+SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
 
 def rate_limit(func):
@@ -172,10 +178,143 @@ def validate_tool_output(output: str, max_length: int = 8000) -> str:
     return output
 
 
+def _normalize_domain(domain: str) -> Optional[str]:
+    """Normalize and validate search routing domain."""
+    if not isinstance(domain, str):
+        return None
+    normalized = domain.strip().lower()
+    if normalized in VALID_DOMAINS:
+        return normalized
+    return None
+
+
+def _validate_git_graph_data(current_graph: KnowledgeGraphBuilder) -> Optional[str]:
+    """Ensure git graph data is available before running git-domain tools."""
+    has_git_data_fn = getattr(current_graph, "has_git_graph_data", None)
+    if not callable(has_git_data_fn):
+        return GIT_GRAPH_MISSING_MESSAGE
+
+    try:
+        if not has_git_data_fn():
+            return GIT_GRAPH_MISSING_MESSAGE
+    except Exception as e:
+        logger.error(f"Git graph availability check failed: {e}")
+        return f"❌ Failed to validate git graph data: {str(e)}"
+
+    return None
+
+
+def _format_code_results(results: List[Dict[str, Any]]) -> str:
+    """Format code semantic search results."""
+    output = f"Found {len(results)} relevant code result(s):\n\n"
+    for i, r in enumerate(results, 1):
+        name = r.get("name", "Unknown")
+        score = r.get("score", 0)
+        text = r.get("text", "")[:300]
+        sig = r.get("sig", "")
+
+        output += f"{i}. **{name}**"
+        if sig:
+            output += f" (`{sig}`)"
+        output += f" [Score: {score:.2f}]\n"
+        output += f"   ```\n{text}...\n   ```\n\n"
+
+    return output.strip()
+
+
+def _format_git_file_history(file_path: str, history: List[Dict[str, Any]]) -> str:
+    """Format git file history records for LLM output."""
+    output = f"## Git History for `{file_path}`\n\n"
+    output += f"Found {len(history)} commit(s):\n\n"
+
+    for i, entry in enumerate(history, 1):
+        sha = entry.get("sha", "unknown")
+        short_sha = sha[:12] if isinstance(sha, str) else "unknown"
+        subject = entry.get("message_subject", "(no subject)")
+        committed_at = entry.get("committed_at", "unknown")
+        author = entry.get("author_name") or entry.get("author_email") or "unknown"
+        change_type = entry.get("change_type", "unknown")
+        additions = entry.get("additions", 0)
+        deletions = entry.get("deletions", 0)
+
+        output += f"{i}. `{short_sha}` {subject}\n"
+        output += f"   - Author: {author}\n"
+        output += f"   - Committed: {committed_at}\n"
+        output += f"   - Change: {change_type} (+{additions}/-{deletions})\n\n"
+
+    return output.strip()
+
+
+def _format_commit_context_output(context: Dict[str, Any], include_diff_stats: bool) -> str:
+    """Format detailed commit context for LLM output."""
+    sha = context.get("sha", "unknown")
+    subject = context.get("message_subject", "(no subject)")
+    body = context.get("message_body", "")
+    committed_at = context.get("committed_at", "unknown")
+    authored_at = context.get("authored_at", "unknown")
+    is_merge = context.get("is_merge", False)
+    parent_shas = context.get("parent_shas", [])
+    author_name = context.get("author_name") or "unknown"
+    author_email = context.get("author_email") or "unknown"
+    pull_requests = context.get("pull_requests", [])
+    issues = context.get("issues", [])
+
+    output = f"## Commit `{sha}`\n\n"
+    output += f"**Subject:** {subject}\n"
+    output += f"**Author:** {author_name} <{author_email}>\n"
+    output += f"**Authored At:** {authored_at}\n"
+    output += f"**Committed At:** {committed_at}\n"
+    output += f"**Merge Commit:** {is_merge}\n"
+    if parent_shas:
+        output += f"**Parents:** {', '.join(parent_shas)}\n"
+    output += "\n"
+
+    if body:
+        output += f"### Message Body\n{body}\n\n"
+
+    if pull_requests:
+        output += "### Linked Pull Requests\n"
+        for pr in pull_requests:
+            number = pr.get("number", "?")
+            title = pr.get("title", "(untitled)")
+            state = pr.get("state", "unknown")
+            output += f"- #{number}: {title} ({state})\n"
+        output += "\n"
+
+    if issues:
+        output += "### Referenced Issues\n"
+        for issue in issues:
+            number = issue.get("number", "?")
+            title = issue.get("title", "(untitled)")
+            state = issue.get("state", "unknown")
+            output += f"- #{number}: {title} ({state})\n"
+        output += "\n"
+
+    if include_diff_stats:
+        stats = context.get("stats", {})
+        files = context.get("files", [])
+        output += "### Diff Stats\n"
+        output += f"**Files Changed:** {stats.get('files_changed', 0)}\n"
+        output += f"**Additions:** {stats.get('additions', 0)}\n"
+        output += f"**Deletions:** {stats.get('deletions', 0)}\n\n"
+
+        if files:
+            output += "### Changed Files\n"
+            for file_info in files:
+                path = file_info.get("path", "unknown")
+                change_type = file_info.get("change_type", "unknown")
+                additions = file_info.get("additions", 0)
+                deletions = file_info.get("deletions", 0)
+                output += f"- `{path}` ({change_type}, +{additions}/-{deletions})\n"
+            output += "\n"
+
+    return output.strip()
+
+
 @mcp.tool()
 @rate_limit
 @log_tool_call
-def search_codebase(query: str, limit: int = 5) -> str:
+def search_codebase(query: str, limit: int = 5, domain: str = "code") -> str:
     """
     Semantically search the codebase for functionality.
 
@@ -185,31 +324,75 @@ def search_codebase(query: str, limit: int = 5) -> str:
     Args:
         query: Natural language query (e.g. "Where is the auth logic?")
         limit: Maximum number of results to return (default: 5)
+        domain: Search domain route: code, git, or hybrid (default: code)
 
     Returns:
         Formatted string with search results including scores and code snippets
     """
+    domain_mode = _normalize_domain(domain)
+    if not domain_mode:
+        valid_domains = "|".join(sorted(VALID_DOMAINS))
+        return f"❌ Invalid domain `{domain}`. Valid values: {valid_domains}"
+
     current_graph = get_graph()
     if not current_graph:
         return "❌ Graph not initialized. Check Neo4j connection."
 
+    normalized_query = query.strip()
+    safe_limit = max(1, int(limit))
+
     try:
-        results = current_graph.semantic_search(query, limit=limit)
-        if not results:
-            return "No relevant code found."
+        if domain_mode == "code":
+            results = current_graph.semantic_search(normalized_query, limit=safe_limit)
+            if not results:
+                return "No relevant code found."
+            return validate_tool_output(_format_code_results(results))
 
-        output = f"Found {len(results)} relevant code result(s):\n\n"
-        for i, r in enumerate(results, 1):
-            name = r.get("name", "Unknown")
-            score = r.get("score", 0)
-            text = r.get("text", "")[:300]
-            sig = r.get("sig", "")
+        git_graph_error = _validate_git_graph_data(current_graph)
+        if git_graph_error:
+            return git_graph_error
 
-            output += f"{i}. **{name}**"
-            if sig:
-                output += f" (`{sig}`)"
-            output += f" [Score: {score:.2f}]\n"
-            output += f"   ```\n{text}...\n   ```\n\n"
+        if domain_mode == "git":
+            if SHA_PATTERN.match(normalized_query):
+                context = current_graph.get_commit_context(
+                    normalized_query, include_diff_stats=False
+                )
+                if not context:
+                    return f"No commit found for `{normalized_query}`."
+                return validate_tool_output(
+                    _format_commit_context_output(context, include_diff_stats=False)
+                )
+
+            history = current_graph.get_git_file_history(normalized_query, limit=safe_limit)
+            if not history:
+                return f"No relevant git history found for `{normalized_query}`."
+            return validate_tool_output(_format_git_file_history(normalized_query, history))
+
+        # hybrid: return both code results and git context (if query maps to file/sha)
+        code_results = current_graph.semantic_search(normalized_query, limit=safe_limit)
+        output = "## Hybrid Search Results\n\n"
+
+        if code_results:
+            output += "### Code Results\n"
+            output += _format_code_results(code_results)
+            output += "\n\n"
+        else:
+            output += "### Code Results\nNo relevant code found.\n\n"
+
+        if SHA_PATTERN.match(normalized_query):
+            context = current_graph.get_commit_context(normalized_query, include_diff_stats=False)
+            if context:
+                output += "### Git Commit Context\n"
+                output += _format_commit_context_output(context, include_diff_stats=False)
+            else:
+                output += f"### Git Commit Context\nNo commit found for `{normalized_query}`."
+        else:
+            history = current_graph.get_git_file_history(normalized_query, limit=safe_limit)
+            if history:
+                output += "### Git File History\n"
+                output += _format_git_file_history(normalized_query, history)
+            else:
+                output += f"### Git File History\nNo git history found for `{normalized_query}`."
 
         return validate_tool_output(output.strip())
     except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
@@ -270,6 +453,93 @@ def get_file_dependencies(file_path: str) -> str:
     except Exception as e:
         logger.error(f"Unexpected dependencies error: {e}")
         return f"❌ Failed to get dependencies: {str(e)}"
+
+
+@mcp.tool()
+@rate_limit
+@log_tool_call
+def get_git_file_history(file_path: str, limit: int = 20) -> str:
+    """
+    Return commit history for a file from the git graph domain.
+
+    Args:
+        file_path: Relative repository file path
+        limit: Maximum commits to return (default: 20)
+
+    Returns:
+        Formatted commit history for the file
+    """
+    current_graph = get_graph()
+    if not current_graph:
+        return "❌ Graph not initialized. Check Neo4j connection."
+
+    normalized_path = file_path.strip()
+    if not normalized_path:
+        return "❌ `file_path` is required."
+
+    safe_limit = max(1, int(limit))
+
+    try:
+        git_graph_error = _validate_git_graph_data(current_graph)
+        if git_graph_error:
+            return git_graph_error
+
+        history = current_graph.get_git_file_history(normalized_path, limit=safe_limit)
+        if not history:
+            return f"No git history found for `{normalized_path}`."
+        return validate_tool_output(_format_git_file_history(normalized_path, history))
+    except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
+        logger.error(f"Git file history error: {e}")
+        return f"❌ Failed to get git file history: {str(e)}"
+    except Exception as e:
+        logger.error(f"Unexpected git file history error: {e}")
+        return f"❌ Failed to get git file history: {str(e)}"
+
+
+@mcp.tool()
+@rate_limit
+@log_tool_call
+def get_commit_context(sha: str, include_diff_stats: bool = True) -> str:
+    """
+    Return detailed context for a commit SHA from the git graph domain.
+
+    Args:
+        sha: Full or short commit SHA
+        include_diff_stats: Include changed files and line stats in response
+
+    Returns:
+        Formatted commit metadata and optional diff stats
+    """
+    current_graph = get_graph()
+    if not current_graph:
+        return "❌ Graph not initialized. Check Neo4j connection."
+
+    normalized_sha = sha.strip()
+    if not normalized_sha:
+        return "❌ `sha` is required."
+    if not SHA_PATTERN.match(normalized_sha):
+        return f"❌ Invalid commit SHA `{sha}`."
+
+    try:
+        git_graph_error = _validate_git_graph_data(current_graph)
+        if git_graph_error:
+            return git_graph_error
+
+        context = current_graph.get_commit_context(
+            normalized_sha, include_diff_stats=include_diff_stats
+        )
+        if not context:
+            return f"No commit found for `{normalized_sha}`."
+
+        return validate_tool_output(
+            _format_commit_context_output(context, include_diff_stats=include_diff_stats)
+        )
+    except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
+        logger.error(f"Commit context error: {e}")
+        return f"❌ Failed to get commit context: {str(e)}"
+    except Exception as e:
+        logger.error(f"Unexpected commit context error: {e}")
+        return f"❌ Failed to get commit context: {str(e)}"
 
 
 @mcp.tool()

@@ -101,3 +101,61 @@ exec codememory serve --port 8090
 
 - Ingestion, prune/deletion, dedupe, and core graph integrity checks all passed.
 - The graph appears healthy for continued MCP/tool validation.
+
+---
+
+## Validation Run (User Reported, v0.1.3, 2026-02-24)
+
+### 1. TS/JSX Dependency Extraction: **PASS**
+
+- Target file: `frontend/src/components/XRayIngestion.tsx`
+- Prior issue (`No imports found`) is resolved.
+- `get_file_dependencies` returned:
+  - Imports: `ParticleBrain.tsx`, `trustStore.ts`, `config.ts`, `types/index.ts`, `mockData.ts`
+  - Imported by: `App.tsx`
+
+### 2. Tool Quality Flow (MCP): **PASS**
+
+- Query: `HeyGen video generation`
+  - Top hit: `new-backend/app/services/heygen_service.py:HeyGenService` (score `0.76`)
+  - Relevance: excellent for external API service location.
+  - `get_file_info`: class signature + 4 functions detected (including `generate_avatar_clip`).
+  - `get_file_dependencies`: detected `app/core/config.py` import.
+  - `identify_impact` (depth 3): `9` affected files, including `pipeline_service.py` and unit tests.
+
+- Query: `PDF parsing`
+  - Top hits:
+    - `new-backend/app/services/pdf_service.py` (score `0.70`)
+    - `frontend/.../PDFViewer.tsx` (score `0.69`)
+  - Relevance: strong cross-language retrieval (backend parser + frontend parsing path).
+  - `get_file_info` (`PDFViewer.tsx`): found `HighlightedText()`, `ExtractedTextView()`, `parseReportSections()`.
+  - `get_file_dependencies`: mapped `Skeleton.tsx` imports.
+  - `identify_impact`: mapped dependency from `LaserLinkWorkspace.tsx`.
+
+### 3. Prune Behavior Regression: **PASS**
+
+- `.codememory/.graphignore` included `frontend/_archive/`.
+- Verification query:
+  - `MATCH (f:File) WHERE f.path CONTAINS "frontend/_archive" RETURN count(f);`
+  - Result: `0`
+
+### 4. Reindex Dedupe / Cost Regression: **PASS**
+
+- Re-ran `codememory index` with no local changes.
+- Result:
+  - Embedding API Calls: `0`
+  - Tokens: `0`
+  - Cost: `$0.0000 USD`
+  - Processed entities: `0`
+
+### 5. Graph Health Checks: **PASS**
+
+- Orphan chunks: `0`
+- Duplicate signatures (`count > 1`): empty
+- `IMPORTS` edges: `224` (up from `169` in prior run, consistent with TS import extraction fix)
+- `CALLS` edges: `506`
+
+### v0.1.3 Conclusion
+
+- Regression checks for TS/JSX imports, pruning, dedupe, and graph integrity all passed.
+- MCP retrieval quality remained strong across backend/frontend and Python/TypeScript contexts.

@@ -126,6 +126,21 @@
 - [ ] Record measured latency/ingestion metrics from rerun
 - [ ] Confirm command/tool availability in published package version used by testers
 
+### 2.2 GitHub Enrichment Execution (ref: `GIT-INTEGRATION-SPEC.md`)
+
+- [ ] Implement GitHub auth/config surface (token source, repo mapping, config validation)
+- [ ] Define provider-safe API client wrapper with retry/backoff and rate-limit handling
+- [ ] Implement PR ingestion into `GitPullRequest` nodes
+- [ ] Implement issue ingestion into `GitIssue` nodes
+- [ ] Link commits to PRs (`PART_OF_PR`) using robust matching strategy
+- [ ] Link commits to issues (`REFERENCES_ISSUE`) from commit/PR metadata
+- [ ] Add incremental enrichment sync with checkpointing (local sync remains non-blocking)
+- [ ] Add stale-data reconciliation strategy for force-push/rewritten history cases
+- [ ] Add unit tests for enrichment parsers/mappers and failure paths
+- [ ] Add integration tests for end-to-end enrichment graph writes and idempotency
+- [ ] Add CLI/MCP visibility for enrichment status in `git-status` and troubleshooting outputs
+- [ ] Update docs with setup, security guidance, and field-validation workflow for GitHub enrichment
+
 ---
 
 ### Medium Priority (Reliability)

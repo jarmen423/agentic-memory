@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -16,6 +17,7 @@ from codememory.ingestion.git_graph import GitGraphIngestor
 from codememory.ingestion.graph import KnowledgeGraphBuilder
 from codememory.ingestion.watcher import start_continuous_watch
 from codememory.config import Config, find_repo_root, DEFAULT_CONFIG
+from codememory.telemetry import TelemetryStore, resolve_telemetry_db_path
 
 
 def print_banner():
@@ -879,6 +881,133 @@ def cmd_git_status(args):
         ingestor.close()
 
 
+def cmd_annotate_interaction(
+    args: argparse.Namespace,
+    *,
+    annotation_mode: str,
+    prompt_prefix: str,
+) -> None:
+    """
+    Manually annotate the latest MCP tool-use burst as prompted/unprompted.
+
+    This is intentionally user-driven: you run it after an agent response to label
+    whether the tool usage was explicitly prompted by you.
+    """
+    if annotation_mode not in {"prompted", "unprompted"}:
+        _exit_with_error(
+            args,
+            error=f"Invalid annotation mode: {annotation_mode}",
+            human_lines=[f"❌ Invalid annotation mode: {annotation_mode}"],
+        )
+
+    cleaned_prefix = prompt_prefix.strip()
+    if not cleaned_prefix:
+        _exit_with_error(
+            args,
+            error="Prompt prefix is required.",
+            human_lines=["❌ Prompt prefix is required."],
+        )
+
+    repo_root = find_repo_root()
+    db_path = resolve_telemetry_db_path(repo_root)
+    store = TelemetryStore(db_path)
+
+    wait_seconds = max(0, int(getattr(args, "wait_seconds", 45)))
+    idle_seconds = max(1, int(getattr(args, "idle_seconds", 3)))
+    lookback_seconds = max(15, int(getattr(args, "lookback_seconds", 180)))
+    recent_seconds = max(5, int(getattr(args, "recent_seconds", 90)))
+    client_filter = getattr(args, "client", None) or os.getenv("CODEMEMORY_CLIENT")
+    specific_call_ids = getattr(args, "tool_call_id", None) or []
+
+    annotation_id = (
+        getattr(args, "annotation_id", None) or TelemetryStore.new_annotation_id()
+    )
+    store.create_pending_annotation(
+        annotation_id=annotation_id,
+        prompt_prefix=cleaned_prefix,
+        annotation_mode=annotation_mode,
+        client_id=client_filter,
+    )
+
+    if specific_call_ids:
+        updated = store.apply_annotation_to_calls(
+            annotation_id=annotation_id,
+            prompt_prefix=cleaned_prefix,
+            annotation_mode=annotation_mode,
+            call_ids=[int(x) for x in specific_call_ids],
+        )
+        if updated == 0:
+            store.delete_pending_annotation(annotation_id)
+            print(
+                "ℹ️ No matching tool-call IDs found. Pending annotation entry was removed."
+            )
+            return
+
+        print(f"✅ Annotated {updated} tool call(s) as `{annotation_mode}`.")
+        print(f"   Annotation ID: {annotation_id}")
+        print(f"   Prompt Prefix: {cleaned_prefix}")
+        print(f"   Tool Call IDs: {', '.join(str(x) for x in specific_call_ids)}")
+        return
+
+    print(
+        f"🧾 Waiting up to {wait_seconds}s for latest tool-use burst to settle "
+        f"(idle={idle_seconds}s)..."
+    )
+    if client_filter:
+        print(f"   Client filter: {client_filter}")
+
+    deadline = time.time() + wait_seconds
+    matched_burst = []
+    while True:
+        burst = store.get_latest_unannotated_burst(
+            lookback_seconds=lookback_seconds,
+            idle_seconds=idle_seconds,
+            client_id=client_filter,
+        )
+
+        if burst:
+            newest_epoch = int(burst[-1]["epoch_ms"])
+            now_epoch = int(time.time() * 1000)
+            is_recent = now_epoch - newest_epoch <= (recent_seconds * 1000)
+            is_idle = now_epoch - newest_epoch >= (idle_seconds * 1000)
+
+            if is_recent and is_idle:
+                matched_burst = burst
+                break
+
+        if time.time() >= deadline:
+            break
+        time.sleep(0.75)
+
+    if not matched_burst:
+        store.delete_pending_annotation(annotation_id)
+        print("ℹ️ No tool usage matched this prompt window.")
+        print("   Pending annotation entry was removed (no-op).")
+        return
+
+    call_ids = [int(row["id"]) for row in matched_burst]
+    updated = store.apply_annotation_to_calls(
+        annotation_id=annotation_id,
+        prompt_prefix=cleaned_prefix,
+        annotation_mode=annotation_mode,
+        call_ids=call_ids,
+    )
+    if updated == 0:
+        store.delete_pending_annotation(annotation_id)
+        print(
+            "ℹ️ Tool usage was detected but changed before annotation. "
+            "Pending entry removed."
+        )
+        return
+
+    first_id = call_ids[0]
+    last_id = call_ids[-1]
+    print(f"✅ Annotated {updated} tool call(s) as `{annotation_mode}`.")
+    print(f"   Annotation ID: {annotation_id}")
+    print(f"   Prompt Prefix: {cleaned_prefix}")
+    print(f"   Tool Call ID Range: {first_id}..{last_id}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Agentic Memory: Structural Code Graph with Neo4j and MCP",
@@ -899,6 +1028,63 @@ Commands:
 
 For more information, visit: https://github.com/jarmen423/agentic-memory
         """,
+    )
+
+    parser.add_argument(
+        "--prompted",
+        metavar="PROMPT_PREFIX",
+        help=(
+            "Annotate the latest tool-use burst as prompted. "
+            "Example: --prompted \"check our auth\""
+        ),
+    )
+    parser.add_argument(
+        "--unprompted",
+        metavar="PROMPT_PREFIX",
+        help=(
+            "Annotate the latest tool-use burst as unprompted. "
+            "Example: --unprompted \"check our auth\""
+        ),
+    )
+    parser.add_argument(
+        "--annotation-id",
+        type=str,
+        help="Optional custom annotation identifier.",
+    )
+    parser.add_argument(
+        "--tool-call-id",
+        type=int,
+        action="append",
+        help="Annotate specific tool call ID(s) directly (repeatable).",
+    )
+    parser.add_argument(
+        "--client",
+        type=str,
+        help="Optional client filter (matches CODEMEMORY_CLIENT recorded in telemetry).",
+    )
+    parser.add_argument(
+        "--wait-seconds",
+        type=int,
+        default=45,
+        help="How long to wait for a response burst to settle before giving up.",
+    )
+    parser.add_argument(
+        "--idle-seconds",
+        type=int,
+        default=3,
+        help="Silence window used to consider a response burst complete.",
+    )
+    parser.add_argument(
+        "--lookback-seconds",
+        type=int,
+        default=180,
+        help="How far back to search for unannotated tool calls.",
+    )
+    parser.add_argument(
+        "--recent-seconds",
+        type=int,
+        default=90,
+        help="Maximum age of last tool call for matching a response burst.",
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
@@ -1040,6 +1226,33 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
     )
 
     args = parser.parse_args()
+
+    if args.prompted and args.unprompted:
+        _exit_with_error(
+            args,
+            error="Use either --prompted or --unprompted, not both.",
+            human_lines=["❌ Use either --prompted or --unprompted, not both."],
+        )
+
+    if args.prompted or args.unprompted:
+        if args.command:
+            _exit_with_error(
+                args,
+                error="Annotation flags cannot be combined with subcommands.",
+                human_lines=[
+                    "❌ Annotation flags cannot be combined with subcommands.",
+                    "   Use: codememory --unprompted \"check our auth\"",
+                ],
+            )
+
+        mode = "prompted" if args.prompted else "unprompted"
+        prompt_prefix = args.prompted or args.unprompted or ""
+        cmd_annotate_interaction(
+            args,
+            annotation_mode=mode,
+            prompt_prefix=prompt_prefix,
+        )
+        return
 
     # Dispatch to command handlers
     if args.command == "init":

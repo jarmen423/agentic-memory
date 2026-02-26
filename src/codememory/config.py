@@ -154,9 +154,10 @@ class Config:
         """Get Neo4j connection config, with env var fallbacks."""
         config = self.load()
         neo4j = config["neo4j"]
+        neo4j_user = os.getenv("NEO4J_USER") or os.getenv("NEO4J_USERNAME")
         return {
             "uri": os.getenv("NEO4J_URI", neo4j["uri"]),
-            "user": os.getenv("NEO4J_USER", neo4j["user"]),
+            "user": neo4j_user or neo4j["user"],
             "password": os.getenv("NEO4J_PASSWORD", neo4j["password"]),
         }
 

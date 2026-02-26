@@ -168,6 +168,17 @@ codemem serve --port 8000
 codemem --help
 ```
 
+### Tool-Use Annotation (Personal Research)
+
+You can manually label MCP tool-use bursts as `prompted` or `unprompted`:
+
+```bash
+codememory --prompted "check our auth"
+codememory --unprompted "check our auth"
+```
+
+See full behavior and options: `docs/TOOL_USE_ANNOTATION.md`.
+
 ### Environment Variables
 
 Create a `.env` file in the project root:

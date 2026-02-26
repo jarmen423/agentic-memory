@@ -84,6 +84,19 @@ Git graph command details and rollout notes: [docs/GIT_GRAPH.md](docs/GIT_GRAPH.
 
 ---
 
+## 🧾 Tool-Use Annotation (Research)
+
+Agentic Memory now supports SQLite telemetry for MCP tool calls plus manual post-response labeling as `prompted` or `unprompted`.
+
+```bash
+codememory --prompted "check our auth"
+codememory --unprompted "check our auth"
+```
+
+Full workflow and options: [docs/TOOL_USE_ANNOTATION.md](docs/TOOL_USE_ANNOTATION.md)
+
+---
+
 ## 🏗️ Architecture
 
 ```

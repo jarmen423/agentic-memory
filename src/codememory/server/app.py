@@ -17,6 +17,7 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 import neo4j
 from codememory.ingestion.graph import KnowledgeGraphBuilder
+from codememory.telemetry import TelemetryStore, resolve_telemetry_db_path
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ mcp = FastMCP("Agentic Memory")
 # Global Graph Connection (initialized when server starts)
 graph: Optional[KnowledgeGraphBuilder] = None
 _repo_override: Optional[Path] = None
+telemetry_store: Optional[TelemetryStore] = None
 
 # Rate limiting configuration
 RATE_LIMIT_REQUESTS = 100  # Max requests per window
@@ -72,6 +74,8 @@ def log_tool_call(func):
     def wrapper(*args, **kwargs):
         start_time = time.time()
         tool_name = func.__name__
+        client_id = os.getenv("CODEMEMORY_CLIENT", "unknown")
+        repo_root = str(_repo_override) if _repo_override else None
         
         logger.info(f"🔧 Tool called: {tool_name}")
         logger.debug(f"   Args: {args}, Kwargs: {kwargs}")
@@ -80,12 +84,53 @@ def log_tool_call(func):
             result = func(*args, **kwargs)
             duration = time.time() - start_time
             logger.info(f"✅ Tool {tool_name} completed in {duration:.2f}s")
+            if telemetry_store:
+                try:
+                    telemetry_store.record_tool_call(
+                        tool_name=tool_name,
+                        duration_ms=duration * 1000.0,
+                        success=True,
+                        error_type=None,
+                        client_id=client_id,
+                        repo_root=repo_root,
+                    )
+                except Exception as telemetry_error:
+                    logger.warning(f"⚠️ Telemetry write failed for {tool_name}: {telemetry_error}")
             return result
         except Exception as e:
             duration = time.time() - start_time
             logger.error(f"❌ Tool {tool_name} failed after {duration:.2f}s: {e}")
+            if telemetry_store:
+                try:
+                    telemetry_store.record_tool_call(
+                        tool_name=tool_name,
+                        duration_ms=duration * 1000.0,
+                        success=False,
+                        error_type=e.__class__.__name__,
+                        client_id=client_id,
+                        repo_root=repo_root,
+                    )
+                except Exception as telemetry_error:
+                    logger.warning(f"⚠️ Telemetry write failed for {tool_name}: {telemetry_error}")
             raise
     return wrapper
+
+
+def _is_telemetry_enabled() -> bool:
+    raw = os.getenv("CODEMEMORY_TELEMETRY_ENABLED", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _init_telemetry(repo_root: Optional[Path]) -> None:
+    global telemetry_store
+    if not _is_telemetry_enabled():
+        telemetry_store = None
+        logger.info("🧾 Telemetry disabled (CODEMEMORY_TELEMETRY_ENABLED=0).")
+        return
+
+    db_path = resolve_telemetry_db_path(repo_root)
+    telemetry_store = TelemetryStore(db_path)
+    logger.info(f"🧾 Telemetry writing to {db_path}")
 
 
 def init_graph():
@@ -115,7 +160,7 @@ def init_graph():
     else:
         # Fall back to environment variables
         uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-        user = os.getenv("NEO4J_USER", "neo4j")
+        user = os.getenv("NEO4J_USER") or os.getenv("NEO4J_USERNAME", "neo4j")
         password = os.getenv("NEO4J_PASSWORD", "password")
         openai_key = os.getenv("OPENAI_API_KEY")
         logger.info("🔧 Using environment variables for configuration")
@@ -699,6 +744,7 @@ def run_server(port: int, repo_root: Optional[Path] = None):
     logger.info(f"🚀 Starting Agentic Memory MCP server on port {port}")
     if _repo_override:
         logger.info(f"📂 Repository override set to {_repo_override}")
+    _init_telemetry(_repo_override)
     if not get_graph():
         logger.warning("⚠️ Starting MCP server without active graph connection.")
     mcp.run()

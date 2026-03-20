@@ -152,6 +152,53 @@ def test_index_json_success_envelope(monkeypatch, capsys, tmp_path):
     }
 
 
+def test_index_loads_openai_key_from_repo_dotenv(monkeypatch, tmp_path):
+    """Index loads OPENAI_API_KEY from <repo>/.env before building the graph."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / ".env").write_text("OPENAI_API_KEY=from-index-dotenv\n", encoding="utf-8")
+
+    mock_cfg = Mock()
+    mock_cfg.exists.return_value = True
+    mock_cfg.get_neo4j_config.return_value = {
+        "uri": "bolt://localhost:7687",
+        "user": "neo4j",
+        "password": "password",
+    }
+    mock_cfg.get_openai_key.side_effect = lambda: os.getenv("OPENAI_API_KEY")
+    mock_cfg.get_indexing_config.return_value = {
+        "ignore_dirs": [],
+        "ignore_files": [],
+        "extensions": [".py"],
+    }
+    mock_cfg.get_graphignore_patterns.return_value = []
+
+    mock_builder = Mock()
+    mock_builder.run_pipeline.return_value = {
+        "embedding_calls": 1,
+        "cost_usd": 0.0,
+    }
+
+    monkeypatch.setattr(cli, "find_repo_root", Mock(return_value=repo_root))
+    monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
+    monkeypatch.setattr(cli, "KnowledgeGraphBuilder", Mock(return_value=mock_builder))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    cli.cmd_index(argparse.Namespace(json=False, quiet=True))
+
+    assert os.environ.get("OPENAI_API_KEY") == "from-index-dotenv"
+    cli.KnowledgeGraphBuilder.assert_called_once_with(
+        uri="bolt://localhost:7687",
+        user="neo4j",
+        password="password",
+        openai_key="from-index-dotenv",
+        repo_root=repo_root,
+        ignore_dirs=set(),
+        ignore_files=set(),
+        ignore_patterns=set(),
+    )
+
+
 def test_search_json_success_envelope(monkeypatch, capsys, tmp_path):
     """Search command emits deterministic JSON envelope on success."""
     repo_root = tmp_path / "repo"
@@ -175,6 +222,41 @@ def test_search_json_success_envelope(monkeypatch, capsys, tmp_path):
     assert payload["data"]["query"] == "auth"
     assert payload["data"]["results"][0]["name"] == "foo"
     assert payload["metrics"] == {"result_count": 1}
+
+
+def test_search_loads_openai_key_from_repo_dotenv(monkeypatch, tmp_path):
+    """Search loads OPENAI_API_KEY from <repo>/.env before validating config."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / ".env").write_text("OPENAI_API_KEY=from-search-dotenv\n", encoding="utf-8")
+
+    mock_cfg = Mock()
+    mock_cfg.exists.return_value = True
+    mock_cfg.get_neo4j_config.return_value = {
+        "uri": "bolt://localhost:7687",
+        "user": "neo4j",
+        "password": "password",
+    }
+    mock_cfg.get_openai_key.side_effect = lambda: os.getenv("OPENAI_API_KEY")
+
+    mock_builder = Mock()
+    mock_builder.semantic_search.return_value = []
+
+    monkeypatch.setattr(cli, "find_repo_root", Mock(return_value=repo_root))
+    monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
+    monkeypatch.setattr(cli, "KnowledgeGraphBuilder", Mock(return_value=mock_builder))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    cli.cmd_search(argparse.Namespace(json=False, query="auth", limit=5))
+
+    assert os.environ.get("OPENAI_API_KEY") == "from-search-dotenv"
+    cli.KnowledgeGraphBuilder.assert_called_once_with(
+        uri="bolt://localhost:7687",
+        user="neo4j",
+        password="password",
+        openai_key="from-search-dotenv",
+    )
+    mock_builder.semantic_search.assert_called_once_with("auth", limit=5)
 
 
 def test_search_json_missing_openai_exits_nonzero(monkeypatch, capsys, tmp_path):
@@ -349,6 +431,50 @@ def test_serve_loads_openai_key_from_repo_dotenv(monkeypatch, tmp_path):
     run_server.assert_called_once_with(port=8000, repo_root=repo_root.resolve())
 
 
+def test_watch_loads_openai_key_from_repo_dotenv(monkeypatch, tmp_path):
+    """Watch defaults to <repo>/.env when OPENAI_API_KEY is not already exported."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / ".env").write_text("OPENAI_API_KEY=from-watch-dotenv\n", encoding="utf-8")
+
+    mock_cfg = Mock()
+    mock_cfg.exists.return_value = True
+    mock_cfg.get_neo4j_config.return_value = {
+        "uri": "bolt://localhost:7687",
+        "user": "neo4j",
+        "password": "password",
+    }
+    mock_cfg.get_openai_key.side_effect = lambda: os.getenv("OPENAI_API_KEY")
+    mock_cfg.get_indexing_config.return_value = {
+        "ignore_dirs": [],
+        "ignore_files": [],
+        "extensions": [".py"],
+    }
+    mock_cfg.get_graphignore_patterns.return_value = []
+
+    start_watch = Mock()
+    monkeypatch.setattr(cli, "find_repo_root", Mock(return_value=repo_root))
+    monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
+    monkeypatch.setattr(cli, "start_continuous_watch", start_watch)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    cli.cmd_watch(argparse.Namespace(no_scan=False, env_file=None))
+
+    assert os.environ.get("OPENAI_API_KEY") == "from-watch-dotenv"
+    start_watch.assert_called_once_with(
+        repo_path=repo_root,
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="password",
+        openai_key="from-watch-dotenv",
+        ignore_dirs=set(),
+        ignore_files=set(),
+        ignore_patterns=set(),
+        supported_extensions={".py"},
+        initial_scan=True,
+    )
+
+
 def test_git_init_json_success_envelope(monkeypatch, capsys, tmp_path):
     """git-init emits standard JSON envelope and enables git config."""
     repo_root = tmp_path / "repo"
@@ -392,6 +518,47 @@ def test_git_init_json_success_envelope(monkeypatch, capsys, tmp_path):
     assert payload["data"]["git"]["enabled"] is True
     mock_cfg.save_git_config.assert_called_once_with({"enabled": True})
     mock_ingestor.close.assert_called_once()
+
+
+def test_git_init_loads_repo_dotenv_for_env_backed_neo4j_config(monkeypatch, tmp_path):
+    """git-init loads env-backed Neo4j config from <repo>/.env when --repo is used."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / ".env").write_text("NEO4J_URI=bolt://from-dotenv:7687\n", encoding="utf-8")
+
+    mock_cfg = Mock()
+    mock_cfg.exists.return_value = True
+    mock_cfg.get_git_config.side_effect = [
+        {"enabled": False, "auto_incremental": True, "sync_trigger": "commit", "checkpoint": {}},
+        {"enabled": True, "auto_incremental": True, "sync_trigger": "commit", "checkpoint": {}},
+    ]
+    mock_cfg.get_neo4j_config.side_effect = lambda: {
+        "uri": os.getenv("NEO4J_URI"),
+        "user": "neo4j",
+        "password": "password",
+    }
+    mock_ingestor = Mock()
+    mock_ingestor.initialize.return_value = {
+        "repo_id": str(repo_root.resolve()),
+        "root_path": str(repo_root.resolve()),
+        "remote_url": None,
+        "default_branch": "main",
+    }
+
+    monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
+    monkeypatch.setattr(cli, "GitGraphIngestor", Mock(return_value=mock_ingestor))
+    monkeypatch.delenv("NEO4J_URI", raising=False)
+
+    cli.cmd_git_init(argparse.Namespace(json=False, repo=str(repo_root)))
+
+    assert os.environ.get("NEO4J_URI") == "bolt://from-dotenv:7687"
+    cli.GitGraphIngestor.assert_called_once_with(
+        uri="bolt://from-dotenv:7687",
+        user="neo4j",
+        password="password",
+        repo_root=repo_root.resolve(),
+        config=mock_cfg,
+    )
 
 
 def test_git_sync_json_success_envelope(monkeypatch, capsys, tmp_path):

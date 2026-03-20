@@ -3,7 +3,9 @@
     "allow": [
       "mcp__zread__get_repo_structure",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(dir:*)",
+      "Bash(test:*)"
     ]
   }
 }

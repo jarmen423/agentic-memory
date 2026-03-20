@@ -17,6 +17,7 @@ from watchdog.events import FileSystemEventHandler
 from codememory.ingestion.graph import KnowledgeGraphBuilder
 
 logging.basicConfig(level=logging.INFO)
+logging.getLogger("neo4j.notifications").setLevel(logging.WARNING)
 logger = logging.getLogger("Observer")
 
 

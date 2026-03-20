@@ -38,6 +38,22 @@ def print_banner():
     """)
 
 
+def _load_repo_env(repo_root: Optional[Path], env_file_arg: Optional[str] = None) -> None:
+    """Load an explicit env file or the repository-local .env if present."""
+    if env_file_arg:
+        env_file = Path(env_file_arg).expanduser().resolve()
+        if not env_file.exists():
+            print(f"❌ Invalid --env-file path: {env_file}")
+            sys.exit(1)
+        load_dotenv(dotenv_path=env_file, override=False)
+        return
+
+    if repo_root:
+        repo_env = repo_root / ".env"
+        if repo_env.exists():
+            load_dotenv(dotenv_path=repo_env, override=False)
+
+
 def _is_json_mode(args: argparse.Namespace) -> bool:
     """Return whether the current command should emit machine-readable JSON."""
     return bool(getattr(args, "json", False))
@@ -106,6 +122,8 @@ def _resolve_repo_and_config(
             )
     else:
         repo_root = find_repo_root()
+
+    _load_repo_env(repo_root, getattr(args, "env_file", None) or os.getenv("CODEMEMORY_ENV_FILE"))
 
     config = Config(repo_root)
     if require_initialized and not config.exists():
@@ -328,18 +346,7 @@ def cmd_init(args):
 
 def cmd_status(args):
     """Show status of Agentic Memory for the current repository."""
-    repo_root = find_repo_root()
-    config = Config(repo_root)
-
-    if not config.exists():
-        _exit_with_error(
-            args,
-            error="Agentic Memory is not initialized in this repository.",
-            human_lines=[
-                "❌ Agentic Memory is not initialized in this repository.",
-                "   Run 'codememory init' to get started.",
-            ],
-        )
+    repo_root, config = _resolve_repo_and_config(args, require_initialized=True)
 
     if not _is_json_mode(args):
         print(f"📊 Agentic Memory Status")
@@ -418,18 +425,7 @@ def cmd_status(args):
 
 def cmd_index(args):
     """Run a one-time full pipeline ingestion."""
-    repo_root = find_repo_root()
-    config = Config(repo_root)
-
-    if not config.exists():
-        _exit_with_error(
-            args,
-            error="Agentic Memory is not initialized in this repository.",
-            human_lines=[
-                "❌ Agentic Memory is not initialized in this repository.",
-                "   Run 'codememory init' to get started.",
-            ],
-        )
+    repo_root, config = _resolve_repo_and_config(args, require_initialized=True)
 
     if not args.quiet and not _is_json_mode(args):
         print(f"📂 Indexing repository: {repo_root}")
@@ -477,13 +473,7 @@ def cmd_index(args):
 
 def cmd_watch(args):
     """Start continuous file watching and ingestion."""
-    repo_root = find_repo_root()
-    config = Config(repo_root)
-
-    if not config.exists():
-        print(f"❌ Agentic Memory is not initialized in this repository.")
-        print(f"   Run 'codememory init' to get started.")
-        sys.exit(1)
+    repo_root, config = _resolve_repo_and_config(args, require_initialized=True)
 
     print(f"👀 Starting Observer on: {repo_root}")
 
@@ -517,18 +507,7 @@ def cmd_serve(args):
             print(f"❌ Invalid --repo path: {repo_root}")
             sys.exit(1)
 
-    env_file_arg = args.env_file or os.getenv("CODEMEMORY_ENV_FILE")
-    if env_file_arg:
-        env_file = Path(env_file_arg).expanduser().resolve()
-        if not env_file.exists():
-            print(f"❌ Invalid --env-file path: {env_file}")
-            sys.exit(1)
-        load_dotenv(dotenv_path=env_file, override=False)
-    elif repo_root:
-        repo_env = repo_root / ".env"
-        if repo_env.exists():
-            # Ensure repo-local env is loaded even when launched from another cwd.
-            load_dotenv(dotenv_path=repo_env, override=False)
+    _load_repo_env(repo_root, args.env_file or os.getenv("CODEMEMORY_ENV_FILE"))
 
     if repo_root:
         config = Config(repo_root)
@@ -550,18 +529,7 @@ def cmd_serve(args):
 
 def cmd_search(args):
     """Run a semantic search query (for testing)."""
-    repo_root = find_repo_root()
-    config = Config(repo_root)
-
-    if not config.exists():
-        _exit_with_error(
-            args,
-            error="Agentic Memory is not initialized in this repository.",
-            human_lines=[
-                "❌ Agentic Memory is not initialized in this repository.",
-                "   Run 'codememory init' to get started.",
-            ],
-        )
+    repo_root, config = _resolve_repo_and_config(args, require_initialized=True)
 
     neo4j_cfg = config.get_neo4j_config()
     openai_key = config.get_openai_key()
@@ -621,18 +589,7 @@ def cmd_search(args):
 
 def cmd_deps(args):
     """Show direct dependency relationships for a file."""
-    repo_root = find_repo_root()
-    config = Config(repo_root)
-
-    if not config.exists():
-        _exit_with_error(
-            args,
-            error="Agentic Memory is not initialized in this repository.",
-            human_lines=[
-                "❌ Agentic Memory is not initialized in this repository.",
-                "   Run 'codememory init' to get started.",
-            ],
-        )
+    repo_root, config = _resolve_repo_and_config(args, require_initialized=True)
 
     neo4j_cfg = config.get_neo4j_config()
     openai_key = config.get_openai_key()
@@ -691,18 +648,7 @@ def cmd_deps(args):
 
 def cmd_impact(args):
     """Show transitive impact analysis for a file."""
-    repo_root = find_repo_root()
-    config = Config(repo_root)
-
-    if not config.exists():
-        _exit_with_error(
-            args,
-            error="Agentic Memory is not initialized in this repository.",
-            human_lines=[
-                "❌ Agentic Memory is not initialized in this repository.",
-                "   Run 'codememory init' to get started.",
-            ],
-        )
+    repo_root, config = _resolve_repo_and_config(args, require_initialized=True)
 
     neo4j_cfg = config.get_neo4j_config()
     openai_key = config.get_openai_key()
@@ -1117,6 +1063,11 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
         "--no-scan",
         action="store_true",
         help="Skip initial full scan (start watching immediately)",
+    )
+    watch_parser.add_argument(
+        "--env-file",
+        type=str,
+        help="Optional .env file to load before starting the watcher",
     )
 
     # Command: serve (MCP server)

@@ -33,27 +33,28 @@ AI agents get seamless, persistent memory that works regardless of content type 
 - [ ] Auto-crawl from web search results (Brave Search API)
 - [ ] Parse and index PDF documents
 - [ ] Semantic search across all ingested web content
-- [ ] Scheduled automated research (daily/periodic variations on research questions)
-- [ ] Crawl4AI integration for robust web content extraction
-- [ ] Vercel agent-browser integration for interactive/dynamic content
+- [ ] Crawl4AI integration for robust web content extraction (primary)
+- [ ] Vercel agent-browser fallback for JS-rendered/dynamic content (Playwright abstraction optimized for agent workflows — more efficient than raw Playwright)
+- [ ] Smart scheduled research: prompt templates with variables; LLM fills variables each run based on past research graph + conversation history; avoids repeating covered topics
 - [ ] Google Gemini multimodal embeddings (gemini-embedding-2-preview)
-- [ ] Separate Neo4j database for web research content
-- [ ] MCP tools: search_web_memory, ingest_url, schedule_research
+- [ ] Separate Neo4j database for web research content (port 7688)
+- [ ] MCP tools: search_web_memory, ingest_url, schedule_research, run_research_session
 
 **Agent Conversation Memory Module:**
-- [ ] Ingest conversation logs and chat transcripts
-- [ ] Auto-capture mode (live conversation ingestion)
-- [ ] Manual import option for historical conversations
+- [ ] Ingest conversation logs and chat transcripts (manual import: JSON/JSONL)
+- [ ] Fully automated set-and-forget capture: once configured, conversations are captured without user or agent intervention
+- [ ] Provider-specific automatic integration: Claude Code stop-session hook; survey and implement equivalent zero-friction hooks for other major providers (ChatGPT, Cursor, Windsurf, etc.)
+- [ ] MCP tool (add_message) as universal fallback for providers without native hook support
 - [ ] Query conversational context (retrieve relevant past exchanges)
 - [ ] Incremental message updates (add new messages without full re-index)
-- [ ] User/session tracking (who said what, conversation boundaries)
+- [ ] User/session tracking (who said what, conversation boundaries, provider attribution)
 - [ ] Google Gemini multimodal embeddings (gemini-embedding-2-preview)
-- [ ] Separate Neo4j database for conversation content
+- [ ] Separate Neo4j database for conversation content (port 7689)
 - [ ] MCP tools: search_conversations, add_message, get_conversation_context
 
 **Shared Infrastructure:**
 - [ ] Modular architecture supporting independent or unified databases
-- [ ] Configurable embedding model selection (Gemini vs OpenAI vs Nvidia Nemotron)
+- [ ] Configurable embedding model selection: Gemini, OpenAI, Nvidia Nemotron
 - [ ] Config validation: warn if mixing embedding models in unified database
 - [ ] CLI commands: web-init, web-ingest, web-search, chat-init, chat-ingest
 - [ ] Documentation for module setup and configuration
@@ -67,6 +68,7 @@ AI agents get seamless, persistent memory that works regardless of content type 
 - Advanced conversation analytics (sentiment, topic modeling) — Basic retrieval first
 - Video/audio transcription — Rely on external tools, ingest transcripts only
 - OpenClaw/Codex-specific adapters — Universal adapter layer is post-v1
+- Simple cron scheduling (repeat same query) — Replaced by smart scheduled research with LLM-driven variable substitution
 
 ## Context
 
@@ -103,12 +105,14 @@ AI agents get seamless, persistent memory that works regardless of content type 
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Separate databases by default | Prevents embedding model conflicts, cleaner separation of concerns | — Pending |
-| Google Gemini embeddings for non-code | Multimodal support (text, images, future video/audio) | — Pending |
-| Brave Search API as default | Free tier available, good results, configurable for alternatives | — Pending |
-| Vercel agent-browser over raw Playwright | Agent-friendly abstraction, better for AI-driven workflows | — Pending |
-| Crawl4AI for web ingestion | PDF support built-in, robust extraction, actively maintained | — Pending |
-| Modular architecture | Each module independently usable, scales to future content types | — Pending |
+| Separate databases by default | Prevents embedding model conflicts (OpenAI 3072d vs Gemini 768d incompatible in same vector index) | ✓ Confirmed |
+| Google Gemini embeddings for web/chat | Multimodal support (text, images, future video/audio); OpenAI stays for code module | ✓ Confirmed |
+| Nvidia Nemotron in v1 | NIM API is OpenAI-compatible — ~20 line addition once abstraction layer exists; near-zero cost | ✓ Confirmed |
+| Crawl4AI primary + agent-browser fallback | Crawl4AI handles static pages; Vercel agent-browser for JS-rendered dynamic content (more efficient than raw Playwright for agent workflows) | ✓ Confirmed |
+| Brave Search API as default | Free tier available, good results, configurable for alternatives | ✓ Confirmed |
+| Smart scheduled research (not simple cron) | Prompt templates with LLM-driven variable substitution; context-aware (no topic repetition); steered by past research + conversation history | ✓ Confirmed |
+| Set-and-forget automated capture | UX goal: configure once, captures forever with zero friction; provider-native hooks where available (Claude Code confirmed); MCP tool as fallback for unsupported providers | ✓ Confirmed |
+| Modular architecture | Each module independently usable, scales to future content types | ✓ Confirmed |
 
 ---
-*Last updated: 2026-03-20 after initialization*
+*Last updated: 2026-03-20 after requirements definition*

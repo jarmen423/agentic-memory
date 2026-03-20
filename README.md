@@ -28,14 +28,14 @@ Agentic Memory is not just "RAG" for code. It is an **active, structural memory 
 
 ```bash
 # Recommended: Use pipx for isolated global installation
-pipx install codememory
+pipx install agentic-memory
 
 # Or with uv tooling
-uv tool install codememory
+uv tool install agentic-memory
 uvx codememory --help
 
 # Or use pip in a virtualenv
-pip install codememory
+pip install agentic-memory
 ```
 
 ### 2. Initialize in any repository

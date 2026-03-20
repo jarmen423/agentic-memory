@@ -41,7 +41,7 @@ The system is decoupled into three independent components:
 ### Component A: The Observer (Ingestion Service)
 
 - **Role:** The "Writer." It watches the file system and keeps the graph in sync.
-- **Key Command:** `codemem watch ./my-repo`
+- **Key Command:** `codememory watch`
 - **Implementation:** `src/codememory/ingestion/watcher.py`
 
 ### Component B: The Brain (Neo4j Database)
@@ -91,7 +91,6 @@ agentic-memory/
 ├── src/codememory/                 # Main Python package
 │   ├── __init__.py
 │   ├── cli.py                      # Entry point (argparse)
-│   ├── pyproject.toml              # Package-specific config (legacy)
 │   ├── ingestion/                  # Refactored ingestion logic
 │   │   ├── __init__.py
 │   │   ├── watcher.py              # File system watcher
@@ -152,20 +151,17 @@ docker-compose -f src/codememory/docker/docker-compose.yml up
 
 ### CLI Commands
 
-The package provides the `codemem` (or `codememory`) CLI command:
+The package provides the `codememory` CLI command:
 
 ```bash
-# Watch a repository for changes
-codemem watch ./my-repo \
-  --neo4j-uri bolt://localhost:7687 \
-  --neo4j-user neo4j \
-  --neo4j-password password
+# Watch the current initialized repository
+codememory watch
 
 # Start the MCP server
-codemem serve --port 8000
+codememory serve --port 8000
 
 # Show help
-codemem --help
+codememory --help
 ```
 
 ### Tool-Use Annotation (Personal Research)
@@ -344,8 +340,9 @@ No automated unit test suite is currently configured.
 
 ```bash
 pip install -e .
-codemem watch /path/to/repo
-codemem serve  # In another terminal
+cd /path/to/repo
+codememory watch
+codememory serve  # In another terminal
 ```
 
 ### Option 2: Docker Compose

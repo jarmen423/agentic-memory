@@ -27,7 +27,7 @@ graph LR
 
 * **Role:** The "Writer." It watches the file system and keeps the graph in sync.
 * **Refactor Goal:** Move from hardcoded paths to `argparse`.
-* **Key Command:** `codemem watch ./my-repo`
+* **Key Command:** `codememory watch`
 
 ### Component B: The Interface (MCP Server)
 
@@ -68,7 +68,7 @@ code-memory/
 
 ### Phase 2: Refactoring Ingestion
 
-**Goal:** Remove hardcoded `REPO_PATH` and `.env` dependencies in favor of CLI arguments.
+**Goal:** Remove hardcoded `REPO_PATH` and make repository-root configuration resolve cleanly from the active working directory.
 
 **Old Code (`5_continuous_ingestion.py`):**
 
@@ -81,19 +81,13 @@ REPO_PATH = Path("/home/josh/code/m26pipeline") # Hardcoded
 
 ```python
 import argparse
-from codememory.ingestion import start_watcher
 
 def main():
     parser = argparse.ArgumentParser(description="CodeMemory Ingestion")
-    parser.add_argument("path", help="Path to the repository to watch")
-    parser.add_argument("--neo4j-uri", default="bolt://localhost:7687")
-    parser.add_argument("--watch", action="store_true", help="Run in continuous mode")
-    
-    args = parser.parse_args()
-    
-    # Pass args down to the logic
-    start_watcher(repo_path=args.path, uri=args.neo4j_uri, ...)
+    subparsers = parser.add_subparsers(dest="command")
+    subparsers.add_parser("watch", help="Run continuous ingestion for the current repo")
 
+    args = parser.parse_args()
 ```
 
 ### Phase 3: The MCP Server (The "Brain")
@@ -117,5 +111,5 @@ def identify_impact(file_path: str) -> str:
 
 ## 4. Deployment Strategy
 
-* **Local Dev:** `pip install -e .` then `codemem watch .`
+* **Local Dev:** `pip install -e .` then `cd /path/to/repo && codememory watch`
 * **Docker:** Users run `docker-compose up`. The container mounts their code volume and starts the watcher + Neo4j.

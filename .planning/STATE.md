@@ -4,20 +4,20 @@ milestone: v1.0
 milestone_name: — Full Multi-Module Memory System
 current_phase: 01
 status: unknown
-last_updated: "2026-03-21T06:55:50.621Z"
+last_updated: "2026-03-21T07:06:28.957Z"
 progress:
   total_phases: 5
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 4
-  completed_plans: 3
+  completed_plans: 4
 ---
 
 # Agentic Memory — Project State
 
 **Last Updated:** 2026-03-21
 **Current Phase:** 01
-**Phase Status:** In Progress
-**Last Session Stopped At:** Completed 01-03-PLAN.md
+**Phase Status:** Complete
+**Last Session Stopped At:** Completed 01-04-PLAN.md
 
 ---
 
@@ -27,7 +27,7 @@ progress:
 
 - Shared ingestion abstractions, embedding service layer, multi-database setup, config validation
 
-**Next Action:** Execute plan 01-04 (final foundation plan)
+**Next Action:** Begin Phase 2 — Web Research Core
 
 ---
 
@@ -35,7 +35,7 @@ progress:
 
 | Phase | Name | Status |
 |-------|------|--------|
-| 1 | Foundation | In Progress |
+| 1 | Foundation | Complete |
 | 2 | Web Research Core | Not Started |
 | 3 | Web Research Scheduling | Not Started |
 | 4 | Conversation Memory | Not Started |
@@ -56,6 +56,7 @@ progress:
 - [x] Plan 01-01: Source registry, connection manager, config extension (2026-03-21)
 - [x] Plan 01-02: EmbeddingService (OpenAI/Gemini/Nemotron) + EntityExtractionService (Groq JSON mode) (2026-03-21)
 - [x] Plan 01-03: BaseIngestionPipeline ABC + GraphWriter MERGE patterns + ConfigValidator (2026-03-21)
+- [x] Plan 01-04: KnowledgeGraphBuilder adopts BaseIngestionPipeline; web/chat stubs; 5 CLI stub commands; Docker Compose documented (2026-03-21)
 
 ---
 
@@ -76,6 +77,8 @@ progress:
 | EntityExtractionService prompt uses escaped braces {{}} | Python .format() requires literal braces doubled; prevents KeyError on prompt formatting |
 | GraphWriter namespace: conditional Cypher branch not None-check | Avoids writing namespace=None on Memory nodes when no namespace provided |
 | Gemini MRL: ConfigValidator warns, does not raise, on non-default dims | Gemini supports output_dimensionality override; OpenAI/Nemotron have fixed dims |
+| KGB.__init__ creates ConnectionManager internally, calls super().__init__(conn) | Preserves (uri, user, password) caller interface; self.driver = self._conn.driver keeps 300+ internal references intact |
+| ingest() wraps run_pipeline() as thin ABC compliance shim | Satisfies ABC without disrupting existing multi-pass pipeline orchestration |
 
 ---
 
@@ -86,6 +89,7 @@ progress:
 | 01 | 01 | 6 | 2 | 7 |
 | 01 | 02 | 7 | 2 | 4 |
 | 01 | 03 | 5 | 2 | 6 |
+| 01 | 04 | 8 | 2 | 6 |
 
 ## Blockers / Open Questions
 

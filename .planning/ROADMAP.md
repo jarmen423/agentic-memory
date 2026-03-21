@@ -16,7 +16,7 @@
 
 **Goal:** Establish the shared infrastructure all modules build on: core package with BaseIngestionPipeline ABC, EmbeddingService (Gemini/OpenAI/Nemotron), EntityExtractionService (Groq), GraphWriter, ConnectionManager, ConfigValidator, source registry, Memory/Entity dual-layer graph schema, and CLI scaffolding. Single Neo4j instance with multiple vector indexes.
 
-**Plans:** 3/4 plans executed
+**Plans:** 4/4 plans complete
 
 Plans:
 - [ ] 01-01-PLAN.md — Core plumbing: source registry, connection manager, config extension

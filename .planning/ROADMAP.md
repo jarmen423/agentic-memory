@@ -14,26 +14,37 @@
 
 ## Phase 1: Foundation
 
-**Goal:** Establish the shared infrastructure all modules build on. Must be done first — retrofitting these patterns later is costly.
+**Goal:** Establish the shared infrastructure all modules build on: core package with BaseIngestionPipeline ABC, EmbeddingService (Gemini/OpenAI/Nemotron), EntityExtractionService (Groq), GraphWriter, ConnectionManager, ConfigValidator, source registry, Memory/Entity dual-layer graph schema, and CLI scaffolding. Single Neo4j instance with multiple vector indexes.
+
+**Plans:** 4 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — Core plumbing: source registry, connection manager, config extension
+- [ ] 01-02-PLAN.md — AI service layer: EmbeddingService + EntityExtractionService
+- [ ] 01-03-PLAN.md — Core abstractions: BaseIngestionPipeline ABC, GraphWriter, ConfigValidator
+- [ ] 01-04-PLAN.md — Integration: KnowledgeGraphBuilder adoption, CLI scaffolding, Docker, stubs
 
 **Deliverables:**
-- Abstract ingestion base classes (`BaseIngestor`, `BaseEmbeddingService`, `BaseGraphWriter`)
+- Abstract ingestion base classes (`BaseIngestionPipeline`, `GraphWriter`)
 - Embedding service abstraction layer supporting Gemini, OpenAI, and Nvidia Nemotron (NIM-compatible, OpenAI SDK with `base_url` override)
-- Config validation system — detects embedding model mismatches across databases, warns loudly
-- Multi-database connection manager (routes to :7687 code, :7688 web, :7689 chat)
-- Docker Compose updated with web and chat Neo4j instances (ports 7688, 7689)
+- Entity extraction service (Groq JSON mode with type-constrained prompts)
+- Config validation system — detects embedding model mismatches, warns loudly
+- Single Neo4j connection manager with multiple vector indexes (3072d code, 768d web/chat)
+- Source registry for label resolution
+- Docker Compose (single Neo4j instance)
 - CLI scaffolding for new commands (`web-init`, `web-ingest`, `web-search`, `chat-init`, `chat-ingest`) — structure only, not yet implemented
-- Unit tests for embedding service abstraction and config validation
+- Unit tests for all new core modules
 
 **Success Criteria:**
-- All three Neo4j instances start cleanly via `docker-compose up`
-- Embedding service abstraction passes correct model/dimensions to each database
-- Config validation catches and rejects mixed embedding model configurations
+- Neo4j instance starts cleanly via `docker-compose up`
+- Embedding service abstraction passes correct model/dimensions per provider
+- Config validation catches and rejects dimension mismatches
+- KnowledgeGraphBuilder subclasses BaseIngestionPipeline (backward compatible)
 - Existing code module continues to work unchanged
 
 **Key Risks:**
-- Gemini embedding API specifics (model name, dimensionality, auth method) — verify early
-- Neo4j Community Edition multi-database support — confirm before designing connection manager
+- Gemini embedding API specifics (model name, dimensionality, auth method) — verified in research
+- Neo4j Community Edition multi-index support — confirmed in research
 
 ---
 
@@ -185,4 +196,4 @@ Phase 5 depends on all prior phases.
 | APScheduler vs system cron vs custom: best fit for research scheduling | Phase 3 | Medium |
 
 ---
-*Last updated: 2026-03-20 after requirements definition*
+*Last updated: 2026-03-20 after phase 1 planning*

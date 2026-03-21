@@ -26,7 +26,14 @@ from tree_sitter import Language, Parser, Query, QueryCursor
 import tree_sitter_python
 import tree_sitter_javascript
 
+from codememory.core.base import BaseIngestionPipeline
+from codememory.core.connection import ConnectionManager
+from codememory.core.registry import register_source
+
 logger = logging.getLogger(__name__)
+
+# Register code ingestion source at module load time
+register_source("code_treesitter", ["Memory", "Code", "Chunk"])
 
 
 class CircuitBreaker:
@@ -106,7 +113,7 @@ def retry_on_openai_error(max_retries=3, delay=1.0):
     return decorator
 
 
-class KnowledgeGraphBuilder:
+class KnowledgeGraphBuilder(BaseIngestionPipeline):
     """
     Orchestrates the creation of the Hybrid GraphRAG system.
 
@@ -122,6 +129,7 @@ class KnowledgeGraphBuilder:
     EMBEDDING_MODEL = "text-embedding-3-large"
     COST_PER_1M_TOKENS = 0.13  # USD
     VECTOR_DIMENSIONS = 3072
+    DOMAIN_LABEL = "Code"
 
     def __init__(
         self,
@@ -147,15 +155,12 @@ class KnowledgeGraphBuilder:
             ignore_files: Set of file patterns to ignore during indexing
             ignore_patterns: Set of .graphignore-style path/file patterns to skip
         """
-        # Configure connection pool for better performance
-        self.driver = neo4j.GraphDatabase.driver(
-            uri, 
-            auth=(user, password),
-            max_connection_pool_size=50,
-            connection_acquisition_timeout=60,
-            connection_timeout=30,
-            max_transaction_retry_time=30.0,
-        )
+        # Create ConnectionManager internally — preserves existing caller interface
+        conn = ConnectionManager(uri=uri, user=user, password=password)
+        super().__init__(conn)
+
+        # Keep existing driver reference for backward compat with internal methods
+        self.driver = self._conn.driver
         
         # Circuit breaker for Neo4j connection failures
         self.circuit_breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=30)
@@ -261,6 +266,22 @@ class KnowledgeGraphBuilder:
             parsers[ext] = js_parser
 
         return parsers
+
+    def ingest(self, source: Any) -> dict[str, Any]:
+        """Ingest a repository directory. Wraps the existing multi-pass pipeline.
+
+        Implements the BaseIngestionPipeline ABC contract.
+
+        Args:
+            source: Path to the repository root (str or Path).
+
+        Returns:
+            Dict summarizing the ingestion result.
+        """
+        repo_path = Path(source) if isinstance(source, str) else source
+        self.repo_root = repo_path
+        self.run_pipeline(repo_path)
+        return {"status": "complete", "domain": self.DOMAIN_LABEL}
 
     def close(self):
         """Closes database connection."""

@@ -1,17 +1,34 @@
+---
+gsd_state_version: 1.0
+milestone: v1.0
+milestone_name: — Full Multi-Module Memory System
+current_phase: 01
+current_plan: 02
+status: in_progress
+last_updated: "2026-03-21T06:42:51Z"
+progress:
+  total_phases: 5
+  completed_phases: 0
+  total_plans: 4
+  completed_plans: 1
+---
+
 # Agentic Memory — Project State
 
-**Last Updated:** 2026-03-20
-**Current Phase:** 1 — Foundation
-**Phase Status:** Not Started
+**Last Updated:** 2026-03-21
+**Current Phase:** 01
+**Phase Status:** In Progress
+**Last Session Stopped At:** Completed 01-01-PLAN.md
 
 ---
 
 ## Active Phase
 
 **Phase 1: Foundation**
+
 - Shared ingestion abstractions, embedding service layer, multi-database setup, config validation
 
-**Next Action:** Run `/gsd:plan-phase` for Phase 1
+**Next Action:** Execute plan 01-02 (EmbeddingService + EntityExtractionService)
 
 ---
 
@@ -19,7 +36,7 @@
 
 | Phase | Name | Status |
 |-------|------|--------|
-| 1 | Foundation | Not Started |
+| 1 | Foundation | In Progress |
 | 2 | Web Research Core | Not Started |
 | 3 | Web Research Scheduling | Not Started |
 | 4 | Conversation Memory | Not Started |
@@ -37,6 +54,7 @@
 - [x] Roadmap created (`ROADMAP.md`)
 - [x] Package renamed: `codememory` → `agentic-memory`
 - [x] CLI command standardized: `codemem` → `codememory`
+- [x] Plan 01-01: Source registry, connection manager, config extension (2026-03-21)
 
 ---
 
@@ -50,6 +68,17 @@
 | Crawl4AI primary + Vercel agent-browser fallback | agent-browser more efficient than raw Playwright for agent workflows |
 | Smart scheduling with LLM variable substitution | Context-aware research — avoids topic repetition, steered by history |
 | Set-and-forget conversation capture | Provider-native hooks (Claude Code confirmed); MCP tool as fallback |
+| SOURCE_REGISTRY is a leaf module (no internal imports) | Prevents circular dependency issues as all modules import from here |
+| ConnectionManager pool settings mirror KnowledgeGraphBuilder | Consistent connection behavior across old and new code |
+| test_from_config uses monkeypatch.delenv() for NEO4J_* vars | test_cli.py loads .env which pollutes env vars for subsequent tests |
+
+---
+
+## Performance Metrics
+
+| Phase | Plan | Duration (s) | Tasks | Files |
+|-------|------|-------------|-------|-------|
+| 01 | 01 | 378 | 2 | 7 |
 
 ---
 

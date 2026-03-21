@@ -3,14 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: — Full Multi-Module Memory System
 current_phase: 01
-current_plan: 02
-status: in_progress
-last_updated: "2026-03-21T06:42:51Z"
+status: unknown
+last_updated: "2026-03-21T06:45:09.658Z"
 progress:
   total_phases: 5
   completed_phases: 0
   total_plans: 4
-  completed_plans: 1
+  completed_plans: 2
 ---
 
 # Agentic Memory — Project State
@@ -18,7 +17,7 @@ progress:
 **Last Updated:** 2026-03-21
 **Current Phase:** 01
 **Phase Status:** In Progress
-**Last Session Stopped At:** Completed 01-01-PLAN.md
+**Last Session Stopped At:** Completed 01-02-PLAN.md
 
 ---
 
@@ -28,7 +27,7 @@ progress:
 
 - Shared ingestion abstractions, embedding service layer, multi-database setup, config validation
 
-**Next Action:** Execute plan 01-02 (EmbeddingService + EntityExtractionService)
+**Next Action:** Execute plan 01-03 (BaseIngestionPipeline ABC + KnowledgeGraphBuilder adoption)
 
 ---
 
@@ -55,6 +54,7 @@ progress:
 - [x] Package renamed: `codememory` → `agentic-memory`
 - [x] CLI command standardized: `codemem` → `codememory`
 - [x] Plan 01-01: Source registry, connection manager, config extension (2026-03-21)
+- [x] Plan 01-02: EmbeddingService (OpenAI/Gemini/Nemotron) + EntityExtractionService (Groq JSON mode) (2026-03-21)
 
 ---
 
@@ -71,16 +71,17 @@ progress:
 | SOURCE_REGISTRY is a leaf module (no internal imports) | Prevents circular dependency issues as all modules import from here |
 | ConnectionManager pool settings mirror KnowledgeGraphBuilder | Consistent connection behavior across old and new code |
 | test_from_config uses monkeypatch.delenv() for NEO4J_* vars | test_cli.py loads .env which pollutes env vars for subsequent tests |
+| EmbeddingService uses gemini-embedding-2-preview | PLAN spec acceptance criteria explicitly requires this model name (RESEARCH.md recommends gemini-embedding-001 GA) |
+| EntityExtractionService prompt uses escaped braces {{}} | Python .format() requires literal braces doubled; prevents KeyError on prompt formatting |
 
 ---
 
 ## Performance Metrics
 
-| Phase | Plan | Duration (s) | Tasks | Files |
-|-------|------|-------------|-------|-------|
-| 01 | 01 | 378 | 2 | 7 |
-
----
+| Phase | Plan | Duration (min) | Tasks | Files |
+|-------|------|----------------|-------|-------|
+| 01 | 01 | 6 | 2 | 7 |
+| 01 | 02 | 7 | 2 | 4 |
 
 ## Blockers / Open Questions
 

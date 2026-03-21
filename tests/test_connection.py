@@ -69,8 +69,14 @@ def test_close_closes_driver():
 
 
 @pytest.mark.unit
-def test_from_config():
+def test_from_config(monkeypatch):
     """ConnectionManager.from_config reads uri/user/password from config dict."""
+    # Unset any env vars that might be set by other tests or .env files
+    monkeypatch.delenv("NEO4J_URI", raising=False)
+    monkeypatch.delenv("NEO4J_USER", raising=False)
+    monkeypatch.delenv("NEO4J_USERNAME", raising=False)
+    monkeypatch.delenv("NEO4J_PASSWORD", raising=False)
+
     config = {
         "neo4j": {
             "uri": "bolt://myhost:7687",

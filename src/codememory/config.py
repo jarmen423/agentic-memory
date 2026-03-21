@@ -49,6 +49,42 @@ DEFAULT_CONFIG = {
             "last_sha": None,
         },
     },
+    "modules": {
+        "code": {
+            "embedding_provider": "openai",
+            "embedding_model": "text-embedding-3-large",
+            "embedding_dimensions": 3072,
+        },
+        "web": {
+            "embedding_provider": "gemini",
+            "embedding_model": "gemini-embedding-2-preview",
+            "embedding_dimensions": 3072,
+        },
+        "chat": {
+            "embedding_provider": "gemini",
+            "embedding_model": "gemini-embedding-2-preview",
+            "embedding_dimensions": 3072,
+        },
+    },
+    "extraction_llm": {
+        "provider": "groq",
+        "model": "llama-3.3-70b-versatile",
+        "api_key": "",  # Empty means fall back to GROQ_API_KEY env var
+    },
+    "entity_types": [
+        "project",
+        "person",
+        "business",
+        "technology",
+        "concept",
+    ],
+    "gemini": {
+        "api_key": "",  # Empty means fall back to GEMINI_API_KEY env var
+    },
+    "nemotron": {
+        "api_key": "",  # Empty means fall back to NVIDIA_API_KEY env var
+        "base_url": "https://integrate.api.nvidia.com/v1",
+    },
 }
 
 
@@ -169,6 +205,49 @@ class Config:
         if key:
             return key
         return os.getenv("OPENAI_API_KEY")
+
+    def get_module_config(self, module_name: str) -> Dict[str, Any]:
+        """Get per-module configuration (embedding provider, model, dimensions).
+
+        Args:
+            module_name: Module name key (e.g. "code", "web", "chat").
+
+        Returns:
+            Configuration dict for the requested module.
+        """
+        return self.load()["modules"][module_name]
+
+    def get_extraction_llm_config(self) -> Dict[str, Any]:
+        """Get entity extraction LLM config with env var fallback for api_key.
+
+        Returns:
+            Extraction LLM configuration dict with api_key resolved.
+        """
+        config = self.load()
+        extraction = dict(config["extraction_llm"])
+        if not extraction.get("api_key"):
+            extraction["api_key"] = os.getenv("GROQ_API_KEY", "")
+        return extraction
+
+    def get_gemini_key(self) -> Optional[str]:
+        """Get Gemini API key from config, falling back to GEMINI_API_KEY env var.
+
+        Returns:
+            Gemini API key string, or None if not configured.
+        """
+        config = self.load()
+        key = config.get("gemini", {}).get("api_key")
+        if key:
+            return key
+        return os.getenv("GEMINI_API_KEY")
+
+    def get_entity_types(self) -> list[str]:
+        """Get the list of supported entity types from config.
+
+        Returns:
+            List of entity type strings (e.g. ["project", "person", ...]).
+        """
+        return list(self.load()["entity_types"])
 
     def get_indexing_config(self) -> Dict[str, Any]:
         """Get indexing configuration."""

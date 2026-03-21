@@ -17,6 +17,9 @@ dependencies = [
     "watchdog",
     "python-dotenv",
     "mcp",
+    "pydantic>=2.0.0",
+    "google-genai>=1.0.0",
+    "groq>=0.10.0",
 ]
 
 [project.scripts]

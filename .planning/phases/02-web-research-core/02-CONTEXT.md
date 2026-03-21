@@ -32,9 +32,12 @@ Build the functional web research ingestion pipeline. Agents call `memory_ingest
 ```
 // Report parent — metadata only, no text, no embedding
 (:Memory:Research:Report {
-    session_id, project_id, source_agent,
-    research_question, ingested_at, ingestion_mode,
-    source_key: "deep_research_agent",
+    title,                     ← human-readable label (e.g. "SaaS Churn Analysis Q1 2026")
+    session_id, project_id,
+    source_agent,              ← AI that produced content ("claude", "perplexity", etc.)
+    source_key: "deep_research_agent",  ← ingestor pipeline ID
+    research_question,
+    ingested_at, ingestion_mode,
     source_type: "web",
     embedding_model: null,    ← no embedding on parent
     entities, entity_types    ← denormalized from findings
@@ -103,7 +106,9 @@ async def memory_ingest_research(
     project_id: str,                    # entity anchor
     session_id: str,                    # agent session
     source_agent: str,                  # "claude" | "perplexity" | "chatgpt" | "custom"
+    title: str | None,                  # human-readable label for the output (Report only)
     research_question: str | None,      # original query that prompted this
+    confidence: str | None,             # "high" | "medium" | "low" (Finding only)
     findings: list[dict] | None,        # [{text, confidence, citations: [{url, title, snippet}]}]
     citations: list[dict] | None,       # top-level citations for reports
 ) -> dict: ...
@@ -201,11 +206,23 @@ def _chunk_markdown(self, markdown: str) -> list[Chunk]:
 
 **Finding nodes:** `text` + `embedding` + standard Phase 1 fields + `confidence` + `research_question`.
 
-**Extra fields on all Research nodes beyond Phase 1 standard:**
-- `source_agent` — `"claude"` | `"perplexity"` | `"chatgpt"` | `"custom"`
-- `research_question` — original query that prompted this output
-- `confidence` — `"high"` | `"medium"` | `"low"` (Findings only)
-- `chunk_index` + `chunk_total` — on Chunk nodes only
+**Extra fields beyond Phase 1 standard, assigned by node type:**
+
+| Field | Report | Finding | Chunk |
+|-------|--------|---------|-------|
+| `title` | ✓ | — | — |
+| `source_agent` | ✓ | ✓ | — |
+| `research_question` | ✓ | ✓ | — |
+| `confidence` | — | ✓ | — |
+| `chunk_index` | — | — | ✓ |
+| `chunk_total` | — | — | ✓ |
+
+**Field semantics:**
+- `title` — human-readable label for the research output (e.g. "SaaS Churn Analysis Q1 2026"). Required for any UI surface. Not covered by Phase 1 standard fields.
+- `source_agent` — the AI model that produced the content (`"claude"` | `"perplexity"` | `"chatgpt"` | `"custom"`). Distinct from `source_key` (the ingestor ID, e.g. `"deep_research_agent"`). Both are needed: `source_key` answers "what pipeline wrote this?", `source_agent` answers "which AI produced the content?"
+- `research_question` — the original query or task that prompted this output. Enables retrieval by research intent.
+- `confidence` — agent-reported confidence on a Finding (`"high"` | `"medium"` | `"low"`).
+- `chunk_index` / `chunk_total` — position within parent Report for ordered reconstruction.
 
 ---
 

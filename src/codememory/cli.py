@@ -954,6 +954,36 @@ def cmd_annotate_interaction(
     print(f"   Tool Call ID Range: {first_id}..{last_id}")
 
 
+def cmd_web_init(args: argparse.Namespace) -> None:
+    """Initialize web research module configuration."""
+    print("web-init: Not yet implemented. Coming in Phase 2.")
+    sys.exit(0)
+
+
+def cmd_web_ingest(args: argparse.Namespace) -> None:
+    """Ingest a web URL into the research knowledge graph."""
+    print("web-ingest: Not yet implemented. Coming in Phase 2.")
+    sys.exit(0)
+
+
+def cmd_web_search(args: argparse.Namespace) -> None:
+    """Search web research memory."""
+    print("web-search: Not yet implemented. Coming in Phase 2.")
+    sys.exit(0)
+
+
+def cmd_chat_init(args: argparse.Namespace) -> None:
+    """Initialize conversation memory module configuration."""
+    print("chat-init: Not yet implemented. Coming in Phase 4.")
+    sys.exit(0)
+
+
+def cmd_chat_ingest(args: argparse.Namespace) -> None:
+    """Ingest conversation logs into the conversation knowledge graph."""
+    print("chat-ingest: Not yet implemented. Coming in Phase 4.")
+    sys.exit(0)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Agentic Memory: Structural Code Graph with Neo4j and MCP",
@@ -1176,6 +1206,18 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
         help="Emit machine-readable JSON output",
     )
 
+    # Web Research commands (Phase 2 stubs)
+    subparsers.add_parser("web-init", help="Initialize web research module")
+    web_ingest_parser = subparsers.add_parser("web-ingest", help="Ingest a web URL")
+    web_ingest_parser.add_argument("url", nargs="?", help="URL to ingest")
+    web_search_parser = subparsers.add_parser("web-search", help="Search web research memory")
+    web_search_parser.add_argument("query", nargs="?", help="Search query")
+
+    # Conversation Memory commands (Phase 4 stubs)
+    subparsers.add_parser("chat-init", help="Initialize conversation memory module")
+    chat_ingest_parser = subparsers.add_parser("chat-ingest", help="Ingest conversation logs")
+    chat_ingest_parser.add_argument("source", nargs="?", help="Path to conversation log")
+
     args = parser.parse_args()
 
     if args.prompted and args.unprompted:
@@ -1228,6 +1270,16 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
         cmd_git_sync(args)
     elif args.command == "git-status":
         cmd_git_status(args)
+    elif args.command == "web-init":
+        cmd_web_init(args)
+    elif args.command == "web-ingest":
+        cmd_web_ingest(args)
+    elif args.command == "web-search":
+        cmd_web_search(args)
+    elif args.command == "chat-init":
+        cmd_chat_init(args)
+    elif args.command == "chat-ingest":
+        cmd_chat_ingest(args)
     else:
         parser.print_help()
 

@@ -1,4 +1,7 @@
 # Agentic Memory - Docker Compose Configuration
+# Single Neo4j instance with multiple vector indexes per label set.
+# All three domains use 3072d embeddings: code_embeddings (:Memory:Code),
+# research_embeddings (:Memory:Research), chat_embeddings (:Memory:Conversation).
 # Quick start: docker-compose up -d
 
 version: "3.8"

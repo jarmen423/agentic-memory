@@ -649,3 +649,77 @@ def test_git_status_json_success_envelope(monkeypatch, capsys, tmp_path):
     assert payload["data"]["status"]["checkpoint_sha"] == "abc"
     assert payload["metrics"] == {"pending_commits": 2}
     mock_ingestor.close.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Stub command tests (Phase 2 / Phase 4 placeholders)
+# ---------------------------------------------------------------------------
+
+
+def test_web_init_prints_not_implemented_and_exits_zero(capsys):
+    """web-init prints stub message and exits 0."""
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_web_init(argparse.Namespace())
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "Not yet implemented" in out
+    assert "Phase 2" in out
+
+
+def test_web_ingest_prints_not_implemented_and_exits_zero(capsys):
+    """web-ingest prints stub message and exits 0."""
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_web_ingest(argparse.Namespace())
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "Not yet implemented" in out
+    assert "Phase 2" in out
+
+
+def test_web_search_prints_not_implemented_and_exits_zero(capsys):
+    """web-search prints stub message and exits 0."""
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_web_search(argparse.Namespace())
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "Not yet implemented" in out
+    assert "Phase 2" in out
+
+
+def test_chat_init_prints_not_implemented_and_exits_zero(capsys):
+    """chat-init prints stub message and exits 0."""
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_chat_init(argparse.Namespace())
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "Not yet implemented" in out
+    assert "Phase 4" in out
+
+
+def test_chat_ingest_prints_not_implemented_and_exits_zero(capsys):
+    """chat-ingest prints stub message and exits 0."""
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_chat_ingest(argparse.Namespace())
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "Not yet implemented" in out
+    assert "Phase 4" in out
+
+
+def test_stub_commands_are_registered_in_parser():
+    """All 5 stub commands are registered in the argument parser."""
+    import argparse as _ap
+    import sys as _sys
+
+    # Capture just the subparser names from a parsed help call
+    # We test by parsing each command name — if not registered, argparse will error
+    stub_commands = ["web-init", "web-ingest", "web-search", "chat-init", "chat-ingest"]
+    import unittest.mock as _mock
+    for cmd in stub_commands:
+        with _mock.patch("sys.argv", ["codememory", cmd]):
+            with pytest.raises(SystemExit) as exc:
+                cli.main()
+            # Should exit 0 (stub handler), NOT 2 (argparse error for unknown command)
+            assert exc.value.code == 0, (
+                f"Command '{cmd}' exited with code {exc.value.code} — likely not registered"
+            )

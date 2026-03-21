@@ -50,7 +50,14 @@ Plans:
 
 ## Phase 2: Web Research Core
 
-**Goal:** Functional web research ingestion — URLs, PDFs, and web search results land in the knowledge graph and are semantically searchable.
+**Goal:** Output-centric web research ingestion — agent-produced reports and findings persist to Neo4j as :Memory:Research nodes with Gemini embeddings, searchable via MCP tools. User-directed URL ingestion via Crawl4AI. Brave Search as agent tool for live web search.
+
+**Plans:** 3 plans
+
+Plans:
+- [ ] 02-01-PLAN.md — GraphWriter extensions, content normalization/chunking, Crawl4AI wrapper, package deps
+- [ ] 02-02-PLAN.md — ResearchIngestionPipeline (report + finding ingest paths)
+- [ ] 02-03-PLAN.md — MCP tools (memory_ingest_research, search_web_memory, brave_search) + CLI commands
 
 **Deliverables:**
 - Crawl4AI integration: URL ingestion, content filtering (boilerplate removal), metadata extraction (title, author, date, source URL)
@@ -196,4 +203,4 @@ Phase 5 depends on all prior phases.
 | APScheduler vs system cron vs custom: best fit for research scheduling | Phase 3 | Medium |
 
 ---
-*Last updated: 2026-03-20 after phase 1 planning*
+*Last updated: 2026-03-21 after phase 2 planning*

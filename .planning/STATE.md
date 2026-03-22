@@ -9,15 +9,15 @@ progress:
   total_phases: 7
   completed_phases: 1
   total_plans: 8
-  completed_plans: 5
+  completed_plans: 6
 ---
 
 # Agentic Memory — Project State
 
-**Last Updated:** 2026-03-22
+**Last Updated:** 2026-03-21
 **Current Phase:** 02
 **Phase Status:** In Progress
-**Last Session Stopped At:** Completed 02-01-PLAN.md
+**Last Session Stopped At:** Completed 02-02-PLAN.md
 
 ---
 
@@ -60,6 +60,7 @@ progress:
 - [x] Plan 01-03: BaseIngestionPipeline ABC + GraphWriter MERGE patterns + ConfigValidator (2026-03-21)
 - [x] Plan 01-04: KnowledgeGraphBuilder adopts BaseIngestionPipeline; web/chat stubs; 5 CLI stub commands; Docker Compose documented (2026-03-21)
 - [x] Plan 02-01: GraphWriter Research schema extensions; content chunker (header-split + recursive fallback); Crawl4AI async wrapper; 4 new package deps (2026-03-22)
+- [x] Plan 02-02: ResearchIngestionPipeline — report + finding ingest paths; session-scoped chunk dedup; global finding dedup; HAS_CHUNK + PART_OF wiring; source registration (2026-03-21)
 
 ---
 
@@ -90,6 +91,8 @@ progress:
 | ingestion_mode: "passive" for proxy and extension payloads | Distinguishes auto-captured turns from explicit MCP writes in query and analytics |
 | Module-level imports (try/except) for markdownify and pymupdf4llm | Enables pytest patch() interception; fallback None values for environments without optional deps |
 | Overlap in _recursive_split as word-count (int(overlap_tokens/1.3)) | Consistent with _token_count approximation; ~38 words for 50-token overlap |
+| Chunk content_hash encodes (session_id:chunk_index:text) | MERGE on (source_key, content_hash) implements CONTEXT.md Chunk dedup key of (session_id, chunk_index); prevents cross-session collapse |
+| Finding content_hash is sha256(text) text-only | Global dedup — same finding found in multiple sessions stored once, avoids duplication across project |
 
 ---
 
@@ -102,6 +105,7 @@ progress:
 | 01 | 03 | 5 | 2 | 6 |
 | 01 | 04 | 8 | 2 | 6 |
 | 02 | 01 | 7 | 2 | 6 |
+| 02 | 02 | 8 | 1 | 3 |
 
 ## Blockers / Open Questions
 

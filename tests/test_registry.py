@@ -7,10 +7,12 @@ from codememory.core.registry import SOURCE_REGISTRY, register_source
 
 @pytest.fixture(autouse=True)
 def clear_registry():
-    """Clear SOURCE_REGISTRY before each test to ensure isolation."""
+    """Snapshot SOURCE_REGISTRY before each test and restore after."""
+    snapshot = dict(SOURCE_REGISTRY)
     SOURCE_REGISTRY.clear()
     yield
     SOURCE_REGISTRY.clear()
+    SOURCE_REGISTRY.update(snapshot)
 
 
 @pytest.mark.unit

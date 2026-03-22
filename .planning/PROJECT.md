@@ -40,17 +40,18 @@ AI agents get seamless, persistent memory that works regardless of content type 
 - [ ] Separate Neo4j database for web research content (port 7688)
 - [ ] MCP tools: search_web_memory, ingest_url, schedule_research, run_research_session
 
-**Agent Conversation Memory Module:**
-- [ ] Ingest conversation logs and chat transcripts (manual import: JSON/JSONL)
-- [ ] Fully automated set-and-forget capture: once configured, conversations are captured without user or agent intervention
+**Agent Conversation Memory Module:** *(Validated in Phase 4: Conversation Memory Core)*
+- ✓ Ingest conversation logs and chat transcripts (manual import: JSON/JSONL) — `chat-ingest` CLI
+- [ ] Fully automated set-and-forget capture: once configured, conversations are captured without user or agent intervention — requires am-proxy (Phase 5) and am-ext (Phase 6)
 - [ ] Provider-specific automatic integration: Claude Code stop-session hook; survey and implement equivalent zero-friction hooks for other major providers (ChatGPT, Cursor, Windsurf, etc.)
-- [ ] MCP tool (add_message) as universal fallback for providers without native hook support
-- [ ] Query conversational context (retrieve relevant past exchanges)
-- [ ] Incremental message updates (add new messages without full re-index)
-- [ ] User/session tracking (who said what, conversation boundaries, provider attribution)
-- [ ] Google Gemini multimodal embeddings (gemini-embedding-2-preview)
-- [ ] Separate Neo4j database for conversation content (port 7689)
-- [ ] MCP tools: search_conversations, add_message, get_conversation_context
+- ✓ MCP tool (add_message) as universal fallback for providers without native hook support
+- ✓ Query conversational context (retrieve relevant past exchanges) — search_conversations + get_conversation_context MCP tools
+- ✓ Incremental message updates (add new messages without full re-index) — MERGE on (session_id, turn_index)
+- ✓ User/session tracking (who said what, conversation boundaries, provider attribution) — Session nodes + source_agent field
+- ✓ Google Gemini multimodal embeddings (gemini-embedding-2-preview) — 768d, user/assistant turns only
+- ✓ Single Neo4j database, chat_embeddings vector index (768d) on :Memory:Conversation nodes
+- ✓ MCP tools: search_conversations, add_message, get_conversation_context
+- ✓ REST API: POST /ingest/conversation, GET /search/conversations (Bearer auth, passive connector target)
 
 **Shared Infrastructure:**
 - [ ] Modular architecture supporting independent or unified databases
@@ -115,4 +116,4 @@ AI agents get seamless, persistent memory that works regardless of content type 
 | Modular architecture | Each module independently usable, scales to future content types | ✓ Confirmed |
 
 ---
-*Last updated: 2026-03-20 after requirements definition*
+*Last updated: 2026-03-22 after Phase 4 (Conversation Memory Core) completion*

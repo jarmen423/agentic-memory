@@ -687,36 +687,43 @@ def test_web_search_prints_not_implemented_and_exits_zero(capsys):
     assert "Not yet implemented" in out
 
 
-def test_chat_init_prints_not_implemented_and_exits_zero(capsys):
-    """chat-init prints stub message and exits 0."""
-    with pytest.raises(SystemExit) as exc:
+def test_chat_init_calls_setup_and_fix_dimensions(monkeypatch, capsys):
+    """chat-init calls setup_database() and fix_vector_index_dimensions()."""
+    from unittest.mock import Mock, patch
+
+    mock_conn = Mock()
+    mock_conn_class = Mock(return_value=mock_conn)
+
+    with patch("codememory.core.connection.ConnectionManager", mock_conn_class):
         cli.cmd_chat_init(argparse.Namespace())
-    assert exc.value.code == 0
+
+    mock_conn.setup_database.assert_called_once()
+    mock_conn.fix_vector_index_dimensions.assert_called_once()
     out = capsys.readouterr().out
-    assert "Not yet implemented" in out
-    assert "Phase 4" in out
+    assert "chat-init" in out
 
 
-def test_chat_ingest_prints_not_implemented_and_exits_zero(capsys):
-    """chat-ingest prints stub message and exits 0."""
-    with pytest.raises(SystemExit) as exc:
-        cli.cmd_chat_ingest(argparse.Namespace())
-    assert exc.value.code == 0
-    out = capsys.readouterr().out
-    assert "Not yet implemented" in out
-    assert "Phase 4" in out
+def test_chat_ingest_requires_project_id(capsys):
+    """chat-ingest exits non-zero when --project-id is missing (argparse enforcement)."""
+    import unittest.mock as _mock
+
+    with _mock.patch("sys.argv", ["codememory", "chat-ingest"]):
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+    # argparse exits 2 for missing required args — this confirms --project-id is enforced
+    assert exc.value.code == 2
 
 
 def test_stub_commands_are_registered_in_parser():
-    """All 5 stub/web commands are registered in the argument parser (exit code != 2)."""
+    """Web and chat commands are registered in the argument parser (exit code != 2)."""
     import unittest.mock as _mock
     from unittest.mock import Mock, patch
 
-    # web-init and web-ingest now have real implementations. We just verify they're
-    # registered in the parser (argparse exits 2 for unknown commands).
+    # Commands that can be invoked without required args — exit != 2 means registered.
+    # chat-ingest is excluded: it requires --project-id, so argparse exits 2 by design.
     mock_conn = Mock()
-    stub_commands = ["web-init", "web-ingest", "web-search", "chat-init", "chat-ingest"]
-    for cmd in stub_commands:
+    registered_commands = ["web-init", "web-ingest", "web-search", "chat-init"]
+    for cmd in registered_commands:
         try:
             with _mock.patch("sys.argv", ["codememory", cmd]), \
                  patch("codememory.core.connection.ConnectionManager", Mock(return_value=mock_conn)):

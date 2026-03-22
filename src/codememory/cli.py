@@ -1065,15 +1065,183 @@ def cmd_web_search(args: argparse.Namespace) -> None:
 
 
 def cmd_chat_init(args: argparse.Namespace) -> None:
-    """Initialize conversation memory module configuration."""
-    print("chat-init: Not yet implemented. Coming in Phase 4.")
-    sys.exit(0)
+    """Initialize conversation memory: create vector indexes at correct dimensions.
+
+    Calls setup_database() to create indexes (if absent), then
+    fix_vector_index_dimensions() to drop-and-recreate research_embeddings
+    and chat_embeddings at 768d in case they exist at the wrong 3072d.
+    """
+    from dotenv import load_dotenv  # noqa: PLC0415
+
+    load_dotenv()
+
+    neo4j_uri = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
+    neo4j_user = os.environ.get("NEO4J_USER", "neo4j")
+    password = os.environ.get("NEO4J_PASSWORD", "")
+
+    from codememory.core.connection import ConnectionManager  # noqa: PLC0415
+
+    conn = ConnectionManager(neo4j_uri, neo4j_user, password)
+    try:
+        conn.setup_database()
+        print("chat-init: Vector indexes and constraints created (or already exist).")
+        conn.fix_vector_index_dimensions()
+        print(
+            "chat-init: research_embeddings and chat_embeddings reset to 768d. Done."
+        )
+    finally:
+        conn.driver.close()
 
 
 def cmd_chat_ingest(args: argparse.Namespace) -> None:
-    """Ingest conversation logs into the conversation knowledge graph."""
-    print("chat-ingest: Not yet implemented. Coming in Phase 4.")
-    sys.exit(0)
+    """Ingest conversation turns from a JSONL/JSON file or stdin.
+
+    Reads turns from args.source (file path), or stdin if args.source is '-'
+    or None. Applies --project-id, --session-id, --source-agent as defaults.
+    Calls setup_database() automatically before ingesting.
+
+    Input formats:
+        JSONL: one turn object per line.
+        JSON: a JSON array of turn objects.
+
+    Each turn must have at minimum: role, content.
+    turn_index is auto-assigned (0-based line position) if absent.
+    session_id comes from --session-id flag if not in turn data.
+    project_id comes from --project-id flag if not in turn data.
+    """
+    import json  # noqa: PLC0415
+    import sys  # noqa: PLC0415
+    import time  # noqa: PLC0415
+
+    from dotenv import load_dotenv  # noqa: PLC0415
+
+    load_dotenv()
+
+    neo4j_uri = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
+    neo4j_user = os.environ.get("NEO4J_USER", "neo4j")
+    password = os.environ.get("NEO4J_PASSWORD", "")
+    google_api_key = os.environ.get("GEMINI_API_KEY", "")
+    groq_api_key = os.environ.get("GROQ_API_KEY", "")
+
+    from codememory.core.connection import ConnectionManager  # noqa: PLC0415
+    from codememory.core.embedding import EmbeddingService  # noqa: PLC0415
+    from codememory.core.entity_extraction import EntityExtractionService  # noqa: PLC0415
+    from codememory.chat.pipeline import ConversationIngestionPipeline  # noqa: PLC0415
+
+    # Auto-initialize indexes (setup_database is idempotent, IF NOT EXISTS)
+    conn = ConnectionManager(neo4j_uri, neo4j_user, password)
+    conn.setup_database()
+
+    embedder = EmbeddingService(provider="gemini", api_key=google_api_key)
+    extractor = EntityExtractionService(api_key=groq_api_key)
+    pipeline = ConversationIngestionPipeline(conn, embedder, extractor)
+
+    # Determine input source
+    source_path = getattr(args, "source", None)
+    if source_path and source_path != "-":
+        try:
+            with open(source_path, encoding="utf-8") as f:
+                raw = f.read().strip()
+        except OSError as e:
+            print(f"chat-ingest: Cannot open {source_path}: {e}", file=sys.stderr)
+            sys.exit(1)
+
+        # Detect JSON array vs JSONL
+        if raw.startswith("["):
+            try:
+                turns_raw = json.loads(raw)
+            except json.JSONDecodeError as e:
+                print(f"chat-ingest: Invalid JSON: {e}", file=sys.stderr)
+                sys.exit(1)
+        else:
+            turns_raw = []
+            for line_num, line in enumerate(raw.splitlines(), start=1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    turns_raw.append(json.loads(line))
+                except json.JSONDecodeError as e:
+                    print(
+                        f"chat-ingest: Invalid JSON on line {line_num}: {e}",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+    else:
+        # Stdin JSONL
+        turns_raw = []
+        for line_num, line in enumerate(sys.stdin, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                turns_raw.append(json.loads(line))
+            except json.JSONDecodeError as e:
+                print(
+                    f"chat-ingest: Invalid JSON on stdin line {line_num}: {e}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+    if not turns_raw:
+        print("chat-ingest: No turns found in input.")
+        conn.driver.close()
+        return
+
+    project_id_flag = getattr(args, "project_id", None)
+    session_id_flag = getattr(args, "session_id", None)
+    source_agent_flag = getattr(args, "source_agent", None)
+
+    turns_ingested = 0
+    turns_skipped = 0
+    total_entities = 0
+    start_time = time.monotonic()
+
+    print(f"chat-ingest: Processing {len(turns_raw)} turn(s)...")
+
+    for auto_index, turn_raw in enumerate(turns_raw):
+        # Apply flag defaults where turn data is absent
+        turn: dict = dict(turn_raw)
+        turn.setdefault("project_id", project_id_flag or "cli")
+        # --session-id flag OVERRIDES per-turn session_id if provided
+        if session_id_flag:
+            turn["session_id"] = session_id_flag
+        elif "session_id" not in turn:
+            turn["session_id"] = f"chat-ingest-{auto_index}"
+        if source_agent_flag:
+            turn.setdefault("source_agent", source_agent_flag)
+        # Auto-assign turn_index if absent
+        if "turn_index" not in turn:
+            turn["turn_index"] = auto_index
+        turn.setdefault("source_key", "chat_cli")
+        turn.setdefault("ingestion_mode", "manual")
+
+        try:
+            result = pipeline.ingest(turn)
+            turns_ingested += 1
+            total_entities += result.get("entities_count", 0)
+            print(
+                f"  [{auto_index + 1}/{len(turns_raw)}] "
+                f"turn_index={result['turn_index']} role={result['role']} "
+                f"entities={result['entities_count']} embedded={result['embedded']}"
+            )
+        except ValueError as e:
+            print(f"  [{auto_index + 1}] SKIPPED: {e}", file=sys.stderr)
+            turns_skipped += 1
+        except Exception as e:
+            print(f"  [{auto_index + 1}] ERROR: {e}", file=sys.stderr)
+            turns_skipped += 1
+
+    duration_s = time.monotonic() - start_time
+    conn.driver.close()
+
+    print(
+        f"\nchat-ingest: Done. "
+        f"turns_ingested={turns_ingested} "
+        f"turns_skipped={turns_skipped} "
+        f"entities_extracted={total_entities} "
+        f"duration_s={duration_s:.1f}"
+    )
 
 
 def main():
@@ -1305,10 +1473,29 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
     web_search_parser = subparsers.add_parser("web-search", help="Search web research memory")
     web_search_parser.add_argument("query", nargs="?", help="Search query")
 
-    # Conversation Memory commands (Phase 4 stubs)
+    # Conversation Memory commands (Phase 4)
     subparsers.add_parser("chat-init", help="Initialize conversation memory module")
     chat_ingest_parser = subparsers.add_parser("chat-ingest", help="Ingest conversation logs")
-    chat_ingest_parser.add_argument("source", nargs="?", help="Path to conversation log")
+    chat_ingest_parser.add_argument("source", nargs="?", help="Path to conversation log (or '-' for stdin)")
+    chat_ingest_parser.add_argument(
+        "--project-id",
+        type=str,
+        dest="project_id",
+        required=True,
+        help="Project ID to apply to all turns in the input",
+    )
+    chat_ingest_parser.add_argument(
+        "--session-id",
+        type=str,
+        dest="session_id",
+        help="Session ID to apply to all turns (overrides per-turn session_id)",
+    )
+    chat_ingest_parser.add_argument(
+        "--source-agent",
+        type=str,
+        dest="source_agent",
+        help="Source agent name (e.g. 'claude') applied if not in turn data",
+    )
 
     args = parser.parse_args()
 

@@ -1,7 +1,7 @@
 """Web Research Memory module.
 
-Provides content normalization, chunking, and web crawling for the
-research ingestion pipeline.
+Provides content normalization, chunking, web crawling, and the
+ResearchIngestionPipeline for persisting research output to Neo4j.
 """
 
 from codememory.web.chunker import (
@@ -13,6 +13,7 @@ from codememory.web.chunker import (
     chunk_markdown,
 )
 from codememory.web.crawler import crawl_url
+from codememory.web.pipeline import ResearchIngestionPipeline
 
 __all__ = [
     "Chunk",
@@ -22,4 +23,5 @@ __all__ = [
     "_to_markdown",
     "_token_count",
     "crawl_url",
+    "ResearchIngestionPipeline",
 ]

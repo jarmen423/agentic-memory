@@ -4,20 +4,20 @@ milestone: v1.0
 milestone_name: — Full Multi-Module Memory System
 current_phase: 04
 status: unknown
-last_updated: "2026-03-22T16:17:09.743Z"
+last_updated: "2026-03-22T16:23:32.487Z"
 progress:
   total_phases: 7
   completed_phases: 2
   total_plans: 12
-  completed_plans: 10
+  completed_plans: 11
 ---
 
 # Agentic Memory — Project State
 
 **Last Updated:** 2026-03-22
 **Current Phase:** 04
-**Phase Status:** Active (Plan 02 complete)
-**Last Session Stopped At:** Completed 04-02-PLAN.md
+**Phase Status:** Active (Plan 04 complete)
+**Last Session Stopped At:** Completed 04-04-PLAN.md
 
 ---
 
@@ -66,6 +66,7 @@ progress:
 - [x] Phase 02 verified: all 7 checks passed, test suite green (2026-03-21)
 - [x] Plan 04-01: Vector index bug fix (768d), fix_vector_index_dimensions() migration, GraphWriter conversation methods (write_session_node, write_has_turn_relationship, write_part_of_turn_relationship), 12 unit tests (2026-03-22)
 - [x] Plan 04-02: ConversationIngestionPipeline with role-conditional embedding, session upsert, entity wiring; all 4 chat source keys registered; 22 unit tests (2026-03-22)
+- [x] Plan 04-04: chat-init/chat-ingest/chat-search CLI commands; JSONL/JSON array/stdin ingest modes; semantic vector search via Gemini embeddings (2026-03-22)
 
 ---
 
@@ -105,6 +106,9 @@ progress:
 | Session MERGE key = session_id alone (not composite with project_id) | session_id is globally unique by caller convention; composite key would break idempotency on mismatched project_id |
 | EMBEDDABLE_ROLES frozenset controls embedding/entity path | system and tool turns stored without embedding keeps chat_embeddings index focused on semantically meaningful content |
 | Turn content_hash = sha256(session_id:turn_index), content excluded | Session-scoped MERGE key; re-delivery of updated turn content overwrites in place without duplicate node creation |
+| chat-ingest --project-id is required (not optional) | Ensures all CLI-ingested turns are project-scoped; prevents orphaned turns without project context |
+| chat-ingest calls setup_database() automatically | Users don't need to run chat-init first; idempotent IF NOT EXISTS makes auto-call safe |
+| --session-id CLI flag overrides per-turn session_id | Enables batch override for importing an entire conversation export under a single session boundary |
 
 ---
 
@@ -120,8 +124,10 @@ progress:
 | 02 | 02 | 8 | 1 | 3 |
 | 02 | 03 | 25 | 2 | 4 |
 | 02 | 04 | 60 | 1 | 13 |
-| Phase 04 P01 | 4 | 3 tasks | 3 files |
-| Phase 04 P02 | 7 | 2 tasks | 3 files |
+| 04 | 01 | 4 | 3 | 3 |
+| 04 | 02 | 7 | 2 | 3 |
+| 04 | 04 | 3 | 2 | 1 |
+| Phase 04 P04 | 3 | 2 tasks | 1 files |
 
 ## Blockers / Open Questions
 

@@ -363,3 +363,257 @@ class TestCrawlUrl:
         with patch("codememory.web.crawler.AsyncWebCrawler", return_value=mock_crawler_instance):
             with pytest.raises(RuntimeError, match="Crawl failed"):
                 await crawl_url("https://example.com")
+
+
+# ---------------------------------------------------------------------------
+# Task 1 (Plan 02): ResearchIngestionPipeline
+# ---------------------------------------------------------------------------
+
+
+def _make_pipeline():
+    """Return a (pipeline, mock_writer) pair with all dependencies mocked."""
+    from codememory.web.pipeline import ResearchIngestionPipeline
+
+    mock_conn = MagicMock()
+    mock_session = MagicMock()
+    mock_conn.session.return_value.__enter__ = MagicMock(return_value=mock_session)
+    mock_conn.session.return_value.__exit__ = MagicMock(return_value=False)
+
+    mock_embedder = MagicMock()
+    mock_embedder.embed.return_value = [0.1] * 3072
+
+    mock_extractor = MagicMock()
+    mock_extractor.extract.return_value = [{"name": "SaaS", "type": "concept"}]
+
+    pipeline = ResearchIngestionPipeline(mock_conn, mock_embedder, mock_extractor)
+
+    # Replace the internal writer with a MagicMock so we can inspect calls
+    mock_writer = MagicMock()
+    pipeline._writer = mock_writer
+
+    return pipeline, mock_writer
+
+
+def _report_source(**overrides):
+    """Return a minimal report source dict."""
+    base = {
+        "type": "report",
+        "content": "## Section One\n\nSome research content about SaaS churn.\n\n## Section Two\n\nMore findings here.",
+        "project_id": "proj-test",
+        "session_id": "sess-abc",
+        "title": "SaaS Churn Analysis",
+        "source_agent": "claude",
+        "research_question": "What drives SaaS churn?",
+        "format": "markdown",
+    }
+    base.update(overrides)
+    return base
+
+
+def _finding_source(**overrides):
+    """Return a minimal finding source dict."""
+    base = {
+        "type": "finding",
+        "content": "SaaS churn increases 20% when onboarding friction is high.",
+        "project_id": "proj-test",
+        "session_id": "sess-abc",
+        "source_agent": "claude",
+        "confidence": "high",
+        "research_question": "What drives SaaS churn?",
+        "citations": [
+            {
+                "url": "https://example.com/article",
+                "title": "SaaS Study",
+                "snippet": "Key finding about churn.",
+            }
+        ],
+    }
+    base.update(overrides)
+    return base
+
+
+class TestResearchIngestionPipelineSubclassContract:
+    """Tests for class structure and ABC contract."""
+
+    def test_pipeline_subclass_contract(self):
+        """ResearchIngestionPipeline is a subclass of BaseIngestionPipeline with DOMAIN_LABEL."""
+        from codememory.core.base import BaseIngestionPipeline
+        from codememory.web.pipeline import ResearchIngestionPipeline
+
+        assert issubclass(ResearchIngestionPipeline, BaseIngestionPipeline)
+        assert ResearchIngestionPipeline.DOMAIN_LABEL == "Research"
+
+    def test_ingest_unknown_type_raises_value_error(self):
+        """ingest() with type='banana' raises ValueError."""
+        pipeline, _ = _make_pipeline()
+        with pytest.raises(ValueError, match="banana"):
+            pipeline.ingest({"type": "banana", "content": "x"})
+
+
+class TestResearchIngestionPipelineReportFlow:
+    """Tests for _ingest_report path."""
+
+    def test_ingest_report_flow(self):
+        """ingest(report) calls write_report_node once, write_memory_node per chunk."""
+        pipeline, mock_writer = _make_pipeline()
+        result = pipeline.ingest(_report_source())
+
+        assert mock_writer.write_report_node.called, "write_report_node was not called"
+        assert mock_writer.write_report_node.call_count == 1
+
+        chunk_count = mock_writer.write_memory_node.call_count
+        assert chunk_count >= 1, "write_memory_node not called for any chunk"
+
+        # HAS_CHUNK and PART_OF called same number of times as chunk nodes written
+        assert mock_writer.write_has_chunk_relationship.call_count == chunk_count
+        assert mock_writer.write_part_of_relationship.call_count == chunk_count
+
+        assert result["type"] == "report"
+        assert "chunks" in result
+        assert result["chunks"] == chunk_count
+
+    def test_ingest_report_no_embedding_on_parent(self):
+        """write_report_node properties must have embedding_model=None, no 'embedding' key."""
+        pipeline, mock_writer = _make_pipeline()
+        pipeline.ingest(_report_source())
+
+        call_kwargs = mock_writer.write_report_node.call_args
+        # First positional arg is the properties dict
+        props = call_kwargs[0][0]
+        assert props.get("embedding_model") is None
+        assert "embedding" not in props
+
+    def test_ingest_report_writes_part_of(self):
+        """write_part_of_relationship called N times, once per chunk."""
+        pipeline, mock_writer = _make_pipeline()
+        pipeline.ingest(_report_source())
+
+        chunk_count = mock_writer.write_memory_node.call_count
+        assert mock_writer.write_part_of_relationship.call_count == chunk_count
+
+        # Verify each call has the right project/session IDs
+        for call in mock_writer.write_part_of_relationship.call_args_list:
+            kwargs = call[1]  # keyword args
+            assert kwargs.get("report_project_id") == "proj-test"
+            assert kwargs.get("report_session_id") == "sess-abc"
+
+
+class TestChunkContentHashSessionScoped:
+    """Tests verifying chunk content_hash includes session_id (CONTEXT.md dedup key)."""
+
+    def test_chunk_content_hash_includes_session_id(self):
+        """Two reports with same content but different session_ids produce different chunk hashes."""
+        pipeline1, writer1 = _make_pipeline()
+        pipeline2, writer2 = _make_pipeline()
+
+        same_content = "## Section\n\nIdentical content in both sessions."
+
+        source_s1 = _report_source(content=same_content, session_id="s1")
+        source_s2 = _report_source(content=same_content, session_id="s2")
+
+        pipeline1.ingest(source_s1)
+        pipeline2.ingest(source_s2)
+
+        # Extract content_hash values from write_memory_node calls
+        hashes_s1 = [
+            call[0][1]["content_hash"]  # positional: (labels, props)
+            for call in writer1.write_memory_node.call_args_list
+        ]
+        hashes_s2 = [
+            call[0][1]["content_hash"]
+            for call in writer2.write_memory_node.call_args_list
+        ]
+
+        assert len(hashes_s1) > 0, "No chunks written for session s1"
+        assert len(hashes_s2) > 0, "No chunks written for session s2"
+
+        # Same content, different session_id -> different hashes
+        for h1, h2 in zip(hashes_s1, hashes_s2):
+            assert h1 != h2, (
+                f"Chunk hash collision: same text but different session_ids should differ. "
+                f"Got {h1} for both sessions."
+            )
+
+
+class TestFindingContentHashTextOnly:
+    """Tests verifying finding content_hash is text-only (global dedup, not session-scoped)."""
+
+    def test_finding_content_hash_is_text_only(self):
+        """Same finding text from different sessions produces identical content_hash."""
+        pipeline1, writer1 = _make_pipeline()
+        pipeline2, writer2 = _make_pipeline()
+
+        same_text = "SaaS churn increases 20% when onboarding friction is high."
+
+        source_s1 = _finding_source(content=same_text, session_id="sess-1", citations=[])
+        source_s2 = _finding_source(content=same_text, session_id="sess-2", citations=[])
+
+        pipeline1.ingest(source_s1)
+        pipeline2.ingest(source_s2)
+
+        props1 = writer1.write_memory_node.call_args[0][1]
+        props2 = writer2.write_memory_node.call_args[0][1]
+
+        assert props1["content_hash"] == props2["content_hash"], (
+            "Finding content_hash must be text-only (sha256 of text), not session-scoped."
+        )
+
+    def test_finding_content_hash_deterministic(self):
+        """Calling ingest twice with same finding text produces identical content_hash."""
+        import hashlib
+
+        pipeline, mock_writer = _make_pipeline()
+        text = "SaaS churn increases 20% when onboarding friction is high."
+        source = _finding_source(content=text, citations=[])
+        pipeline.ingest(source)
+
+        props = mock_writer.write_memory_node.call_args[0][1]
+        expected_hash = hashlib.sha256(text.encode()).hexdigest()
+        assert props["content_hash"] == expected_hash
+
+
+class TestResearchIngestionPipelineFindingFlow:
+    """Tests for _ingest_finding path."""
+
+    def test_ingest_finding_flow(self):
+        """ingest(finding) calls write_memory_node with Finding labels, write_source_node, write_cites_relationship."""
+        pipeline, mock_writer = _make_pipeline()
+        result = pipeline.ingest(_finding_source())
+
+        assert mock_writer.write_memory_node.call_count == 1
+        call_args = mock_writer.write_memory_node.call_args
+        labels = call_args[0][0]  # first positional: labels list
+        assert "Memory" in labels
+        assert "Research" in labels
+        assert "Finding" in labels
+
+        assert mock_writer.write_source_node.call_count == 1
+        assert mock_writer.write_cites_relationship.call_count == 1
+
+        # CITES relationship content_hash must match Finding node content_hash
+        finding_hash = call_args[0][1]["content_hash"]
+        cites_call = mock_writer.write_cites_relationship.call_args
+        assert cites_call[1]["finding_content_hash"] == finding_hash
+
+        assert result["type"] == "finding"
+
+    def test_ingest_finding_no_citations(self):
+        """ingest(finding) with empty citations list does not call write_source_node."""
+        pipeline, mock_writer = _make_pipeline()
+        pipeline.ingest(_finding_source(citations=[]))
+        assert mock_writer.write_source_node.call_count == 0
+        assert mock_writer.write_cites_relationship.call_count == 0
+
+
+class TestSourceRegistration:
+    """Tests for source registration at module import time."""
+
+    def test_source_registration(self):
+        """pipeline module registers deep_research_agent and web_crawl4ai in SOURCE_REGISTRY."""
+        import codememory.web.pipeline  # noqa: F401 — ensure module is imported
+        from codememory.core.registry import SOURCE_REGISTRY
+
+        assert "deep_research_agent" in SOURCE_REGISTRY
+        assert "web_crawl4ai" in SOURCE_REGISTRY
+        assert SOURCE_REGISTRY["deep_research_agent"] == ["Memory", "Research", "Finding"]
+        assert SOURCE_REGISTRY["web_crawl4ai"] == ["Memory", "Research", "Chunk"]

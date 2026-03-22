@@ -73,7 +73,13 @@ register_source("browser_ext_gemini",     ["Memory", "Conversation", "BrowserExt
 
 ## REST API Requirement
 
-Both connectors POST to `POST /ingest/conversation`. This endpoint must exist before either connector can be deployed. **The REST API server (`am-server`) is a Phase 4 deliverable** — it is the foundation both Phase 5 and Phase 6 build on.
+Both connectors POST to `POST /ingest/conversation`. This endpoint must exist before either connector can be deployed.
+
+**`am-server` REST API is split across two phases:**
+- **Phase 2 (02-04-PLAN)** — FastAPI foundation: `POST /ingest/research`, `GET /search/research`, Bearer token auth middleware, `GET /ext/selectors.json` for am-ext hotpatching
+- **Phase 4** — Extends `am-server` with conversation endpoints: `POST /ingest/conversation`, `GET /search/conversations`
+
+Phases 5 (am-proxy) and 6 (am-ext) depend on Phase 4 for `/ingest/conversation`. The server infrastructure and auth middleware are already available after Phase 2.
 
 Payload shape (both connectors):
 ```json

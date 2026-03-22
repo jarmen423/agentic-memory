@@ -82,7 +82,7 @@ progress:
 | KGB.__init__ creates ConnectionManager internally, calls super().__init__(conn) | Preserves (uri, user, password) caller interface; self.driver = self._conn.driver keeps 300+ internal references intact |
 | ingest() wraps run_pipeline() as thin ABC compliance shim | Satisfies ABC without disrupting existing multi-pass pipeline orchestration |
 | Output-centric research ingestion (agent output, not source pages) | Source pages are ephemeral agent context; Reports/Findings/Citations are the durable knowledge artifacts |
-| REST API (`am-server`) required in Phase 4 | Both am-proxy and am-ext POST to `/ingest/conversation` — MCP alone is insufficient for passive capture |
+| REST API (`am-server`) foundation built in Phase 2 | Web research endpoints + auth land in Phase 2 (02-04-PLAN); Phase 4 extends with `/ingest/conversation`. Connectors unblocked sooner. |
 | am-proxy: asyncio.call_later TTL for request/response buffer | Per-entry cancel handle prevents unbounded buffer growth; 300s TTL covers longest real tool calls |
 | Browser extension: 800ms debounce on MutationObserver | Streaming responses cause hundreds of DOM mutations per turn; debounce fires once on turn completion |
 | Passive ingestion: am-proxy (CLI agents) + am-ext (web UIs) | Covers full spectrum without OAuth scraping — proxy wraps ACP stdio, extension observes DOM |

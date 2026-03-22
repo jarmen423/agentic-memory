@@ -50,14 +50,15 @@ Plans:
 
 ## Phase 2: Web Research Core
 
-**Goal:** Output-centric web research ingestion — agent-produced reports and findings persist to Neo4j as :Memory:Research nodes with Gemini embeddings, searchable via MCP tools. User-directed URL ingestion via Crawl4AI. Brave Search as agent tool for live web search.
+**Goal:** Output-centric web research ingestion — agent-produced reports and findings persist to Neo4j as :Memory:Research nodes with Gemini embeddings, searchable via MCP tools and REST API. User-directed URL ingestion via Crawl4AI. Brave Search as agent tool for live web search.
 
-**Plans:** 3 plans
+**Plans:** 3 plans + 1 (REST API foundation)
 
 Plans:
 - [ ] 02-01-PLAN.md — GraphWriter extensions, content normalization/chunking, Crawl4AI wrapper, package deps
 - [ ] 02-02-PLAN.md — ResearchIngestionPipeline (report + finding ingest paths)
 - [ ] 02-03-PLAN.md — MCP tools (memory_ingest_research, search_web_memory, brave_search) + CLI commands
+- [ ] 02-04-PLAN.md — REST API server foundation (FastAPI + auth + web research endpoints)
 
 **Deliverables:**
 - `ResearchIngestionPipeline` subclassing `BaseIngestionPipeline` — handles report, finding, and chunk ingest
@@ -72,6 +73,12 @@ Plans:
 - `web-init` CLI — initializes research_embeddings vector index
 - `web-search` CLI — stub (tabled)
 - GraphWriter: 5 new methods (write_report_node, write_source_node, write_cites_relationship, write_has_chunk_relationship, write_part_of_relationship)
+- **`am-server` FastAPI REST API foundation** (`src/am_server/`):
+  - `POST /ingest/research` — REST equivalent of `memory_ingest_research` MCP tool
+  - `GET /search/research` — REST equivalent of `search_web_memory` MCP tool
+  - `GET /ext/selectors.json` — remote DOM selectors endpoint for am-ext
+  - Bearer token API key authentication middleware
+  - Runs alongside FastMCP on the same process (separate port or unified via ASGI mount)
 
 **Success Criteria:**
 - `codememory web-ingest <url>` ingests a static or JS-rendered page and makes it semantically searchable
@@ -80,6 +87,9 @@ Plans:
 - `search_web_memory` returns semantically relevant chunks and findings
 - `brave_search` returns live web results to agent without touching Neo4j
 - Dedup: re-ingesting same URL/report produces no duplicate nodes
+- `POST /ingest/research` REST endpoint accepts the same payload as the MCP tool and produces identical results
+- `GET /search/research?q=...` returns semantically relevant results via REST
+- Unauthenticated requests to REST endpoints return 401
 
 ---
 
@@ -113,18 +123,16 @@ Plans:
 
 ## Phase 4: Conversation Memory Core
 
-**Goal:** Conversation ingestion pipeline and REST API server — the foundation both passive connectors (am-proxy, am-ext) and the MCP tool path build on.
+**Goal:** Conversation ingestion pipeline — extends the `am-server` REST API (built in Phase 2) with `/ingest/conversation`, enabling both passive connectors (am-proxy, am-ext) and explicit MCP writes.
 
 **Deliverables:**
 - `ConversationIngestionPipeline` subclassing `BaseIngestionPipeline` — handles turn-by-turn conversation ingestion
 - Graph schema: `:Memory:Conversation:Turn` nodes with role, text, embedding; grouped by session_id and project_id
 - `chat_embeddings` vector index (768d, Gemini) on `:Memory:Conversation` nodes
 - Turn deduplication: MERGE on (session_id, turn_index) — append-only, idempotent
-- **FastAPI REST server** (`am-server`) — wraps all ingestion pipelines as HTTP endpoints:
+- **Extend `am-server`** (REST API foundation from Phase 2) with conversation endpoints:
   - `POST /ingest/conversation` — receives turn payloads from am-proxy and am-ext
-  - `POST /ingest/research` — REST equivalent of memory_ingest_research MCP tool
-  - `GET /search` — REST equivalent of search MCP tools
-  - API key authentication (Bearer token)
+  - `GET /search/conversations` — REST equivalent of `search_conversations` MCP tool
 - `search_conversations` MCP tool — semantic search over conversation turns
 - `add_message` MCP tool — explicit turn write for agents without passive capture
 - `get_conversation_context` MCP tool — ranked relevant history for a given query
@@ -133,15 +141,14 @@ Plans:
 - `chat-search` CLI — semantic search over conversation memory
 
 **Success Criteria:**
-- `POST /ingest/conversation` REST endpoint accepts and persists turn payloads
+- `POST /ingest/conversation` REST endpoint accepts and persists turn payloads from am-proxy and am-ext
 - `chat-ingest` correctly imports a real conversation export (JSON/JSONL)
 - `search_conversations` returns semantically relevant turns
 - `get_conversation_context` returns ranked history for a query
-- REST API and MCP tools produce identical results for equivalent inputs
-- All auth via Bearer API key — no OAuth required for self-hosted use
+- REST and MCP tools produce identical results for equivalent inputs
+- All auth via Bearer API key — same middleware as Phase 2 REST foundation
 
 **Key Risks:**
-- FastAPI + FastMCP co-serving in the same process — confirm compatibility
 - Conversation schema must be locked before first passive ingest (hard to migrate)
 - Turn dedup key (session_id + turn_index) assumes ordered delivery — proxy must guarantee ordering
 
@@ -245,21 +252,18 @@ Plans:
 
 ```
 Phase 1 (Foundation)
-    ├── Phase 2 (Web Research Core)
-    │       └── Phase 3 (Web Research Scheduling)
-    └── Phase 4 (Conversation Memory Core + REST API)
-            ├── Phase 5 (am-proxy)
-            └── Phase 6 (am-ext)
+    └── Phase 2 (Web Research Core + REST API foundation)
+            ├── Phase 3 (Web Research Scheduling)
+            └── Phase 4 (Conversation Memory Core)
+                    ├── Phase 5 (am-proxy)
+                    └── Phase 6 (am-ext)
 Phase 2 + Phase 4
     └── Phase 7 (Cross-Module Integration & Hardening)
 ```
 
-Phases 2 and 4 can run in parallel after Phase 1 completes.
-Phase 3 depends on Phase 2 (requires working ingestion pipeline).
-Phases 5 and 6 depend on Phase 4 (require the REST API server).
+Phases 3 and 4 can run in parallel after Phase 2 completes.
+Phases 5 and 6 can run in parallel after Phase 4 completes.
 Phase 7 depends on all prior phases.
-
-Note: Phase 7 was previously Phase 5. Phases 5 and 6 (am-proxy, am-ext) are new additions.
 
 ---
 

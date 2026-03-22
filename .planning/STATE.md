@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: — Full Multi-Module Memory System
-current_phase: 02
-status: unknown
-last_updated: "2026-03-22T02:37:15.373Z"
+current_phase: 04
+status: active
+last_updated: "2026-03-21T00:00:00Z"
 progress:
   total_phases: 7
   completed_phases: 2
@@ -15,19 +15,19 @@ progress:
 # Agentic Memory — Project State
 
 **Last Updated:** 2026-03-21
-**Current Phase:** 02
-**Phase Status:** In Progress
-**Last Session Stopped At:** Completed 02-03-PLAN.md
+**Current Phase:** 04
+**Phase Status:** Not Started
+**Last Session Stopped At:** Phase 03 deferred (classified as research agent extension, not core memory) — advancing to Phase 04
 
 ---
 
 ## Active Phase
 
-**Phase 1: Foundation**
+**Phase 4: Conversation Memory Core**
 
-- Shared ingestion abstractions, embedding service layer, multi-database setup, config validation
+- ConversationIngestionPipeline, /ingest/conversation REST endpoint, search_conversations MCP tool, chat-init/ingest/search CLI
 
-**Next Action:** Begin Phase 2 — Web Research Core
+**Next Action:** Begin Phase 4 — Conversation Memory Core
 
 ---
 
@@ -36,9 +36,9 @@ progress:
 | Phase | Name | Status |
 |-------|------|--------|
 | 1 | Foundation | Complete |
-| 2 | Web Research Core | In Progress |
-| 3 | Web Research Scheduling | Not Started |
-| 4 | Conversation Memory Core | Not Started |
+| 2 | Web Research Core | Complete |
+| 3 | Web Research Scheduling | Deferred (post-v1) |
+| 4 | Conversation Memory Core | Active |
 | 5 | am-proxy (ACP Proxy) | Not Started |
 | 6 | am-ext (Browser Extension) | Not Started |
 | 7 | Cross-Module Integration & Hardening | Not Started |
@@ -62,6 +62,8 @@ progress:
 - [x] Plan 02-01: GraphWriter Research schema extensions; content chunker (header-split + recursive fallback); Crawl4AI async wrapper; 4 new package deps (2026-03-22)
 - [x] Plan 02-02: ResearchIngestionPipeline — report + finding ingest paths; session-scoped chunk dedup; global finding dedup; HAS_CHUNK + PART_OF wiring; source registration (2026-03-21)
 - [x] Plan 02-03: MCP tools (memory_ingest_research, search_web_memory, brave_search) and CLI commands (web-init, web-ingest with PDF detection, web-search stub) (2026-03-21)
+- [x] Plan 02-04: FastAPI am-server REST foundation — app factory, auth, models, routes/health + routes/research (2026-03-21)
+- [x] Phase 02 verified: all 7 checks passed, test suite green (2026-03-21)
 
 ---
 
@@ -87,7 +89,7 @@ progress:
 | Output-centric research ingestion (agent output, not source pages) | Source pages are ephemeral agent context; Reports/Findings/Citations are the durable knowledge artifacts |
 | REST API (`am-server`) foundation built in Phase 2 | Web research endpoints + auth land in Phase 2 (02-04-PLAN); Phase 4 extends with `/ingest/conversation`. Connectors unblocked sooner. |
 | am-proxy: asyncio.call_later TTL for request/response buffer | Per-entry cancel handle prevents unbounded buffer growth; 300s TTL covers longest real tool calls |
-| Browser extension: 800ms debounce on MutationObserver | Streaming responses cause hundreds of DOM mutations per turn; debounce fires once on turn completion |
+| Browser extension: 800ms debounce on MutationObserver | Streaming responses cause hundreds of DOM mutations per turn; debounce fires once on turn completion |\
 | Passive ingestion: am-proxy (CLI agents) + am-ext (web UIs) | Covers full spectrum without OAuth scraping — proxy wraps ACP stdio, extension observes DOM |
 | ingestion_mode: "passive" for proxy and extension payloads | Distinguishes auto-captured turns from explicit MCP writes in query and analytics |
 | Module-level imports (try/except) for markdownify and pymupdf4llm | Enables pytest patch() interception; fallback None values for environments without optional deps |
@@ -110,7 +112,7 @@ progress:
 | 02 | 01 | 7 | 2 | 6 |
 | 02 | 02 | 8 | 1 | 3 |
 | 02 | 03 | 25 | 2 | 4 |
-| Phase 02 P02-04 | 60 | 1 tasks | 13 files |
+| 02 | 04 | 60 | 1 | 13 |
 
 ## Blockers / Open Questions
 

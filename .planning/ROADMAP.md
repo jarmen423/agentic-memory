@@ -93,7 +93,9 @@ Plans:
 
 ---
 
-## Phase 3: Web Research Scheduling
+## Phase 3: Web Research Scheduling *(Deferred — post-v1)*
+
+**Status:** Deferred. Classified as a research agent extension, not core agentic memory infrastructure. Will be revisited after Phase 7 (Cross-Module Integration). Current phase advances to Phase 4.
 
 **Goal:** Smart automated research pipeline — set a research template, system runs it on a schedule with LLM-driven variation, building cumulative knowledge over time.
 

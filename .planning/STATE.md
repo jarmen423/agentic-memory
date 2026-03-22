@@ -6,7 +6,7 @@ current_phase: 2
 status: unknown
 last_updated: "2026-03-21T07:11:53.356Z"
 progress:
-  total_phases: 5
+  total_phases: 7
   completed_phases: 1
   total_plans: 4
   completed_plans: 4
@@ -38,8 +38,10 @@ progress:
 | 1 | Foundation | Complete |
 | 2 | Web Research Core | Not Started |
 | 3 | Web Research Scheduling | Not Started |
-| 4 | Conversation Memory | Not Started |
-| 5 | Cross-Module Integration & Hardening | Not Started |
+| 4 | Conversation Memory Core | Not Started |
+| 5 | am-proxy (ACP Proxy) | Not Started |
+| 6 | am-ext (Browser Extension) | Not Started |
+| 7 | Cross-Module Integration & Hardening | Not Started |
 
 ---
 
@@ -79,6 +81,12 @@ progress:
 | Gemini MRL: ConfigValidator warns, does not raise, on non-default dims | Gemini supports output_dimensionality override; OpenAI/Nemotron have fixed dims |
 | KGB.__init__ creates ConnectionManager internally, calls super().__init__(conn) | Preserves (uri, user, password) caller interface; self.driver = self._conn.driver keeps 300+ internal references intact |
 | ingest() wraps run_pipeline() as thin ABC compliance shim | Satisfies ABC without disrupting existing multi-pass pipeline orchestration |
+| Output-centric research ingestion (agent output, not source pages) | Source pages are ephemeral agent context; Reports/Findings/Citations are the durable knowledge artifacts |
+| REST API (`am-server`) required in Phase 4 | Both am-proxy and am-ext POST to `/ingest/conversation` — MCP alone is insufficient for passive capture |
+| am-proxy: asyncio.call_later TTL for request/response buffer | Per-entry cancel handle prevents unbounded buffer growth; 300s TTL covers longest real tool calls |
+| Browser extension: 800ms debounce on MutationObserver | Streaming responses cause hundreds of DOM mutations per turn; debounce fires once on turn completion |
+| Passive ingestion: am-proxy (CLI agents) + am-ext (web UIs) | Covers full spectrum without OAuth scraping — proxy wraps ACP stdio, extension observes DOM |
+| ingestion_mode: "passive" for proxy and extension payloads | Distinguishes auto-captured turns from explicit MCP writes in query and analytics |
 
 ---
 

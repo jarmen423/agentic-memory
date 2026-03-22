@@ -60,29 +60,26 @@ Plans:
 - [ ] 02-03-PLAN.md — MCP tools (memory_ingest_research, search_web_memory, brave_search) + CLI commands
 
 **Deliverables:**
-- Crawl4AI integration: URL ingestion, content filtering (boilerplate removal), metadata extraction (title, author, date, source URL)
-- PDF parsing via Crawl4AI built-in support
-- Vercel agent-browser integration as fallback for JS-rendered/dynamic content (more efficient than raw Playwright for agent workflows)
-- Brave Search API integration: web search → auto-ingest top results
-- Gemini multimodal embedding service (gemini-embedding-2-preview) for web content
-- Neo4j web database schema + vector indexes
-- Content deduplication (hash-based, update vs create logic)
-- MCP tools: `ingest_url`, `search_web_memory`
-- CLI commands: `web-init`, `web-ingest`, `web-search` (fully functional)
+- `ResearchIngestionPipeline` subclassing `BaseIngestionPipeline` — handles report, finding, and chunk ingest
+- Content normalization pipeline: Crawl4AI (pass-through markdown), HTML (markdownify), PDF (pymupdf4llm)
+- Header-based chunking with 512-token max, 50-token overlap; chunks keyed by (session_id, chunk_index)
+- `memory_ingest_research` MCP tool — primary write path for agents (type: "report" | "finding")
+- Graph schema: `:Memory:Research:Report` → `[:HAS_CHUNK]` → `:Memory:Research:Chunk` (embedded); `:Memory:Research:Finding` → `[:CITES {url,title,snippet}]` → `:Entity:Source`
+- Deduplication: Report on (project_id + session_id), Finding on content_hash, Source MERGE on url
+- `search_web_memory` MCP tool — vector search over Research Chunks + Findings
+- `brave_search` MCP tool — live Brave Search API query, returns results to agent context only (NO auto-ingest)
+- `web-ingest <url|path>` CLI — explicit user-directed page or PDF ingestion
+- `web-init` CLI — initializes research_embeddings vector index
+- `web-search` CLI — stub (tabled)
+- GraphWriter: 5 new methods (write_report_node, write_source_node, write_cites_relationship, write_has_chunk_relationship, write_part_of_relationship)
 
 **Success Criteria:**
-- `codememory web-ingest <url>` ingests a static page and makes it searchable
-- PDF documents ingested and retrievable via semantic search
-- JS-rendered pages fall back to agent-browser automatically, transparently
-- `codememory web-search "query"` runs Brave Search and auto-ingests results
-- No duplicate entries for the same URL on re-ingest (updates instead)
-- Semantic search returns relevant results across all ingested web content
-
-**Key Risks:**
-- Crawl4AI version stability and JS rendering reliability
-- Vercel agent-browser API surface — verify current documentation
-- Brave Search API rate limits and response schema
-- Gemini embedding API access (Vertex AI vs AI Studio auth)
+- `codememory web-ingest <url>` ingests a static or JS-rendered page and makes it semantically searchable
+- PDF ingested via `codememory web-ingest <path>.pdf` and retrievable via semantic search
+- `memory_ingest_research` MCP tool persists agent-produced reports and findings to Neo4j
+- `search_web_memory` returns semantically relevant chunks and findings
+- `brave_search` returns live web results to agent without touching Neo4j
+- Dedup: re-ingesting same URL/report produces no duplicate nodes
 
 ---
 
@@ -114,39 +111,110 @@ Plans:
 
 ---
 
-## Phase 4: Conversation Memory
+## Phase 4: Conversation Memory Core
 
-**Goal:** Set-and-forget conversation capture — configure once, all conversations are automatically stored and semantically searchable across providers.
+**Goal:** Conversation ingestion pipeline and REST API server — the foundation both passive connectors (am-proxy, am-ext) and the MCP tool path build on.
 
 **Deliverables:**
-- Neo4j conversation database schema: conversations, messages, participants, sessions (port 7689)
-- Gemini embeddings for conversation content
-- Claude Code integration: stop-session hook auto-exports and ingests conversation on session end
-- Provider survey: research hook/integration mechanisms for ChatGPT, Cursor, Windsurf, and other major agent platforms
-- Provider-specific integrations for surveyed platforms (wherever native hooks exist)
-- Manual import fallback: JSON/JSONL conversation log ingestion
-- MCP tool fallback: `add_message()` for providers with no native hook support
-- Incremental message updates (append-only, no full re-index on new messages)
-- User/session tracking: provider attribution, conversation boundaries, role tagging (user/assistant/system)
-- MCP tools: `search_conversations`, `add_message`, `get_conversation_context`
-- CLI commands: `chat-init`, `chat-ingest`, `chat-search`
+- `ConversationIngestionPipeline` subclassing `BaseIngestionPipeline` — handles turn-by-turn conversation ingestion
+- Graph schema: `:Memory:Conversation:Turn` nodes with role, text, embedding; grouped by session_id and project_id
+- `chat_embeddings` vector index (768d, Gemini) on `:Memory:Conversation` nodes
+- Turn deduplication: MERGE on (session_id, turn_index) — append-only, idempotent
+- **FastAPI REST server** (`am-server`) — wraps all ingestion pipelines as HTTP endpoints:
+  - `POST /ingest/conversation` — receives turn payloads from am-proxy and am-ext
+  - `POST /ingest/research` — REST equivalent of memory_ingest_research MCP tool
+  - `GET /search` — REST equivalent of search MCP tools
+  - API key authentication (Bearer token)
+- `search_conversations` MCP tool — semantic search over conversation turns
+- `add_message` MCP tool — explicit turn write for agents without passive capture
+- `get_conversation_context` MCP tool — ranked relevant history for a given query
+- `chat-init` CLI — initializes chat_embeddings vector index
+- `chat-ingest` CLI — manual JSON/JSONL conversation log import
+- `chat-search` CLI — semantic search over conversation memory
 
 **Success Criteria:**
-- Claude Code sessions captured automatically with zero user action after initial setup
-- At least two additional providers integrated with native hooks
-- Manual import handles real-world conversation export formats
-- Semantic search retrieves relevant past exchanges across all captured conversations
-- `get_conversation_context` returns ranked relevant history for a given query
-- Provider attribution is correct (no mixing conversations across providers)
+- `POST /ingest/conversation` REST endpoint accepts and persists turn payloads
+- `chat-ingest` correctly imports a real conversation export (JSON/JSONL)
+- `search_conversations` returns semantically relevant turns
+- `get_conversation_context` returns ranked history for a query
+- REST API and MCP tools produce identical results for equivalent inputs
+- All auth via Bearer API key — no OAuth required for self-hosted use
 
 **Key Risks:**
-- Provider hook availability varies significantly — some may have no hook mechanism
-- Conversation data privacy — clear scoping of what gets captured vs excluded
-- Schema must be locked before first ingest (hard to migrate conversation graph later)
+- FastAPI + FastMCP co-serving in the same process — confirm compatibility
+- Conversation schema must be locked before first passive ingest (hard to migrate)
+- Turn dedup key (session_id + turn_index) assumes ordered delivery — proxy must guarantee ordering
 
 ---
 
-## Phase 5: Cross-Module Integration & Hardening
+## Phase 5: am-proxy (ACP Proxy)
+
+**Goal:** Transparent stdio proxy that wraps any ACP-compliant agent CLI and passively tees conversations to the memory server. Zero latency impact on the agent session.
+
+**Deliverables:**
+- `packages/am-proxy/` — standalone Python package, distributed via `pipx install am-proxy`
+- `ACPProxy` class: async stdio pass-through with fire-and-forget ingest via `POST /ingest/conversation`
+- Message filtering: ingest `threads/create`, `threads/message`, `threads/tool_call`, `threads/tool_result`, `threads/update`; skip protocol noise
+- Request/response pairing via `_buffer` dict with `asyncio.call_later` TTL (300s) — per-entry cancel handle prevents unbounded growth
+- Agent detection from binary name: claude → `claude_code`, codex → `codex`, gemini → `gemini_cli`, opencode → `opencode`, kiro → `kiro`
+- TOML config: `~/.config/am-proxy/config.toml` — endpoint, api_key, default_project_id, per-agent binary paths
+- CLI: `am-proxy --agent claude --project my-project`
+- Setup helper: `am-proxy setup` — auto-detects installed ACP agents, prints editor config snippets
+- Silent failure on all error paths — proxy never surfaces exceptions to agent or editor
+- `ingestion_mode: "passive"` on all payloads
+
+**Success Criteria:**
+- `am-proxy --agent claude --project test` starts cleanly and passes stdin/stdout transparently
+- Agent session runs with zero measurable latency overhead
+- `threads/message` turns are POSTed to `/ingest/conversation` and appear in Neo4j
+- Protocol noise (ping/pong, $/progress) is never forwarded to the memory server
+- Memory server downtime (5s timeout) is swallowed silently — agent session unaffected
+- Buffer TTL: unbuffered requests are evicted after 300s with no memory leak
+
+**Key Risks:**
+- ACP spec stability — message method names may change across agent CLI versions
+- asyncio stream handling on Windows (subprocess pipes behave differently)
+- Buffer TTL edge case: very long tool calls (>300s) lose request context on response arrival
+
+---
+
+## Phase 6: am-ext (Browser Extension)
+
+**Goal:** Passive conversation capture from AI chat web UIs — install once, all supported platform conversations are silently ingested to the user's memory server.
+
+**Deliverables:**
+- `packages/am-ext/` — Chrome/Firefox Manifest V3 extension
+- Platform adapters (MutationObserver + 800ms debounce for streaming detection):
+  - `adapters/chatgpt.js` — `chat.openai.com`
+  - `adapters/claude.js` — `claude.ai`
+  - `adapters/perplexity.js` — `perplexity.ai`
+  - `adapters/gemini.js` — `gemini.google.com`
+- `selectors.json` — per-platform DOM selectors, remotely updatable without extension release
+- Remote selectors endpoint: `GET {memory_endpoint}/ext/selectors.json` — checked at startup
+- Background service worker: routes NEW_TURN events to `POST /ingest/conversation`
+- Onboarding page: endpoint + API key configuration, per-platform enable/disable toggles, connection test
+- Popup: live session status (platform, turns saved, session ID), pause/resume toggle
+- Silent failure on all fetch paths — `.catch(() => {})` everywhere
+- `ingestion_mode: "passive"`, `source_key: "browser_ext_{platform}"` on all payloads
+- Session ID from platform conversation URL (not generated UUID)
+
+**Success Criteria:**
+- Install + onboard takes under 2 minutes
+- ChatGPT turn captured and appears in Neo4j after assistant message completes
+- 800ms debounce fires exactly once per completed streaming response (not per token)
+- Platform disabled in popup: no turns sent to server
+- Memory server unreachable: no errors visible to user, conversation continues normally
+- Selector hotpatch: updating remote selectors.json restores capture without extension re-release
+
+**Key Risks:**
+- Platform DOM structure changes — primary maintenance burden; mitigated by remote selectors
+- Chrome Store review cycle for updates — remote selectors reduce frequency
+- MV3 service worker lifecycle: may be killed between turns in long sessions (use chrome.alarms as keepalive if needed)
+- Same-origin restrictions on some platforms may block content script injection
+
+---
+
+## Phase 7: Cross-Module Integration & Hardening
 
 **Goal:** Unified agent interface across all three modules, Nvidia Nemotron embedding support, production hardening.
 
@@ -177,16 +245,21 @@ Plans:
 
 ```
 Phase 1 (Foundation)
-    └── Phase 2 (Web Research Core)
-            └── Phase 3 (Web Research Scheduling)
-    └── Phase 4 (Conversation Memory)
+    ├── Phase 2 (Web Research Core)
+    │       └── Phase 3 (Web Research Scheduling)
+    └── Phase 4 (Conversation Memory Core + REST API)
+            ├── Phase 5 (am-proxy)
+            └── Phase 6 (am-ext)
 Phase 2 + Phase 4
-    └── Phase 5 (Cross-Module Integration)
+    └── Phase 7 (Cross-Module Integration & Hardening)
 ```
 
 Phases 2 and 4 can run in parallel after Phase 1 completes.
 Phase 3 depends on Phase 2 (requires working ingestion pipeline).
-Phase 5 depends on all prior phases.
+Phases 5 and 6 depend on Phase 4 (require the REST API server).
+Phase 7 depends on all prior phases.
+
+Note: Phase 7 was previously Phase 5. Phases 5 and 6 (am-proxy, am-ext) are new additions.
 
 ---
 
@@ -203,4 +276,4 @@ Phase 5 depends on all prior phases.
 | APScheduler vs system cron vs custom: best fit for research scheduling | Phase 3 | Medium |
 
 ---
-*Last updated: 2026-03-21 after phase 2 planning*
+*Last updated: 2026-03-21 after passive ingestion spec integration (am-proxy Phase 5, am-ext Phase 6; former Phase 5 renumbered to Phase 7; total phases: 7)*

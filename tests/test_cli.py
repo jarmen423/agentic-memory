@@ -723,3 +723,156 @@ def test_stub_commands_are_registered_in_parser():
             assert exc.value.code == 0, (
                 f"Command '{cmd}' exited with code {exc.value.code} — likely not registered"
             )
+
+
+# ---------------------------------------------------------------------------
+# Web CLI tests (Phase 2 implementations)
+# ---------------------------------------------------------------------------
+
+
+def test_web_init_calls_setup_database(monkeypatch, capsys):
+    """web-init calls ConnectionManager.setup_database() and prints 'ready'."""
+    from unittest.mock import Mock, patch
+
+    mock_conn = Mock()
+    mock_conn_class = Mock(return_value=mock_conn)
+
+    with patch("codememory.cli.ConnectionManager", mock_conn_class, create=True):
+        cli.cmd_web_init(argparse.Namespace())
+
+    mock_conn.setup_database.assert_called_once()
+    out = capsys.readouterr().out
+    assert "ready" in out.lower()
+
+
+def test_web_ingest_calls_pipeline(monkeypatch, capsys):
+    """web-ingest URL crawls via crawl_url and calls pipeline.ingest() with format='markdown'."""
+    from unittest.mock import Mock, patch, AsyncMock
+
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-google-key")
+    monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
+
+    mock_conn = Mock()
+    mock_embedder = Mock()
+    mock_extractor = Mock()
+    mock_pipeline = Mock()
+    mock_pipeline.ingest.return_value = {"chunks": 2, "type": "report"}
+
+    captured_source = {}
+
+    def capture_ingest(source):
+        captured_source.update(source)
+        return {"chunks": 2, "type": "report"}
+
+    mock_pipeline.ingest.side_effect = capture_ingest
+
+    async def fake_crawl_url(url, timeout_ms=30000):
+        return "# Test Page\nSome content here."
+
+    with patch("codememory.cli.ConnectionManager", Mock(return_value=mock_conn), create=True), \
+         patch("codememory.cli.EmbeddingService", Mock(return_value=mock_embedder), create=True), \
+         patch("codememory.cli.EntityExtractionService", Mock(return_value=mock_extractor), create=True), \
+         patch("codememory.cli.ResearchIngestionPipeline", Mock(return_value=mock_pipeline), create=True), \
+         patch("codememory.cli.crawl_url", fake_crawl_url, create=True):
+
+        cli.cmd_web_ingest(argparse.Namespace(url="https://example.com"))
+
+    mock_pipeline.ingest.assert_called_once()
+    assert captured_source["format"] == "markdown"
+    assert captured_source["type"] == "report"
+
+
+def test_web_ingest_pdf_format_detection(monkeypatch, capsys):
+    """web-ingest with .pdf path sets format='pdf' and does NOT call crawl_url."""
+    from unittest.mock import Mock, patch, call
+
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-google-key")
+    monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
+
+    mock_conn = Mock()
+    mock_embedder = Mock()
+    mock_extractor = Mock()
+    mock_pipeline = Mock()
+
+    captured_source = {}
+
+    def capture_ingest(source):
+        captured_source.update(source)
+        return {"chunks": 1, "type": "report"}
+
+    mock_pipeline.ingest.side_effect = capture_ingest
+
+    crawl_url_mock = Mock()
+
+    with patch("codememory.cli.ConnectionManager", Mock(return_value=mock_conn), create=True), \
+         patch("codememory.cli.EmbeddingService", Mock(return_value=mock_embedder), create=True), \
+         patch("codememory.cli.EntityExtractionService", Mock(return_value=mock_extractor), create=True), \
+         patch("codememory.cli.ResearchIngestionPipeline", Mock(return_value=mock_pipeline), create=True), \
+         patch("codememory.cli.crawl_url", crawl_url_mock, create=True), \
+         patch("os.path.isfile", return_value=True):
+
+        cli.cmd_web_ingest(argparse.Namespace(url="/some/path/doc.pdf"))
+
+    mock_pipeline.ingest.assert_called_once()
+    assert captured_source["format"] == "pdf"
+    assert captured_source.get("path") == "/some/path/doc.pdf"
+    crawl_url_mock.assert_not_called()
+
+
+def test_web_ingest_pdf_url_detection(monkeypatch, capsys):
+    """web-ingest with URL ending in .pdf detects format='pdf'."""
+    from unittest.mock import Mock, patch
+
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-google-key")
+    monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
+
+    mock_conn = Mock()
+    mock_embedder = Mock()
+    mock_extractor = Mock()
+    mock_pipeline = Mock()
+
+    captured_source = {}
+
+    def capture_ingest(source):
+        captured_source.update(source)
+        return {"chunks": 1, "type": "report"}
+
+    mock_pipeline.ingest.side_effect = capture_ingest
+
+    mock_httpx_resp = Mock()
+    mock_httpx_resp.raise_for_status = Mock()
+    mock_httpx_resp.content = b"%PDF fake content"
+
+    import tempfile as _tf
+
+    with patch("codememory.cli.ConnectionManager", Mock(return_value=mock_conn), create=True), \
+         patch("codememory.cli.EmbeddingService", Mock(return_value=mock_embedder), create=True), \
+         patch("codememory.cli.EntityExtractionService", Mock(return_value=mock_extractor), create=True), \
+         patch("codememory.cli.ResearchIngestionPipeline", Mock(return_value=mock_pipeline), create=True), \
+         patch("httpx.get", Mock(return_value=mock_httpx_resp)), \
+         patch("os.path.isfile", return_value=False):
+
+        cli.cmd_web_ingest(argparse.Namespace(url="https://example.com/report.pdf"))
+
+    mock_pipeline.ingest.assert_called_once()
+    assert captured_source["format"] == "pdf"
+
+
+def test_web_ingest_missing_google_key_exits_1(monkeypatch, capsys):
+    """web-ingest exits with code 1 when GOOGLE_API_KEY is not set."""
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
+
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_web_ingest(argparse.Namespace(url="https://example.com"))
+
+    assert exc.value.code == 1
+
+
+def test_web_search_stub_prints_not_implemented(capsys):
+    """web-search prints 'Not yet implemented' stub message."""
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_web_search(argparse.Namespace())
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "Not yet implemented" in out

@@ -625,3 +625,516 @@ The existing `upsert_entity()` handles `Entity:*` nodes by `(name, type)` compos
 
 **Research date:** 2026-03-21
 **Valid until:** 2026-04-21 (stable libraries; crawl4ai moves fast — re-verify if >30 days)
+
+---
+
+## 02-04: REST API Foundation
+
+**Researched:** 2026-03-21
+**Domain:** FastAPI, ASGI mounting, Bearer token auth, FastMCP co-serving
+**Confidence:** HIGH (verified via live pip introspection, FastMCP source inspection, ASGI mount test)
+
+### Summary
+
+Plan 02-04 builds `src/am_server/` as a FastAPI application that runs in the same uvicorn process as the existing FastMCP server via ASGI sub-application mounting. The key finding is that `FastMCP.sse_app()` returns a plain `Starlette` instance, and `FastAPI.mount()` accepts Starlette ASGI apps directly — confirmed by live Python test. This means zero separate process, zero port conflict: FastAPI owns a port (default 8765), mounts the MCP server at `/mcp`, and adds REST endpoints alongside it.
+
+`fastapi` is NOT in `pyproject.toml` yet — it must be added. `uvicorn` is already pulled in transitively by `mcp` (1.26.0) but should be pinned explicitly. Both packages are already installed on this machine.
+
+The three Phase 2 REST endpoints are thin wrappers over existing pipeline and service objects: `POST /ingest/research` delegates to `ResearchIngestionPipeline.ingest()` (the exact same payload the MCP tool accepts), `GET /search/research` delegates to the same Neo4j vector index query used by `search_web_memory`, and `GET /ext/selectors.json` serves a static JSON file from disk at `src/am_server/data/selectors.json`.
+
+Bearer token auth is implemented as a FastAPI dependency function using `fastapi.security.HTTPBearer` — applied via `Depends(require_auth)` on every endpoint except `GET /health` and `GET /ext/selectors.json`. The API key is read from `AM_SERVER_API_KEY` environment variable. This middleware is intentionally designed to be reused in Phase 4 with zero changes.
+
+**Primary recommendation:** Build `src/am_server/` as a standalone FastAPI package. Mount FastMCP's Starlette app at `/mcp`. Wire `uvicorn.run(app, host="0.0.0.0", port=8765)` as the server entrypoint. Add `fastapi>=0.115.0` and `uvicorn[standard]>=0.30.0` to `pyproject.toml`.
+
+---
+
+### Standard Stack (02-04)
+
+#### Packages to Add to pyproject.toml
+
+| Library | Latest | Purpose | Status |
+|---------|--------|---------|--------|
+| `fastapi` | 0.135.1 | REST API framework — routing, dependency injection, request/response models | NOT in pyproject.toml — must add |
+| `uvicorn` | 0.42.0 | ASGI server — already required by `mcp` 1.26.0, but should be explicit | NOT in pyproject.toml — must add |
+
+#### Already Present (no action needed)
+
+| Library | Installed Version | Used For |
+|---------|------------------|---------|
+| `starlette` | 0.49.3 | FastMCP.sse_app() returns Starlette; FastAPI is built on Starlette |
+| `pydantic` | >=2.0.0 | FastAPI request body models |
+| `httpx` | 0.28.1 | Already in project; not needed by am-server itself but available |
+| `mcp` | 1.26.0 | FastMCP instance already initialized in `server/app.py` |
+
+**Installation:**
+```bash
+pip install "fastapi>=0.115.0" "uvicorn[standard]>=0.30.0"
+```
+
+**Add to pyproject.toml:**
+```toml
+"fastapi>=0.115.0",
+"uvicorn[standard]>=0.30.0",
+```
+
+**Version note:** `fastapi>=0.115.0` is a safe lower bound — covers 0.115.x through 0.135.x (current). The `standard` extra for uvicorn adds `websockets` and `uvloop` (Linux only) for production throughput.
+
+---
+
+### Architecture Patterns (02-04)
+
+#### Recommended File Structure
+```
+src/am_server/
+├── __init__.py              # Package marker
+├── app.py                   # FastAPI app factory: create_app(), mounts MCP at /mcp
+├── auth.py                  # require_auth() dependency — HTTPBearer + env key check
+├── dependencies.py          # get_pipeline() — lru_cache singleton
+├── models.py                # Pydantic request/response models
+├── routes/
+│   ├── __init__.py
+│   ├── health.py            # GET /health — unauthenticated
+│   ├── ingest.py            # POST /ingest/research — auth required
+│   ├── search.py            # GET /search/research — auth required
+│   └── selectors.py         # GET /ext/selectors.json — unauthenticated
+├── data/
+│   └── selectors.json       # Static DOM selector file for am-ext
+└── server.py                # uvicorn.run() entrypoint
+```
+
+**pyproject.toml update — add am_server to packaged sources:**
+```toml
+[tool.hatch.build.targets.wheel]
+packages = ["src/codememory", "src/am_server"]
+```
+
+#### Pattern 1: FastAPI + FastMCP ASGI Mount (VERIFIED)
+**What:** Mount the existing FastMCP Starlette app as a sub-application inside FastAPI. Both run in the same uvicorn process on the same port.
+**Verified:** `app.mount('/mcp', mcp.sse_app())` confirmed working with fastapi 0.121.2 + mcp 1.26.0.
+
+```python
+# Source: live introspection — mcp 1.26.0 FastMCP.sse_app() returns Starlette instance (verified 2026-03-21)
+# src/am_server/app.py
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from codememory.server.app import mcp  # existing FastMCP instance
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Fail fast on missing env vars — better than 500 on first request
+    from am_server.dependencies import get_pipeline
+    get_pipeline()
+    yield
+
+def create_app() -> FastAPI:
+    app = FastAPI(title="am-server", version="0.1.0", lifespan=lifespan)
+
+    # Mount FastMCP SSE transport at /mcp
+    # MCP clients connect to http://host:8765/mcp/sse
+    app.mount("/mcp", mcp.sse_app())
+
+    from am_server.routes import health, ingest, search, selectors
+    app.include_router(health.router)
+    app.include_router(ingest.router)
+    app.include_router(search.router)
+    app.include_router(selectors.router)
+
+    return app
+```
+
+#### Pattern 2: Bearer Token Auth Dependency
+**What:** FastAPI dependency that validates `Authorization: Bearer <token>` on every protected route.
+**Pattern:** `Depends(require_auth)` injected at the router level via `APIRouter(dependencies=[...])`.
+**Header standard:** `Authorization: Bearer <key>` — NOT `X-API-Key`. Consistent with OAuth 2.1 patterns for future compatibility.
+
+```python
+# src/am_server/auth.py
+import os
+from fastapi import HTTPException, Security, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+_bearer = HTTPBearer()
+
+def require_auth(
+    credentials: HTTPAuthorizationCredentials = Security(_bearer),
+) -> str:
+    """Validate Bearer token against AM_SERVER_API_KEY env var."""
+    expected = os.environ.get("AM_SERVER_API_KEY", "")
+    if not expected:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AM_SERVER_API_KEY not configured",
+        )
+    if credentials.credentials != expected:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return credentials.credentials
+```
+
+**Applying auth to a router:**
+```python
+# All routes in this router require auth:
+router = APIRouter(dependencies=[Depends(require_auth)])
+```
+
+#### Pattern 3: POST /ingest/research — Pipeline Delegation
+**What:** Same payload as `memory_ingest_research` MCP tool. Delegates to `ResearchIngestionPipeline.ingest()`.
+**session_id rule:** Caller MUST provide `session_id`. Server NEVER generates it. This preserves the dedup contract `(project_id, session_id)`.
+
+```python
+# src/am_server/models.py
+from pydantic import BaseModel
+
+class CitationModel(BaseModel):
+    url: str
+    title: str | None = None
+    snippet: str | None = None
+
+class FindingModel(BaseModel):
+    text: str
+    confidence: str | None = None
+    citations: list[CitationModel] = []
+
+class ResearchIngestRequest(BaseModel):
+    type: str                          # "report" | "finding"
+    content: str
+    project_id: str
+    session_id: str                    # REQUIRED — caller owns session identity
+    source_agent: str                  # "claude" | "perplexity" | "chatgpt" | "custom"
+    title: str | None = None
+    research_question: str | None = None
+    confidence: str | None = None
+    findings: list[FindingModel] | None = None
+    citations: list[CitationModel] | None = None
+```
+
+```python
+# src/am_server/routes/ingest.py (sketch)
+import asyncio
+from fastapi import APIRouter, Depends
+from am_server.auth import require_auth
+from am_server.dependencies import get_pipeline
+from am_server.models import ResearchIngestRequest
+
+router = APIRouter(dependencies=[Depends(require_auth)])
+
+@router.post("/ingest/research", status_code=202)
+async def ingest_research(body: ResearchIngestRequest) -> dict:
+    pipeline = get_pipeline()
+    # pipeline.ingest() is synchronous — run in thread pool to avoid blocking event loop
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, pipeline.ingest, body.model_dump())
+    return {"status": "ok", "result": result}
+```
+
+#### Pattern 4: GET /search/research — Vector Search Delegation
+
+```python
+# src/am_server/routes/search.py
+from fastapi import APIRouter, Depends, Query
+from am_server.auth import require_auth
+
+router = APIRouter(dependencies=[Depends(require_auth)])
+
+@router.get("/search/research")
+async def search_research(
+    q: str = Query(..., description="Search query"),
+    limit: int = Query(10, ge=1, le=50),
+) -> dict:
+    # Reuse the same Neo4j vector search called by search_web_memory MCP tool
+    # Exact implementation follows the RESEARCH_SEARCH_CYPHER pattern in main RESEARCH.md
+    results = await _run_research_search(q, limit)
+    return {"results": results}
+```
+
+#### Pattern 5: GET /ext/selectors.json — Static File from Disk
+**Rationale for disk over hardcoded dict:** Remote-updatability is the entire point. Edit the file, selectors update instantly. No code change needed.
+**Auth decision:** This endpoint is intentionally UNAUTHENTICATED. am-ext fetches selectors at browser startup before the user has entered an API key in the extension settings.
+
+```python
+# src/am_server/routes/selectors.py
+import json
+from pathlib import Path
+from fastapi import APIRouter, HTTPException
+
+router = APIRouter()  # No auth dependency
+
+_SELECTORS_PATH = Path(__file__).parent.parent / "data" / "selectors.json"
+
+@router.get("/ext/selectors.json")
+async def get_selectors() -> dict:
+    try:
+        return json.loads(_SELECTORS_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="selectors.json not found")
+```
+
+**Initial selectors.json shape** (matches PASSIVE-INGESTION.md am-ext platform list):
+```json
+{
+  "version": 1,
+  "platforms": {
+    "chatgpt": {
+      "host": "chat.openai.com",
+      "turn_selector": "[data-message-author-role]",
+      "role_attr": "data-message-author-role",
+      "text_selector": ".markdown"
+    },
+    "claude": {
+      "host": "claude.ai",
+      "turn_selector": "[data-testid*='human-turn']",
+      "role_attr": "data-testid",
+      "text_selector": ".prose"
+    },
+    "perplexity": {
+      "host": "perplexity.ai",
+      "turn_selector": ".message-block",
+      "role_attr": "data-role",
+      "text_selector": ".prose"
+    },
+    "gemini": {
+      "host": "gemini.google.com",
+      "turn_selector": "message-content",
+      "role_attr": "class",
+      "text_selector": ".response-content"
+    }
+  }
+}
+```
+
+**Confidence note on selector values:** LOW — platform DOM changes frequently. The shape and serving pattern are HIGH confidence. Actual selectors will need validation against live DOM when Phase 6 is implemented.
+
+#### Pattern 6: GET /health — Unauthenticated
+```python
+# src/am_server/routes/health.py
+from fastapi import APIRouter
+
+router = APIRouter()
+
+@router.get("/health")
+async def health() -> dict:
+    return {"status": "ok"}
+```
+
+#### Pattern 7: uvicorn entrypoint
+```python
+# src/am_server/server.py
+import os
+import uvicorn
+from am_server.app import create_app
+
+def run() -> None:
+    app = create_app()
+    uvicorn.run(
+        app,
+        host=os.environ.get("AM_SERVER_HOST", "0.0.0.0"),
+        port=int(os.environ.get("AM_SERVER_PORT", "8765")),
+    )
+
+if __name__ == "__main__":
+    run()
+```
+
+**Port 8765:** Chosen to avoid conflict with Neo4j (7687) and common dev ports. Configurable via `AM_SERVER_PORT`.
+
+#### Pattern 8: Pipeline Dependency Singleton
+```python
+# src/am_server/dependencies.py
+import os
+from functools import lru_cache
+from codememory.core.connection import ConnectionManager
+from codememory.core.embedding import EmbeddingService
+from codememory.core.entity_extraction import EntityExtractionService
+from codememory.web.pipeline import ResearchIngestionPipeline
+
+@lru_cache(maxsize=1)
+def get_pipeline() -> ResearchIngestionPipeline:
+    """Return singleton ResearchIngestionPipeline. Called at startup via lifespan."""
+    conn = ConnectionManager(
+        uri=os.environ["NEO4J_URI"],
+        user=os.environ["NEO4J_USER"],
+        password=os.environ["NEO4J_PASSWORD"],
+    )
+    embedder = EmbeddingService(provider="gemini", api_key=os.environ["GEMINI_API_KEY"])
+    extractor = EntityExtractionService(api_key=os.environ["GROQ_API_KEY"])
+    return ResearchIngestionPipeline(conn, embedder, extractor)
+```
+
+#### Anti-Patterns to Avoid (02-04)
+
+- **Running FastAPI and FastMCP as two separate processes:** ASGI mount is confirmed. Two processes = two ports + double lifecycle management. Use mount.
+- **Generating session_id server-side in POST /ingest/research:** Breaks the `(project_id, session_id)` dedup key. Caller owns session identity.
+- **Putting selectors.json as a hardcoded Python dict:** Defeats remote-updatability. Must be a file on disk.
+- **Applying auth to /health:** Load balancers and monitoring must reach health checks without credentials.
+- **Applying auth to /ext/selectors.json:** am-ext fetches at startup before user configures API key. Must be open.
+- **Using `X-API-Key` header:** Use `Authorization: Bearer` for OAuth 2.1 forward compatibility.
+- **Calling pipeline.ingest() directly inside async def without thread pool:** Blocks the event loop. Use `run_in_executor`.
+
+---
+
+### Don't Hand-Roll (02-04)
+
+| Problem | Don't Build | Use Instead | Why |
+|---------|-------------|-------------|-----|
+| ASGI server | Custom TCP server | `uvicorn` | Already in dep tree via `mcp`; one-line startup |
+| Request validation | Manual JSON parsing + isinstance | Pydantic models via FastAPI | Type coercion, error messages, OpenAPI docs for free |
+| Auth header parsing | `request.headers.get("Authorization")` | `fastapi.security.HTTPBearer` | Handles missing header, malformed header, structured credentials |
+| FastAPI + FastMCP integration | Custom ASGI wrapper | `mcp.sse_app()` + `FastAPI.mount()` | FastMCP exposes Starlette app directly; mount is one line (verified) |
+| Static file serving | Custom ASGI middleware | `json.loads(path.read_text())` in endpoint | Two lines; no middleware complexity needed |
+| Pipeline lifecycle | Manual init in every request | `lru_cache` singleton + lifespan hook | Fail-fast on startup, single connection pool |
+
+---
+
+### Common Pitfalls (02-04)
+
+#### Pitfall 1: fastapi Not in pyproject.toml
+**What goes wrong:** `fastapi` is installed on this machine (0.121.2) but is NOT in `pyproject.toml`. A fresh `pip install -e .` will fail to import `fastapi` in `am_server`.
+**How to avoid:** Add `"fastapi>=0.115.0"` and `"uvicorn[standard]>=0.30.0"` to `pyproject.toml` in the first task of this plan.
+**Warning signs:** `ModuleNotFoundError: No module named 'fastapi'` on a clean install.
+
+#### Pitfall 2: MCP SSE Path Changes After Mounting
+**What goes wrong:** After `app.mount("/mcp", mcp.sse_app())`, MCP clients connecting to the old path `/sse` (without the `/mcp` prefix) get 404.
+**Why it happens:** The mount prefix is prepended to all internal FastMCP routes. The full SSE path becomes `/mcp/sse`.
+**How to avoid:** Document and configure MCP client connection URL as `http://localhost:8765/mcp/sse`. Add integration test that confirms this path responds.
+**Warning signs:** MCP client connects but receives 404; tools not discoverable.
+
+#### Pitfall 3: /ext/selectors.json Must Be Unauthenticated
+**What goes wrong:** Router-level `dependencies=[Depends(require_auth)]` applies to ALL routes in that router. If selectors shares a router with protected endpoints, it gets auth too — breaking am-ext on first install.
+**How to avoid:** Put `/ext/selectors.json` in its own router with no `dependencies`. Pattern 5 above shows this explicitly.
+**Warning signs:** am-ext console shows 401/403 at startup; selector loading fails.
+
+#### Pitfall 4: lru_cache Hides Startup Errors Until First Request
+**What goes wrong:** `get_pipeline()` with `lru_cache` defers env var validation to first request. Server starts without error, then returns 500 on first `/ingest/research` call.
+**How to avoid:** Call `get_pipeline()` inside a FastAPI `lifespan` context manager (Pattern 1 above) so failures surface at startup.
+**Warning signs:** Server logs show clean startup; first POST returns 500 with a KeyError on `NEO4J_URI`.
+
+#### Pitfall 5: Blocking the Event Loop with Sync Pipeline
+**What goes wrong:** `ResearchIngestionPipeline.ingest()` is synchronous (Phase 1/2 pattern). Calling it directly inside `async def` blocks uvicorn's event loop for the duration of the ingest, stalling all concurrent requests.
+**How to avoid:** Use `await loop.run_in_executor(None, pipeline.ingest, body.model_dump())` to offload to a thread pool.
+**Warning signs:** Requests queue up under light concurrency; uvicorn shows long response times.
+
+#### Pitfall 6: HTTPBearer Returns 403 (Not 401) on Missing Header
+**What goes wrong:** Tests assert `status_code == 401` for missing `Authorization` header, but `fastapi.security.HTTPBearer` returns HTTP 403 when the header is absent entirely. Tests fail unexpectedly.
+**Why it happens:** FastAPI's `HTTPBearer` distinguishes "no credentials" (403) from "wrong credentials" (401). This is intentional per HTTP spec — 403 means "I know who you are (nobody) and you can't enter".
+**How to avoid:** Tests must assert 403 for missing header, 401 for wrong token. Pattern shown in test fixture section below.
+**Warning signs:** `AssertionError: 401 != 403` in test output.
+
+---
+
+### Open Questions (02-04)
+
+1. **MCP SSE path after mounting**
+   - What we know: `FastMCP.sse_app()` returns Starlette with internal routes. After `app.mount("/mcp", ...)`, full path is `/mcp` + internal path (likely `/mcp/sse`).
+   - What's unclear: Exact internal SSE path in mcp 1.26.0 without running the full server.
+   - Recommendation: Wave 0 integration test hits `/mcp/sse` and validates the path. Document in server README.
+
+2. **am_server package registration in pyproject.toml**
+   - What we know: Current `[tool.hatch.build.targets.wheel] packages = ["src/codememory"]`. am_server is a new package at `src/am_server/`.
+   - Recommendation: Add `"src/am_server"` to the `packages` list. Splitting into a separate distributable is Phase 5/6 scope.
+
+3. **Port assignment**
+   - Recommendation: Default `AM_SERVER_PORT=8765`. Document in `.env.example`.
+
+---
+
+## Validation Architecture (02-04 addition)
+
+### Test Framework
+(Same as existing phase — pytest 7.x + pytest-asyncio + pytest-mock)
+
+| Property | Value |
+|----------|-------|
+| Framework | pytest 7.x + `fastapi.testclient.TestClient` (uses httpx internally) |
+| Quick run command | `pytest tests/test_am_server.py -x -q --tb=short` |
+| Full suite command | `pytest tests/ -q --tb=short` |
+
+**Note:** `TestClient` is included in FastAPI and uses `httpx` (already installed). No additional test dependency needed.
+
+### Phase 02-04 Requirements to Test Map
+
+| Behavior | Test Type | Automated Command | File Exists? |
+|----------|-----------|-------------------|-------------|
+| `GET /health` returns `{"status": "ok"}` without auth | unit | `pytest tests/test_am_server.py::test_health -x` | ❌ Wave 0 |
+| `POST /ingest/research` with valid Bearer token returns 202 | unit | `pytest tests/test_am_server.py::test_ingest_research_ok -x` | ❌ Wave 0 |
+| `POST /ingest/research` without Bearer header returns 403 | unit | `pytest tests/test_am_server.py::test_ingest_no_auth -x` | ❌ Wave 0 |
+| `POST /ingest/research` with wrong token returns 401 | unit | `pytest tests/test_am_server.py::test_ingest_bad_token -x` | ❌ Wave 0 |
+| `POST /ingest/research` delegates to `ResearchIngestionPipeline.ingest()` with correct payload | unit | `pytest tests/test_am_server.py::test_ingest_delegates -x` | ❌ Wave 0 |
+| `GET /search/research?q=...&limit=5` returns `{"results": [...]}` with auth | unit | `pytest tests/test_am_server.py::test_search_research_ok -x` | ❌ Wave 0 |
+| `GET /ext/selectors.json` returns `{"version": 1, "platforms": {...}}` without auth | unit | `pytest tests/test_am_server.py::test_selectors_shape -x` | ❌ Wave 0 |
+| `GET /ext/selectors.json` does not require Authorization header | unit | `pytest tests/test_am_server.py::test_selectors_no_auth -x` | ❌ Wave 0 |
+| `require_auth` raises 503 when `AM_SERVER_API_KEY` env var is not set | unit | `pytest tests/test_am_server.py::test_auth_missing_key -x` | ❌ Wave 0 |
+| FastMCP app is accessible at `/mcp` path (returns non-404) | unit | `pytest tests/test_am_server.py::test_mcp_mounted -x` | ❌ Wave 0 |
+
+### Test Fixture Pattern
+
+```python
+# tests/test_am_server.py
+import pytest
+from fastapi.testclient import TestClient
+from unittest.mock import MagicMock, patch
+
+@pytest.fixture
+def client(monkeypatch):
+    monkeypatch.setenv("AM_SERVER_API_KEY", "test-key-abc")
+    monkeypatch.setenv("NEO4J_URI", "bolt://localhost:7687")
+    monkeypatch.setenv("NEO4J_USER", "neo4j")
+    monkeypatch.setenv("NEO4J_PASSWORD", "test")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini")
+    monkeypatch.setenv("GROQ_API_KEY", "fake-groq")
+    # Patch pipeline to avoid real service connections
+    with patch("am_server.dependencies.ResearchIngestionPipeline") as mock_cls:
+        mock_cls.return_value = MagicMock()
+        # Clear lru_cache between tests
+        from am_server import dependencies
+        dependencies.get_pipeline.cache_clear()
+        from am_server.app import create_app
+        app = create_app()
+        with TestClient(app, raise_server_exceptions=False) as c:
+            yield c
+
+
+def test_health(client):
+    resp = client.get("/health")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+
+
+def test_ingest_no_auth(client):
+    # Missing Authorization header -> HTTPBearer returns 403
+    resp = client.post("/ingest/research", json={
+        "type": "finding", "content": "test",
+        "project_id": "p1", "session_id": "s1", "source_agent": "claude"
+    })
+    assert resp.status_code == 403
+
+
+def test_ingest_bad_token(client):
+    # Wrong token -> require_auth returns 401
+    resp = client.post(
+        "/ingest/research",
+        headers={"Authorization": "Bearer wrong-key"},
+        json={"type": "finding", "content": "test",
+              "project_id": "p1", "session_id": "s1", "source_agent": "claude"},
+    )
+    assert resp.status_code == 401
+
+
+def test_selectors_no_auth(client):
+    # No auth header needed for selectors
+    resp = client.get("/ext/selectors.json")
+    assert resp.status_code in (200, 404)  # 404 acceptable if file not yet created
+```
+
+### Sampling Rate
+- **Per task commit:** `pytest tests/test_am_server.py -x -q --tb=short`
+- **Per wave merge:** `pytest tests/ -q --tb=short`
+- **Phase gate:** Full suite green before `/gsd:verify-work`
+
+### Wave 0 Gaps (02-04)
+- [ ] `tests/test_am_server.py` — FastAPI TestClient tests for all endpoints
+- [ ] `src/am_server/data/selectors.json` — initial selectors file (required for `test_selectors_shape`)
+- [ ] `src/am_server/__init__.py` and package skeleton — required before any test imports
+- [ ] `dependencies.get_pipeline.cache_clear()` call pattern in fixture — requires `lru_cache` on `get_pipeline`

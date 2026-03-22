@@ -3,21 +3,21 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: — Full Multi-Module Memory System
 current_phase: 04
-status: active
-last_updated: "2026-03-21T00:00:00Z"
+status: unknown
+last_updated: "2026-03-22T16:11:54.492Z"
 progress:
   total_phases: 7
   completed_phases: 2
-  total_plans: 8
-  completed_plans: 8
+  total_plans: 12
+  completed_plans: 9
 ---
 
 # Agentic Memory — Project State
 
-**Last Updated:** 2026-03-21
+**Last Updated:** 2026-03-22
 **Current Phase:** 04
-**Phase Status:** Not Started
-**Last Session Stopped At:** Phase 03 deferred (classified as research agent extension, not core memory) — advancing to Phase 04
+**Phase Status:** Active (Plan 01 complete)
+**Last Session Stopped At:** Completed 04-01-PLAN.md
 
 ---
 
@@ -64,6 +64,7 @@ progress:
 - [x] Plan 02-03: MCP tools (memory_ingest_research, search_web_memory, brave_search) and CLI commands (web-init, web-ingest with PDF detection, web-search stub) (2026-03-21)
 - [x] Plan 02-04: FastAPI am-server REST foundation — app factory, auth, models, routes/health + routes/research (2026-03-21)
 - [x] Phase 02 verified: all 7 checks passed, test suite green (2026-03-21)
+- [x] Plan 04-01: Vector index bug fix (768d), fix_vector_index_dimensions() migration, GraphWriter conversation methods (write_session_node, write_has_turn_relationship, write_part_of_turn_relationship), 12 unit tests (2026-03-22)
 
 ---
 
@@ -98,6 +99,9 @@ progress:
 | Finding content_hash is sha256(text) text-only | Global dedup — same finding found in multiple sessions stored once, avoids duplication across project |
 | All MCP tools use sync def; brave_search has no auto-ingest guard | Matches existing rate_limit/log_tool_call sync wrapper pattern; Brave results are ephemeral agent context |
 | CLI local imports require patching source module path in tests | codememory.cli.ConnectionManager doesn't exist at test time; patch codememory.core.connection.ConnectionManager instead |
+| fix_vector_index_dimensions() as separate migration method | IF NOT EXISTS in setup_database() cannot correct already-existing wrong-dimension indexes; DROP + CREATE needed for live databases that ran old DDL |
+| CASE expression for last_turn_index in Session MERGE | Atomic max tracking in Cypher avoids Python-side read-modify-write race on concurrent turn ingestion |
+| Session MERGE key = session_id alone (not composite with project_id) | session_id is globally unique by caller convention; composite key would break idempotency on mismatched project_id |
 
 ---
 
@@ -113,6 +117,7 @@ progress:
 | 02 | 02 | 8 | 1 | 3 |
 | 02 | 03 | 25 | 2 | 4 |
 | 02 | 04 | 60 | 1 | 13 |
+| Phase 04 P01 | 4 | 3 tasks | 3 files |
 
 ## Blockers / Open Questions
 

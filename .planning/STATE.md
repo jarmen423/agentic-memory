@@ -2,22 +2,22 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: — Full Multi-Module Memory System
-current_phase: 2
+current_phase: 02
 status: unknown
-last_updated: "2026-03-21T07:11:53.356Z"
+last_updated: "2026-03-22T00:58:14.959Z"
 progress:
   total_phases: 7
   completed_phases: 1
-  total_plans: 4
-  completed_plans: 4
+  total_plans: 8
+  completed_plans: 5
 ---
 
 # Agentic Memory — Project State
 
-**Last Updated:** 2026-03-21
-**Current Phase:** 2
-**Phase Status:** Complete
-**Last Session Stopped At:** Completed 01-04-PLAN.md
+**Last Updated:** 2026-03-22
+**Current Phase:** 02
+**Phase Status:** In Progress
+**Last Session Stopped At:** Completed 02-01-PLAN.md
 
 ---
 
@@ -36,7 +36,7 @@ progress:
 | Phase | Name | Status |
 |-------|------|--------|
 | 1 | Foundation | Complete |
-| 2 | Web Research Core | Not Started |
+| 2 | Web Research Core | In Progress |
 | 3 | Web Research Scheduling | Not Started |
 | 4 | Conversation Memory Core | Not Started |
 | 5 | am-proxy (ACP Proxy) | Not Started |
@@ -59,6 +59,7 @@ progress:
 - [x] Plan 01-02: EmbeddingService (OpenAI/Gemini/Nemotron) + EntityExtractionService (Groq JSON mode) (2026-03-21)
 - [x] Plan 01-03: BaseIngestionPipeline ABC + GraphWriter MERGE patterns + ConfigValidator (2026-03-21)
 - [x] Plan 01-04: KnowledgeGraphBuilder adopts BaseIngestionPipeline; web/chat stubs; 5 CLI stub commands; Docker Compose documented (2026-03-21)
+- [x] Plan 02-01: GraphWriter Research schema extensions; content chunker (header-split + recursive fallback); Crawl4AI async wrapper; 4 new package deps (2026-03-22)
 
 ---
 
@@ -87,6 +88,8 @@ progress:
 | Browser extension: 800ms debounce on MutationObserver | Streaming responses cause hundreds of DOM mutations per turn; debounce fires once on turn completion |
 | Passive ingestion: am-proxy (CLI agents) + am-ext (web UIs) | Covers full spectrum without OAuth scraping — proxy wraps ACP stdio, extension observes DOM |
 | ingestion_mode: "passive" for proxy and extension payloads | Distinguishes auto-captured turns from explicit MCP writes in query and analytics |
+| Module-level imports (try/except) for markdownify and pymupdf4llm | Enables pytest patch() interception; fallback None values for environments without optional deps |
+| Overlap in _recursive_split as word-count (int(overlap_tokens/1.3)) | Consistent with _token_count approximation; ~38 words for 50-token overlap |
 
 ---
 
@@ -98,6 +101,7 @@ progress:
 | 01 | 02 | 7 | 2 | 4 |
 | 01 | 03 | 5 | 2 | 6 |
 | 01 | 04 | 8 | 2 | 6 |
+| 02 | 01 | 7 | 2 | 6 |
 
 ## Blockers / Open Questions
 

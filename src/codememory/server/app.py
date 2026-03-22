@@ -975,6 +975,17 @@ def brave_search(query: str, count: int = 10) -> str:
         return f"Error: Brave Search failed: {str(e)}"
 
 
+# ---------------------------------------------------------------------------
+# Phase 4: Register conversation MCP tools
+# ---------------------------------------------------------------------------
+# Import here (not at module top) to avoid any circular-import risk.
+# register_conversation_tools() decorates its inner functions with @mcp.tool()
+# so registration happens at import time of app.py.
+from codememory.server.tools import register_conversation_tools  # noqa: E402,PLC0415
+
+register_conversation_tools(mcp)
+
+
 def run_server(port: int, repo_root: Optional[Path] = None):
     """
     Start the MCP server.

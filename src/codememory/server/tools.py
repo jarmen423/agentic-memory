@@ -1,9 +1,34 @@
 from typing import Any, Dict, List, Optional
+import asyncio
 import logging
+import os
+from functools import lru_cache
+
 import neo4j
+from codememory.chat.pipeline import ConversationIngestionPipeline
+from codememory.core.connection import ConnectionManager
+from codememory.core.embedding import EmbeddingService
+from codememory.core.entity_extraction import EntityExtractionService
 from codememory.ingestion.graph import KnowledgeGraphBuilder
 
 logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=1)
+def _get_mcp_conversation_pipeline() -> ConversationIngestionPipeline:
+    """Cached ConversationIngestionPipeline for MCP tool layer.
+
+    Reads from environment variables. Separate singleton from am-server's
+    get_conversation_pipeline() — MCP server and am-server are distinct processes.
+    """
+    conn = ConnectionManager(
+        uri=os.environ["NEO4J_URI"],
+        user=os.environ["NEO4J_USER"],
+        password=os.environ["NEO4J_PASSWORD"],
+    )
+    embedder = EmbeddingService(provider="gemini", api_key=os.environ["GEMINI_API_KEY"])
+    extractor = EntityExtractionService(api_key=os.environ["GROQ_API_KEY"])
+    return ConversationIngestionPipeline(conn, embedder, extractor)
 
 class Toolkit:
     """
@@ -102,3 +127,266 @@ class Toolkit:
             return report
         except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
             return f"Error getting commit context: {str(e)}"
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Conversation MCP Tools
+# ---------------------------------------------------------------------------
+
+
+def register_conversation_tools(mcp: object) -> None:  # type: ignore[type-arg]
+    """Register Phase 4 conversation tools on the provided MCP instance.
+
+    Call this from the MCP server startup (codememory/server/app.py) after
+    the mcp instance is created.
+
+    Args:
+        mcp: The FastMCP instance to register tools on.
+    """
+
+    @mcp.tool(  # type: ignore[attr-defined]
+        description=(
+            "Search past conversations for relevant exchanges. Use when you need to find "
+            "prior context, check what was discussed about a topic, or retrieve conversation "
+            "history by semantic similarity."
+        )
+    )
+    async def search_conversations(
+        query: str,
+        project_id: str | None = None,
+        role: str | None = None,
+        limit: int = 10,
+    ) -> list[dict]:
+        """Semantic search over conversation turn embeddings.
+
+        Args:
+            query: Natural language search query.
+            project_id: Optional project filter. Searches all projects if None.
+            role: Optional role filter ("user" or "assistant"). All roles if None.
+            limit: Maximum number of results to return (1-50).
+
+        Returns:
+            List of dicts: [{session_id, turn_index, role, content,
+                source_agent, timestamp, entities, score}]
+        """
+        pipeline = _get_mcp_conversation_pipeline()
+        conn = pipeline._conn  # type: ignore[attr-defined]
+        embedder = pipeline._embedder  # type: ignore[attr-defined]
+
+        loop = asyncio.get_event_loop()
+
+        def _run() -> list[dict]:
+            try:
+                query_embedding = embedder.embed(query)
+                with conn.session() as session:
+                    cypher = (
+                        "CALL db.index.vector.queryNodes("
+                        "  'chat_embeddings', $limit, $embedding"
+                        ") YIELD node, score "
+                        "WHERE ($project_id IS NULL OR node.project_id = $project_id)"
+                        "  AND ($role IS NULL OR node.role = $role) "
+                        "RETURN "
+                        "    node.session_id     AS session_id, "
+                        "    node.turn_index     AS turn_index, "
+                        "    node.role           AS role, "
+                        "    node.content        AS content, "
+                        "    node.source_agent   AS source_agent, "
+                        "    node.timestamp      AS timestamp, "
+                        "    node.entities       AS entities, "
+                        "    score "
+                        "ORDER BY score DESC "
+                        "LIMIT $limit"
+                    )
+                    result = session.run(
+                        cypher,
+                        embedding=query_embedding,
+                        project_id=project_id,
+                        role=role,
+                        limit=limit,
+                    )
+                    return [dict(r) for r in result]
+            except Exception as exc:
+                logger.error("search_conversations failed: %s", exc)
+                return []
+
+        return await loop.run_in_executor(None, _run)
+
+    @mcp.tool(  # type: ignore[attr-defined]
+        description=(
+            "Retrieve the most relevant past conversation context for a given query or task. "
+            "Returns a compact, structured bundle of prior exchanges ranked by relevance. "
+            "Use this to ground responses in prior conversation history before answering a "
+            "user's question."
+        )
+    )
+    async def get_conversation_context(
+        query: str,
+        project_id: str,
+        limit: int = 5,
+        include_session_context: bool = True,
+    ) -> dict:
+        """Retrieve structured conversation context for LLM grounding.
+
+        Performs vector search over chat_embeddings filtered to project_id.
+        If include_session_context=True, fetches the previous and next turn
+        from the same session for each matched turn to provide conversational
+        framing.
+
+        Args:
+            query: Natural language query describing what context is needed.
+            project_id: Project scope (required — context is always project-scoped).
+            limit: Number of turns to return (keep small for context window, 1-10).
+            include_session_context: If True, fetch +/-1 surrounding turns per match.
+
+        Returns:
+            Dict: {query, turns: [{session_id, turn_index, role, content, score,
+                context_window: [{turn_index, role, content}]}]}
+        """
+        pipeline = _get_mcp_conversation_pipeline()
+        conn = pipeline._conn  # type: ignore[attr-defined]
+        embedder = pipeline._embedder  # type: ignore[attr-defined]
+
+        loop = asyncio.get_event_loop()
+
+        def _run() -> dict:
+            try:
+                query_embedding = embedder.embed(query)
+
+                with conn.session() as session:
+                    # Primary vector search, filtered to project_id
+                    cypher = (
+                        "CALL db.index.vector.queryNodes("
+                        "  'chat_embeddings', $limit, $embedding"
+                        ") YIELD node, score "
+                        "WHERE node.project_id = $project_id "
+                        "RETURN "
+                        "    node.session_id AS session_id, "
+                        "    node.turn_index AS turn_index, "
+                        "    node.role       AS role, "
+                        "    node.content    AS content, "
+                        "    score "
+                        "ORDER BY score DESC "
+                        "LIMIT $limit"
+                    )
+                    result = session.run(
+                        cypher,
+                        embedding=query_embedding,
+                        project_id=project_id,
+                        limit=limit,
+                    )
+                    matched_turns = [dict(r) for r in result]
+
+                turns_with_context = []
+                for turn in matched_turns:
+                    turn_data = dict(turn)
+                    context_window: list[dict] = []
+
+                    if include_session_context:
+                        sess_id = turn["session_id"]
+                        t_idx = turn["turn_index"]
+                        # +/-1 surrounding turns; use -1 as prev guard (never matches)
+                        prev_idx = t_idx - 1
+                        next_idx = t_idx + 1
+
+                        with conn.session() as session:
+                            # Fetch surrounding turns, exclude the matched turn itself
+                            ctx_cypher = (
+                                "MATCH (t:Memory:Conversation:Turn {session_id: $session_id}) "
+                                "WHERE t.turn_index IN [$prev_index, $next_index] "
+                                "  AND t.turn_index <> $matched_turn_index "
+                                "RETURN "
+                                "    t.turn_index AS turn_index, "
+                                "    t.role       AS role, "
+                                "    t.content    AS content "
+                                "ORDER BY t.turn_index"
+                            )
+                            ctx_result = session.run(
+                                ctx_cypher,
+                                session_id=sess_id,
+                                prev_index=prev_idx,
+                                next_index=next_idx,
+                                matched_turn_index=t_idx,
+                            )
+                            context_window = [dict(r) for r in ctx_result]
+
+                    turn_data["context_window"] = context_window
+                    turns_with_context.append(turn_data)
+
+                return {"query": query, "turns": turns_with_context}
+
+            except Exception as exc:
+                logger.error("get_conversation_context failed: %s", exc)
+                return {"query": query, "turns": []}
+
+        return await loop.run_in_executor(None, _run)
+
+    @mcp.tool(  # type: ignore[attr-defined]
+        description=(
+            "Explicitly save a conversation turn to memory. Use this when you want to ensure "
+            "a specific message is persisted, or when passive capture is not configured. "
+            "Provide turn_index=0 for single messages; use sequential indexes for multi-turn writes."
+        )
+    )
+    async def add_message(
+        role: str,
+        content: str,
+        session_id: str,
+        project_id: str,
+        turn_index: int = 0,
+        source_agent: str | None = None,
+        model: str | None = None,
+        tool_name: str | None = None,
+        tool_call_id: str | None = None,
+        tokens_input: int | None = None,
+        tokens_output: int | None = None,
+        timestamp: str | None = None,
+    ) -> dict:
+        """Persist a single conversation turn to the memory graph.
+
+        source_key is always 'chat_mcp' for this path (explicit agent write).
+        ingestion_mode is always 'active'.
+
+        Args:
+            role: Turn role: "user" | "assistant" | "system" | "tool".
+            content: Turn text content.
+            session_id: Caller-owned session boundary identifier.
+            project_id: Project this conversation belongs to.
+            turn_index: 0-based position within the session (default 0).
+            source_agent: AI that produced this turn (e.g. "claude").
+            model: Specific model variant (e.g. "claude-opus-4-6").
+            tool_name: For role="tool": the tool that was called.
+            tool_call_id: For request/response pairing in tool turns.
+            tokens_input: Input token count if known.
+            tokens_output: Output token count if known.
+            timestamp: ISO-8601 turn timestamp; uses ingested_at if not provided.
+
+        Returns:
+            Dict with ingestion result: {role, session_id, turn_index,
+                content_hash, embedded, entities_count, project_id}.
+        """
+        pipeline = _get_mcp_conversation_pipeline()
+        loop = asyncio.get_event_loop()
+
+        turn = {
+            "role": role,
+            "content": content,
+            "session_id": session_id,
+            "project_id": project_id,
+            "turn_index": turn_index,
+            "source_agent": source_agent,
+            "model": model,
+            "tool_name": tool_name,
+            "tool_call_id": tool_call_id,
+            "tokens_input": tokens_input,
+            "tokens_output": tokens_output,
+            "timestamp": timestamp,
+            "ingestion_mode": "active",
+            "source_key": "chat_mcp",
+        }
+
+        try:
+            result: dict = await loop.run_in_executor(None, pipeline.ingest, turn)
+            return result
+        except Exception as exc:
+            logger.error("add_message failed: %s", exc)
+            return {"error": str(exc)}

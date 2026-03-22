@@ -955,20 +955,112 @@ def cmd_annotate_interaction(
 
 
 def cmd_web_init(args: argparse.Namespace) -> None:
-    """Initialize web research module configuration."""
-    print("web-init: Not yet implemented. Coming in Phase 2.")
-    sys.exit(0)
+    """Initialize web research vector indexes and constraints."""
+    uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+    user = os.getenv("NEO4J_USER") or os.getenv("NEO4J_USERNAME", "neo4j")
+    password = os.getenv("NEO4J_PASSWORD", "password")
+
+    try:
+        from codememory.core.connection import ConnectionManager
+        conn = ConnectionManager(uri, user, password)
+        conn.setup_database()
+        conn.driver.close()
+        print("web-init: research_embeddings vector index ready.")
+    except Exception as e:
+        print(f"web-init failed: {e}")
+        sys.exit(1)
 
 
 def cmd_web_ingest(args: argparse.Namespace) -> None:
-    """Ingest a web URL into the research knowledge graph."""
-    print("web-ingest: Not yet implemented. Coming in Phase 2.")
-    sys.exit(0)
+    """Ingest a web URL or local PDF into research memory."""
+    import asyncio
+    url = args.url
+    if not url:
+        print("web-ingest: URL argument required.")
+        sys.exit(1)
+
+    google_api_key = os.getenv("GOOGLE_API_KEY")
+    groq_api_key = os.getenv("GROQ_API_KEY")
+    if not google_api_key:
+        print("web-ingest: GOOGLE_API_KEY environment variable required.")
+        sys.exit(1)
+    if not groq_api_key:
+        print("web-ingest: GROQ_API_KEY environment variable required.")
+        sys.exit(1)
+
+    neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+    neo4j_user = os.getenv("NEO4J_USER") or os.getenv("NEO4J_USERNAME", "neo4j")
+    password = os.getenv("NEO4J_PASSWORD", "password")
+
+    try:
+        from codememory.web.crawler import crawl_url
+        from codememory.web.pipeline import ResearchIngestionPipeline
+        from codememory.core.connection import ConnectionManager
+        from codememory.core.embedding import EmbeddingService
+        from codememory.core.entity_extraction import EntityExtractionService
+
+        # Detect format: PDF files (local or URL ending in .pdf) skip crawling
+        is_pdf = url.lower().endswith(".pdf")
+        is_local_file = os.path.isfile(url)
+
+        if is_pdf or is_local_file:
+            fmt = "pdf"
+            if is_local_file:
+                content_path = url
+                content_text = ""
+                print(f"web-ingest: Processing PDF {content_path}...")
+            else:
+                # Remote PDF URL — download first
+                import httpx
+                import tempfile
+                print(f"web-ingest: Downloading PDF {url}...")
+                resp = httpx.get(url, follow_redirects=True, timeout=60.0)
+                resp.raise_for_status()
+                with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+                    f.write(resp.content)
+                    content_path = f.name
+                content_text = ""
+                print(f"web-ingest: Processing PDF {content_path}...")
+        else:
+            # Web URL — crawl via Crawl4AI
+            fmt = "markdown"
+            content_path = None
+            print(f"web-ingest: Crawling {url}...")
+            content_text = asyncio.run(crawl_url(url))
+            print(f"web-ingest: Got {len(content_text)} chars of markdown.")
+
+        conn = ConnectionManager(neo4j_uri, neo4j_user, password)
+        embedder = EmbeddingService(provider="gemini", api_key=google_api_key)
+        extractor = EntityExtractionService(api_key=groq_api_key)
+        pipeline = ResearchIngestionPipeline(conn, embedder, extractor)
+
+        source: dict = {
+            "type": "report",
+            "content": content_text,
+            "project_id": "cli",
+            "session_id": f"web-ingest-{url}",
+            "source_agent": "user",
+            "title": url,
+            "research_question": None,
+            "findings": [],
+            "citations": [{"url": url, "title": url, "snippet": ""}],
+            "ingestion_mode": "manual",
+            "format": fmt,
+        }
+        if is_pdf or is_local_file:
+            source["path"] = content_path if is_local_file else content_path
+
+        result = pipeline.ingest(source)
+        print(f"web-ingest: Done. {result.get('chunks', 0)} chunks ingested.")
+        conn.driver.close()
+    except Exception as e:
+        print(f"web-ingest failed: {e}")
+        sys.exit(1)
 
 
 def cmd_web_search(args: argparse.Namespace) -> None:
-    """Search web research memory."""
-    print("web-search: Not yet implemented. Coming in Phase 2.")
+    """Search web research memory (not yet implemented)."""
+    print("web-search: Not yet implemented.")
     sys.exit(0)
 
 

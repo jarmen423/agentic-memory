@@ -656,24 +656,26 @@ def test_git_status_json_success_envelope(monkeypatch, capsys, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_web_init_prints_not_implemented_and_exits_zero(capsys):
-    """web-init prints stub message and exits 0."""
-    with pytest.raises(SystemExit) as exc:
+def test_web_init_calls_setup_database_on_connection(monkeypatch, capsys):
+    """web-init calls ConnectionManager.setup_database() when connection succeeds."""
+    from unittest.mock import Mock, patch
+
+    mock_conn = Mock()
+    with patch("codememory.core.connection.ConnectionManager", Mock(return_value=mock_conn)):
         cli.cmd_web_init(argparse.Namespace())
-    assert exc.value.code == 0
+
+    mock_conn.setup_database.assert_called_once()
     out = capsys.readouterr().out
-    assert "Not yet implemented" in out
-    assert "Phase 2" in out
+    assert "ready" in out.lower()
 
 
 def test_web_ingest_prints_not_implemented_and_exits_zero(capsys):
-    """web-ingest prints stub message and exits 0."""
+    """web-ingest with no URL argument exits 1 with missing URL message."""
     with pytest.raises(SystemExit) as exc:
-        cli.cmd_web_ingest(argparse.Namespace())
-    assert exc.value.code == 0
+        cli.cmd_web_ingest(argparse.Namespace(url=None))
+    assert exc.value.code == 1
     out = capsys.readouterr().out
-    assert "Not yet implemented" in out
-    assert "Phase 2" in out
+    assert "URL argument required" in out or "url" in out.lower() or "argument" in out.lower()
 
 
 def test_web_search_prints_not_implemented_and_exits_zero(capsys):
@@ -683,7 +685,6 @@ def test_web_search_prints_not_implemented_and_exits_zero(capsys):
     assert exc.value.code == 0
     out = capsys.readouterr().out
     assert "Not yet implemented" in out
-    assert "Phase 2" in out
 
 
 def test_chat_init_prints_not_implemented_and_exits_zero(capsys):
@@ -707,21 +708,24 @@ def test_chat_ingest_prints_not_implemented_and_exits_zero(capsys):
 
 
 def test_stub_commands_are_registered_in_parser():
-    """All 5 stub commands are registered in the argument parser."""
-    import argparse as _ap
-    import sys as _sys
-
-    # Capture just the subparser names from a parsed help call
-    # We test by parsing each command name — if not registered, argparse will error
-    stub_commands = ["web-init", "web-ingest", "web-search", "chat-init", "chat-ingest"]
+    """All 5 stub/web commands are registered in the argument parser (exit code != 2)."""
     import unittest.mock as _mock
+    from unittest.mock import Mock, patch
+
+    # web-init and web-ingest now have real implementations. We just verify they're
+    # registered in the parser (argparse exits 2 for unknown commands).
+    mock_conn = Mock()
+    stub_commands = ["web-init", "web-ingest", "web-search", "chat-init", "chat-ingest"]
     for cmd in stub_commands:
-        with _mock.patch("sys.argv", ["codememory", cmd]):
-            with pytest.raises(SystemExit) as exc:
+        try:
+            with _mock.patch("sys.argv", ["codememory", cmd]), \
+                 patch("codememory.core.connection.ConnectionManager", Mock(return_value=mock_conn)):
                 cli.main()
-            # Should exit 0 (stub handler), NOT 2 (argparse error for unknown command)
-            assert exc.value.code == 0, (
-                f"Command '{cmd}' exited with code {exc.value.code} — likely not registered"
+            # No exception = command ran and returned normally (fine)
+        except SystemExit as exc:
+            # 2 = argparse "unrecognized command" — anything else means it's registered
+            assert exc.code != 2, (
+                f"Command '{cmd}' exited with code {exc.code} — likely not registered"
             )
 
 
@@ -737,7 +741,7 @@ def test_web_init_calls_setup_database(monkeypatch, capsys):
     mock_conn = Mock()
     mock_conn_class = Mock(return_value=mock_conn)
 
-    with patch("codememory.cli.ConnectionManager", mock_conn_class, create=True):
+    with patch("codememory.core.connection.ConnectionManager", mock_conn_class):
         cli.cmd_web_init(argparse.Namespace())
 
     mock_conn.setup_database.assert_called_once()
@@ -747,7 +751,7 @@ def test_web_init_calls_setup_database(monkeypatch, capsys):
 
 def test_web_ingest_calls_pipeline(monkeypatch, capsys):
     """web-ingest URL crawls via crawl_url and calls pipeline.ingest() with format='markdown'."""
-    from unittest.mock import Mock, patch, AsyncMock
+    from unittest.mock import Mock, patch
 
     monkeypatch.setenv("GOOGLE_API_KEY", "test-google-key")
     monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
@@ -756,7 +760,6 @@ def test_web_ingest_calls_pipeline(monkeypatch, capsys):
     mock_embedder = Mock()
     mock_extractor = Mock()
     mock_pipeline = Mock()
-    mock_pipeline.ingest.return_value = {"chunks": 2, "type": "report"}
 
     captured_source = {}
 
@@ -769,11 +772,11 @@ def test_web_ingest_calls_pipeline(monkeypatch, capsys):
     async def fake_crawl_url(url, timeout_ms=30000):
         return "# Test Page\nSome content here."
 
-    with patch("codememory.cli.ConnectionManager", Mock(return_value=mock_conn), create=True), \
-         patch("codememory.cli.EmbeddingService", Mock(return_value=mock_embedder), create=True), \
-         patch("codememory.cli.EntityExtractionService", Mock(return_value=mock_extractor), create=True), \
-         patch("codememory.cli.ResearchIngestionPipeline", Mock(return_value=mock_pipeline), create=True), \
-         patch("codememory.cli.crawl_url", fake_crawl_url, create=True):
+    with patch("codememory.web.crawler.crawl_url", fake_crawl_url), \
+         patch("codememory.core.connection.ConnectionManager", Mock(return_value=mock_conn)), \
+         patch("codememory.core.embedding.EmbeddingService", Mock(return_value=mock_embedder)), \
+         patch("codememory.core.entity_extraction.EntityExtractionService", Mock(return_value=mock_extractor)), \
+         patch("codememory.web.pipeline.ResearchIngestionPipeline", Mock(return_value=mock_pipeline)):
 
         cli.cmd_web_ingest(argparse.Namespace(url="https://example.com"))
 
@@ -784,7 +787,7 @@ def test_web_ingest_calls_pipeline(monkeypatch, capsys):
 
 def test_web_ingest_pdf_format_detection(monkeypatch, capsys):
     """web-ingest with .pdf path sets format='pdf' and does NOT call crawl_url."""
-    from unittest.mock import Mock, patch, call
+    from unittest.mock import Mock, patch
 
     monkeypatch.setenv("GOOGLE_API_KEY", "test-google-key")
     monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
@@ -802,13 +805,13 @@ def test_web_ingest_pdf_format_detection(monkeypatch, capsys):
 
     mock_pipeline.ingest.side_effect = capture_ingest
 
-    crawl_url_mock = Mock()
+    crawl_url_spy = Mock()
 
-    with patch("codememory.cli.ConnectionManager", Mock(return_value=mock_conn), create=True), \
-         patch("codememory.cli.EmbeddingService", Mock(return_value=mock_embedder), create=True), \
-         patch("codememory.cli.EntityExtractionService", Mock(return_value=mock_extractor), create=True), \
-         patch("codememory.cli.ResearchIngestionPipeline", Mock(return_value=mock_pipeline), create=True), \
-         patch("codememory.cli.crawl_url", crawl_url_mock, create=True), \
+    with patch("codememory.web.crawler.crawl_url", crawl_url_spy), \
+         patch("codememory.core.connection.ConnectionManager", Mock(return_value=mock_conn)), \
+         patch("codememory.core.embedding.EmbeddingService", Mock(return_value=mock_embedder)), \
+         patch("codememory.core.entity_extraction.EntityExtractionService", Mock(return_value=mock_extractor)), \
+         patch("codememory.web.pipeline.ResearchIngestionPipeline", Mock(return_value=mock_pipeline)), \
          patch("os.path.isfile", return_value=True):
 
         cli.cmd_web_ingest(argparse.Namespace(url="/some/path/doc.pdf"))
@@ -816,7 +819,7 @@ def test_web_ingest_pdf_format_detection(monkeypatch, capsys):
     mock_pipeline.ingest.assert_called_once()
     assert captured_source["format"] == "pdf"
     assert captured_source.get("path") == "/some/path/doc.pdf"
-    crawl_url_mock.assert_not_called()
+    crawl_url_spy.assert_not_called()
 
 
 def test_web_ingest_pdf_url_detection(monkeypatch, capsys):
@@ -843,12 +846,10 @@ def test_web_ingest_pdf_url_detection(monkeypatch, capsys):
     mock_httpx_resp.raise_for_status = Mock()
     mock_httpx_resp.content = b"%PDF fake content"
 
-    import tempfile as _tf
-
-    with patch("codememory.cli.ConnectionManager", Mock(return_value=mock_conn), create=True), \
-         patch("codememory.cli.EmbeddingService", Mock(return_value=mock_embedder), create=True), \
-         patch("codememory.cli.EntityExtractionService", Mock(return_value=mock_extractor), create=True), \
-         patch("codememory.cli.ResearchIngestionPipeline", Mock(return_value=mock_pipeline), create=True), \
+    with patch("codememory.core.connection.ConnectionManager", Mock(return_value=mock_conn)), \
+         patch("codememory.core.embedding.EmbeddingService", Mock(return_value=mock_embedder)), \
+         patch("codememory.core.entity_extraction.EntityExtractionService", Mock(return_value=mock_extractor)), \
+         patch("codememory.web.pipeline.ResearchIngestionPipeline", Mock(return_value=mock_pipeline)), \
          patch("httpx.get", Mock(return_value=mock_httpx_resp)), \
          patch("os.path.isfile", return_value=False):
 

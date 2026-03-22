@@ -24,6 +24,8 @@ dependencies = [
     "markdownify>=1.2.0",
     "pymupdf4llm>=1.27.0",
     "httpx>=0.27.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
 ]
 
 [project.scripts]
@@ -44,7 +46,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/codememory"]
+packages = ["src/codememory", "src/am_server"]
 
 # pytest configuration
 [tool.pytest.ini_options]
@@ -142,4 +144,8 @@ module = [
     "neo4j.*",
     "mcp.*",
 ]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "am_server.*"
 ignore_missing_imports = true

@@ -1,10 +1,11 @@
-"""Dependency injection: singleton ResearchIngestionPipeline factory."""
+"""Dependency injection: singleton pipeline factory functions."""
 
 from __future__ import annotations
 
 import os
 from functools import lru_cache
 
+from codememory.chat.pipeline import ConversationIngestionPipeline
 from codememory.core.connection import ConnectionManager
 from codememory.core.embedding import EmbeddingService
 from codememory.core.entity_extraction import EntityExtractionService
@@ -28,3 +29,22 @@ def get_pipeline() -> ResearchIngestionPipeline:
     )
     extractor = EntityExtractionService(api_key=os.environ["GROQ_API_KEY"])
     return ResearchIngestionPipeline(conn, embedder, extractor)
+
+
+@lru_cache(maxsize=1)
+def get_conversation_pipeline() -> ConversationIngestionPipeline:
+    """Return a cached ConversationIngestionPipeline instance.
+
+    Reads Neo4j and API key env vars. Independent singleton from get_pipeline().
+    """
+    conn = ConnectionManager(
+        uri=os.environ["NEO4J_URI"],
+        user=os.environ["NEO4J_USER"],
+        password=os.environ["NEO4J_PASSWORD"],
+    )
+    embedder = EmbeddingService(
+        provider="gemini",
+        api_key=os.environ["GEMINI_API_KEY"],
+    )
+    extractor = EntityExtractionService(api_key=os.environ["GROQ_API_KEY"])
+    return ConversationIngestionPipeline(conn, embedder, extractor)

@@ -1244,6 +1244,98 @@ def cmd_chat_ingest(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_chat_search(args: argparse.Namespace) -> None:
+    """Search conversation memory by semantic similarity.
+
+    Embeds the query via Gemini then queries the chat_embeddings vector index.
+    Outputs results as a formatted table to stdout.
+
+    Args:
+        args: Parsed arguments with query, project_id, limit, role.
+    """
+    import json as _json  # noqa: PLC0415
+    import sys  # noqa: PLC0415
+
+    from dotenv import load_dotenv  # noqa: PLC0415
+
+    load_dotenv()
+
+    neo4j_uri = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
+    neo4j_user = os.environ.get("NEO4J_USER", "neo4j")
+    password = os.environ.get("NEO4J_PASSWORD", "")
+    google_api_key = os.environ.get("GEMINI_API_KEY", "")
+
+    from codememory.core.connection import ConnectionManager  # noqa: PLC0415
+    from codememory.core.embedding import EmbeddingService  # noqa: PLC0415
+
+    query = args.query
+    project_id = getattr(args, "project_id", None)
+    role_filter = getattr(args, "role", None)
+    limit = getattr(args, "limit", 10)
+    output_json = getattr(args, "json", False)
+
+    conn = ConnectionManager(neo4j_uri, neo4j_user, password)
+    embedder = EmbeddingService(provider="gemini", api_key=google_api_key)
+
+    try:
+        query_embedding = embedder.embed(query)
+
+        with conn.session() as session:
+            cypher = (
+                "CALL db.index.vector.queryNodes("
+                "  'chat_embeddings', $limit, $embedding"
+                ") YIELD node, score "
+                "WHERE ($project_id IS NULL OR node.project_id = $project_id)"
+                "  AND ($role IS NULL OR node.role = $role) "
+                "RETURN "
+                "    node.session_id     AS session_id, "
+                "    node.turn_index     AS turn_index, "
+                "    node.role           AS role, "
+                "    node.content        AS content, "
+                "    node.source_agent   AS source_agent, "
+                "    node.timestamp      AS timestamp, "
+                "    score "
+                "ORDER BY score DESC "
+                "LIMIT $limit"
+            )
+            result = session.run(
+                cypher,
+                embedding=query_embedding,
+                project_id=project_id,
+                role=role_filter,
+                limit=limit,
+            )
+            rows = [dict(r) for r in result]
+
+        if output_json:
+            print(_json.dumps(rows, indent=2, default=str))
+        else:
+            if not rows:
+                print(f"chat-search: No results for query: {query!r}")
+            else:
+                print(f"chat-search: {len(rows)} result(s) for {query!r}\n")
+                for i, row in enumerate(rows, start=1):
+                    session_id = row.get("session_id", "?")
+                    turn_index = row.get("turn_index", "?")
+                    role = row.get("role", "?")
+                    content = str(row.get("content", ""))
+                    # Truncate long content for display
+                    display_content = content[:120] + "..." if len(content) > 120 else content
+                    score = row.get("score", 0.0)
+                    print(
+                        f"  {i}. [{role}] session={session_id} turn={turn_index} "
+                        f"score={score:.4f}"
+                    )
+                    print(f"     {display_content}")
+                    print()
+
+    except Exception as e:
+        print(f"chat-search: Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        conn.driver.close()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Agentic Memory: Structural Code Graph with Neo4j and MCP",
@@ -1497,6 +1589,37 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
         help="Source agent name (e.g. 'claude') applied if not in turn data",
     )
 
+    # Command: chat-search
+    chat_search_parser = subparsers.add_parser(
+        "chat-search",
+        help="Search conversation memory by semantic similarity",
+    )
+    chat_search_parser.add_argument("query", help="Natural language search query")
+    chat_search_parser.add_argument(
+        "--project-id",
+        type=str,
+        dest="project_id",
+        help="Filter results to a specific project",
+    )
+    chat_search_parser.add_argument(
+        "--role",
+        type=str,
+        choices=["user", "assistant"],
+        help="Filter results by role (user or assistant)",
+    )
+    chat_search_parser.add_argument(
+        "--limit",
+        "-l",
+        type=int,
+        default=10,
+        help="Maximum number of results to return (default: 10)",
+    )
+    chat_search_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output",
+    )
+
     args = parser.parse_args()
 
     if args.prompted and args.unprompted:
@@ -1559,6 +1682,8 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
         cmd_chat_init(args)
     elif args.command == "chat-ingest":
         cmd_chat_ingest(args)
+    elif args.command == "chat-search":
+        cmd_chat_search(args)
     else:
         parser.print_help()
 

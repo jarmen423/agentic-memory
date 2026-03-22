@@ -9,11 +9,13 @@ import atexit
 import logging
 import time
 import re
+import json as json_module
 from typing import Optional, Dict, Any, List
 from functools import wraps
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import httpx
 from mcp.server.fastmcp import FastMCP
 import neo4j
 from codememory.ingestion.graph import KnowledgeGraphBuilder
@@ -729,6 +731,248 @@ def get_file_info(file_path: str) -> str:
     except Exception as e:
         logger.error(f"Unexpected file info error: {e}")
         return f"❌ Failed to get file info: {str(e)}"
+
+
+# ---------------------------------------------------------------------------
+# Research pipeline (lazy singleton)
+# ---------------------------------------------------------------------------
+
+_research_pipeline = None
+
+
+def _get_research_pipeline():
+    """Lazily initialize the research ingestion pipeline."""
+    global _research_pipeline
+    if _research_pipeline is not None:
+        return _research_pipeline
+
+    google_api_key = os.getenv("GOOGLE_API_KEY")
+    groq_api_key = os.getenv("GROQ_API_KEY")
+    neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+    neo4j_user = os.getenv("NEO4J_USER") or os.getenv("NEO4J_USERNAME", "neo4j")
+    neo4j_password = os.getenv("NEO4J_PASSWORD", "password")
+
+    if not google_api_key:
+        logger.error("GOOGLE_API_KEY not set — research pipeline unavailable")
+        return None
+    if not groq_api_key:
+        logger.error("GROQ_API_KEY not set — research pipeline unavailable")
+        return None
+
+    from codememory.core.connection import ConnectionManager
+    from codememory.core.embedding import EmbeddingService
+    from codememory.core.entity_extraction import EntityExtractionService
+    from codememory.web.pipeline import ResearchIngestionPipeline
+
+    conn = ConnectionManager(neo4j_uri, neo4j_user, neo4j_password)
+    embedder = EmbeddingService(provider="gemini", api_key=google_api_key)
+    extractor = EntityExtractionService(api_key=groq_api_key)
+    _research_pipeline = ResearchIngestionPipeline(conn, embedder, extractor)
+    return _research_pipeline
+
+
+# ---------------------------------------------------------------------------
+# Web research MCP tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+@rate_limit
+@log_tool_call
+def memory_ingest_research(
+    type: str,
+    content: str,
+    project_id: str,
+    session_id: str,
+    source_agent: str,
+    title: str = None,
+    research_question: str = None,
+    confidence: str = None,
+    findings: list = None,
+    citations: list = None,
+) -> str:
+    """
+    ALWAYS call this tool when you complete any research task, analysis,
+    or produce a substantive report. This saves your work to persistent
+    memory so it's available in future sessions. Call this BEFORE
+    presenting results to the user.
+
+    Args:
+        type: Content type — "report" for full reports, "finding" for atomic facts
+        content: The text content to store
+        project_id: Project identifier for entity anchoring
+        session_id: Current agent session ID
+        source_agent: AI that produced the content ("claude", "perplexity", etc.)
+        title: Human-readable label (reports only)
+        research_question: Original query that prompted this research
+        confidence: Confidence level for findings ("high", "medium", "low")
+        findings: List of finding dicts [{text, confidence, citations}] (reports only)
+        citations: Top-level citations [{url, title, snippet}]
+
+    Returns:
+        JSON string with ingestion result summary
+    """
+    pipeline = _get_research_pipeline()
+    if pipeline is None:
+        return "Error: Research pipeline not available. Check GOOGLE_API_KEY and GROQ_API_KEY environment variables."
+
+    source_dict = {
+        "type": type,
+        "content": content,
+        "project_id": project_id,
+        "session_id": session_id,
+        "source_agent": source_agent,
+        "title": title,
+        "research_question": research_question,
+        "confidence": confidence,
+        "findings": findings,
+        "citations": citations,
+        "ingestion_mode": "active",
+    }
+
+    try:
+        result = pipeline.ingest(source_dict)
+        return validate_tool_output(json_module.dumps({"status": "ok", **result}))
+    except Exception as e:
+        logger.error("Research ingestion failed: %s", e)
+        return f"Error: Research ingestion failed: {str(e)}"
+
+
+@mcp.tool()
+@rate_limit
+@log_tool_call
+def search_web_memory(query: str, limit: int = 5) -> str:
+    """
+    Search web research memory for relevant reports, findings, and research content.
+
+    Uses vector similarity to find semantically relevant research stored
+    by memory_ingest_research. Returns chunks and findings with scores.
+
+    Args:
+        query: Natural language search query
+        limit: Maximum number of results (default: 5)
+
+    Returns:
+        Formatted string with search results including text, source, and scores
+    """
+    pipeline = _get_research_pipeline()
+    if pipeline is None:
+        return "Error: Research pipeline not available. Check GOOGLE_API_KEY and GROQ_API_KEY environment variables."
+
+    try:
+        embedding = pipeline._embedder.embed(query)
+    except Exception as e:
+        logger.error("Embedding failed for search query: %s", e)
+        return f"Error: Failed to embed search query: {str(e)}"
+
+    safe_limit = max(1, int(limit))
+
+    search_cypher = """
+    CALL db.index.vector.queryNodes('research_embeddings', $limit, $embedding)
+    YIELD node, score
+    RETURN
+        node.text AS text,
+        node.source_agent AS source_agent,
+        node.research_question AS research_question,
+        node.confidence AS confidence,
+        node.source_key AS source_key,
+        node.project_id AS project_id,
+        labels(node) AS node_labels,
+        score
+    ORDER BY score DESC
+    """
+
+    try:
+        with pipeline._conn.session() as session:
+            results = session.run(
+                search_cypher,
+                limit=safe_limit,
+                embedding=embedding,
+            ).data()
+
+        if not results:
+            return "No relevant research found."
+
+        output = f"Found {len(results)} relevant research result(s):\n\n"
+        for i, r in enumerate(results, 1):
+            text = (r.get("text") or "")[:300]
+            score = r.get("score", 0)
+            source_agent = r.get("source_agent", "unknown")
+            labels = r.get("node_labels", [])
+            node_type = "Finding" if "Finding" in labels else "Chunk" if "Chunk" in labels else "Research"
+            question = r.get("research_question") or ""
+            confidence = r.get("confidence") or ""
+
+            output += f"{i}. [{node_type}] [Score: {score:.2f}] (by {source_agent})\n"
+            if question:
+                output += f"   Question: {question}\n"
+            if confidence:
+                output += f"   Confidence: {confidence}\n"
+            output += f"   ```\n{text}...\n   ```\n\n"
+
+        return validate_tool_output(output.strip())
+    except Exception as e:
+        logger.error("Research search failed: %s", e)
+        return f"Error: Research search failed: {str(e)}"
+
+
+@mcp.tool()
+@rate_limit
+@log_tool_call
+def brave_search(query: str, count: int = 10) -> str:
+    """
+    Search the web for current information using Brave Search.
+
+    Returns top results with title, URL, and description. Results are
+    returned to you for analysis — they are NOT automatically ingested.
+    Use memory_ingest_research to save findings you want to persist.
+
+    Args:
+        query: Search query string
+        count: Number of results to return (default: 10, max: 20)
+
+    Returns:
+        Formatted string with search results
+    """
+    api_key = os.getenv("BRAVE_SEARCH_API_KEY")
+    if not api_key:
+        return "Error: BRAVE_SEARCH_API_KEY environment variable not set."
+
+    safe_count = max(1, min(int(count), 20))
+
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(
+                "https://api.search.brave.com/res/v1/web/search",
+                headers={
+                    "X-Subscription-Token": api_key,
+                    "Accept": "application/json",
+                },
+                params={"q": query, "count": safe_count},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        results = data.get("web", {}).get("results", [])
+        if not results:
+            return f"No web results found for '{query}'."
+
+        output = f"Found {len(results)} web result(s) for '{query}':\n\n"
+        for i, r in enumerate(results, 1):
+            title = r.get("title", "Untitled")
+            url = r.get("url", "")
+            description = r.get("description", "")[:200]
+            output += f"{i}. **{title}**\n"
+            output += f"   URL: {url}\n"
+            output += f"   {description}\n\n"
+
+        return validate_tool_output(output.strip())
+    except httpx.HTTPStatusError as e:
+        logger.error("Brave Search HTTP error: %s", e)
+        return f"Error: Brave Search returned {e.response.status_code}"
+    except Exception as e:
+        logger.error("Brave Search failed: %s", e)
+        return f"Error: Brave Search failed: {str(e)}"
 
 
 def run_server(port: int, repo_root: Optional[Path] = None):

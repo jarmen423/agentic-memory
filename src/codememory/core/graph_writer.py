@@ -314,3 +314,126 @@ class GraphWriter:
             report_project_id,
             report_session_id,
         )
+
+    def write_session_node(
+        self,
+        props: dict[str, Any],
+        turn_index: int,
+        started_at: str,
+    ) -> None:
+        """Write (upsert) a Session grouping node using MERGE on session_id.
+
+        On first write: sets started_at, turn_count=1, last_turn_index=turn_index.
+        On subsequent writes: increments turn_count, updates last_turn_index to max
+        of existing and new turn_index.
+
+        Args:
+            props: Full session property dict including session_id, project_id,
+                source_agent. Must contain 'session_id'.
+            turn_index: The turn_index of the turn being ingested (used in
+                CASE expression to track max last_turn_index).
+            started_at: ISO-8601 UTC string for the session start timestamp
+                (only written ON CREATE).
+        """
+        cypher = (
+            "MERGE (s:Memory:Conversation:Session {session_id: $session_id})\n"
+            "ON CREATE SET\n"
+            "    s += $props,\n"
+            "    s.started_at = $started_at,\n"
+            "    s.turn_count = 1,\n"
+            "    s.last_turn_index = $turn_index\n"
+            "ON MATCH SET\n"
+            "    s.last_turn_index = CASE\n"
+            "        WHEN s.last_turn_index < $turn_index THEN $turn_index\n"
+            "        ELSE s.last_turn_index\n"
+            "    END,\n"
+            "    s.turn_count = s.turn_count + 1,\n"
+            "    s.source_agent = $props.source_agent"
+        )
+        with self._conn.session() as session:
+            session.run(
+                cypher,
+                session_id=props["session_id"],
+                props=props,
+                started_at=started_at,
+                turn_index=turn_index,
+            )
+        logger.debug(
+            "Session node upserted: session_id=%s turn_index=%d",
+            props.get("session_id"),
+            turn_index,
+        )
+
+    def write_has_turn_relationship(
+        self,
+        session_id: str,
+        turn_source_key: str,
+        turn_content_hash: str,
+        order: int,
+    ) -> None:
+        """Write :HAS_TURN relationship from Session to Turn with order property.
+
+        Mirrors write_has_chunk_relationship for the conversation topology.
+        Session is matched by session_id; Turn is matched by (source_key, content_hash).
+
+        Args:
+            session_id: session_id of the Session node.
+            turn_source_key: source_key of the Turn node (e.g. "chat_mcp").
+            turn_content_hash: content_hash of the Turn node (sha256 of session_id:turn_index).
+            order: Turn index for ordered reconstruction (same value as turn_index).
+        """
+        cypher = (
+            "MATCH (s:Memory:Conversation:Session {session_id: $session_id})\n"
+            "MATCH (t {source_key: $source_key, content_hash: $content_hash})\n"
+            "MERGE (s)-[rel:HAS_TURN {order: $order}]->(t)"
+        )
+        with self._conn.session() as session:
+            session.run(
+                cypher,
+                session_id=session_id,
+                source_key=turn_source_key,
+                content_hash=turn_content_hash,
+                order=order,
+            )
+        logger.debug(
+            "HAS_TURN relationship written: Session(%s) -> Turn(%s/%s) order=%d",
+            session_id,
+            turn_source_key,
+            turn_content_hash,
+            order,
+        )
+
+    def write_part_of_turn_relationship(
+        self,
+        turn_source_key: str,
+        turn_content_hash: str,
+        session_id: str,
+    ) -> None:
+        """Write :PART_OF relationship from Turn back to Session.
+
+        Reverse arc of HAS_TURN per CONTEXT.md schema:
+        (:Memory:Conversation:Turn)-[:PART_OF]->(:Memory:Conversation:Session)
+
+        Args:
+            turn_source_key: source_key of the Turn node.
+            turn_content_hash: content_hash of the Turn node.
+            session_id: session_id of the Session node.
+        """
+        cypher = (
+            "MATCH (t {source_key: $source_key, content_hash: $content_hash})\n"
+            "MATCH (s:Memory:Conversation:Session {session_id: $session_id})\n"
+            "MERGE (t)-[:PART_OF]->(s)"
+        )
+        with self._conn.session() as session:
+            session.run(
+                cypher,
+                source_key=turn_source_key,
+                content_hash=turn_content_hash,
+                session_id=session_id,
+            )
+        logger.debug(
+            "PART_OF relationship written: Turn(%s/%s) -> Session(%s)",
+            turn_source_key,
+            turn_content_hash,
+            session_id,
+        )

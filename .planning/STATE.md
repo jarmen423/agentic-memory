@@ -2,34 +2,30 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: — Full Multi-Module Memory System
-current_phase: 5
+current_phase: 6
 status: unknown
-last_updated: "2026-03-22T16:51:05.449Z"
+last_updated: "2026-03-25T00:00:00Z"
 progress:
   total_phases: 7
-  completed_phases: 3
-  total_plans: 12
-  completed_plans: 12
+  completed_phases: 5
+  total_plans: 14
+  completed_plans: 14
 ---
 
 # Agentic Memory — Project State
 
 **Last Updated:** 2026-03-25
-**Current Phase:** 5
-**Phase Status:** Complete (all 3 plans done)
-**Last Session Stopped At:** Completed 05-03-PLAN.md
+**Current Phase:** 6
+**Phase Status:** Not Started
+**Last Session Stopped At:** Phase 5 verified — ready to begin Phase 6
 
 ---
 
 ## Active Phase
 
-**Phase 5: am-proxy (ACP Proxy)**
+**Phase 6: am-ext (Browser Extension passive capture)**
 
-- Standalone packages/am-proxy/ package scaffold with hatchling, ProxyConfig TOML loader, AGENT_CONFIGS registry
-- IngestClient (fire-and-forget, GC-safe _pending set) + ACPProxy (full ACP routing, buffer TTL, turn construction)
-- CLI entry point (main()), Windows ProactorEventLoop policy, setup subcommand, 41 total tests passing
-
-**Next Action:** Begin Phase 6 — am-ext (Browser Extension passive capture)
+**Next Action:** Begin Phase 6 context gathering and planning
 
 ---
 
@@ -40,8 +36,8 @@ progress:
 | 1 | Foundation | Complete |
 | 2 | Web Research Core | Complete |
 | 3 | Web Research Scheduling | Deferred (post-v1) |
-| 4 | Conversation Memory Core | Active |
-| 5 | am-proxy (ACP Proxy) | Active |
+| 4 | Conversation Memory Core | Complete |
+| 5 | am-proxy (ACP Proxy) | Complete |
 | 6 | am-ext (Browser Extension) | Not Started |
 | 7 | Cross-Module Integration & Hardening | Not Started |
 
@@ -72,6 +68,7 @@ progress:
 - [x] Plan 05-01: packages/am-proxy/ standalone package scaffold; ProxyConfig dataclass + load_config() TOML loader; AGENT_CONFIGS registry (claude/codex/gemini/opencode/kiro); pytest conftest fixtures (2026-03-25)
 - [x] Plan 05-02: IngestClient fire-and-forget (GC-safe _pending set, silent failure); ACPProxy with full ACP routing table, buffer TTL, turn construction; 22 unit tests (2026-03-25)
 - [x] Plan 05-03: cli.py entry point with argparse, Windows ProactorEventLoop policy, setup subcommand; 19 CLI unit tests; 41 total am-proxy tests passing (2026-03-25)
+- [x] Phase 05 verified: all 6 success criteria passed, 41/41 tests green (2026-03-25)
 
 ---
 
@@ -102,7 +99,7 @@ progress:
 | fire_and_forget uses _pending set for GC-safe task retention | asyncio.create_task() holds only weak reference on Python 3.12+ (CPython #117379); _pending set holds strong reference until done callback discards |
 | _handle_line wrapped in bare except Exception: pass | Routing errors must never surface to the agent session — silent failure contract |
 | threads/update ingests unless explicitly done=False | Default True means partial updates ingested; only streaming chunks (done=False) skipped |
-| Browser extension: 800ms debounce on MutationObserver | Streaming responses cause hundreds of DOM mutations per turn; debounce fires once on turn completion |\
+| Browser extension: 800ms debounce on MutationObserver | Streaming responses cause hundreds of DOM mutations per turn; debounce fires once on turn completion |
 | Passive ingestion: am-proxy (CLI agents) + am-ext (web UIs) | Covers full spectrum without OAuth scraping — proxy wraps ACP stdio, extension observes DOM |
 | am-proxy CLI: parse_known_args() not REMAINDER for passthrough | Python 3.13 subparser treats bare positional args as invalid subcommand choices even in parse_known_args; flag-style extras work via remaining list |
 | asyncio.run mock in tests uses side_effect with coro.close() | Prevents RuntimeWarning: coroutine never awaited when patching asyncio.run with return_value |

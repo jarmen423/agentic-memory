@@ -386,10 +386,13 @@ def _make_pipeline():
     mock_extractor.extract.return_value = [{"name": "SaaS", "type": "concept"}]
 
     pipeline = ResearchIngestionPipeline(mock_conn, mock_embedder, mock_extractor)
+    pipeline._claim_extractor = MagicMock()
+    pipeline._claim_extractor.extract.return_value = []
 
     # Replace the internal writer with a MagicMock so we can inspect calls
     mock_writer = MagicMock()
     pipeline._writer = mock_writer
+    pipeline._test_session = mock_session
 
     return pipeline, mock_writer
 
@@ -511,6 +514,49 @@ class TestResearchIngestionPipelineReportFlow:
             kwargs = call[1]
             assert kwargs.get("valid_from")
             assert kwargs.get("confidence") == 1.0
+
+    def test_ingest_report_calls_claim_extractor_once(self):
+        """Report ingest runs claim extraction after the NER pass."""
+        pipeline, _ = _make_pipeline()
+        pipeline.ingest(_report_source())
+
+        pipeline._claim_extractor.extract.assert_called_once_with(
+            _report_source()["content"]
+        )
+
+    def test_ingest_report_claims_write_entity_relationships(self):
+        """Extracted claims create direct Entity-to-Entity relationships."""
+        pipeline, mock_writer = _make_pipeline()
+        pipeline._claim_extractor.extract.return_value = [
+            {
+                "subject": "Agentic Memory",
+                "predicate": "WORKS_AT",
+                "object": "Neo4j",
+                "valid_from": "2026-03-25T12:00:00+00:00",
+                "valid_to": None,
+                "confidence": 0.75,
+            }
+        ]
+
+        pipeline.ingest(_report_source())
+
+        assert mock_writer.upsert_entity.call_count >= 3
+        upsert_names = [call.args[0] for call in mock_writer.upsert_entity.call_args_list]
+        assert "Agentic Memory" in upsert_names
+        assert "Neo4j" in upsert_names
+
+        run_calls = pipeline._test_session.run.call_args_list
+        assert any("MERGE (subj)-[r:WORKS_AT]->(obj)" in call.args[0] for call in run_calls)
+
+    def test_ingest_report_claim_failure_is_non_blocking(self):
+        """Claim extraction failure is logged and does not break report ingest."""
+        pipeline, mock_writer = _make_pipeline()
+        pipeline._claim_extractor.extract.side_effect = RuntimeError("boom")
+
+        result = pipeline.ingest(_report_source())
+
+        assert result["type"] == "report"
+        assert mock_writer.write_report_node.call_count == 1
 
 
 class TestChunkContentHashSessionScoped:

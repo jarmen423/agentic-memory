@@ -8,10 +8,12 @@ two-branch ingest routing:
 
 import hashlib
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any
 
 from codememory.core.base import BaseIngestionPipeline
+from codememory.core.claim_extraction import ClaimExtractionService
 from codememory.core.connection import ConnectionManager
 from codememory.core.embedding import EmbeddingService
 from codememory.core.entity_extraction import EntityExtractionService, build_embed_text
@@ -45,6 +47,7 @@ class ResearchIngestionPipeline(BaseIngestionPipeline):
         connection_manager: ConnectionManager,
         embedding_service: EmbeddingService,
         entity_extractor: EntityExtractionService,
+        claim_extractor: ClaimExtractionService | None = None,
     ) -> None:
         """Initialize the research ingestion pipeline.
 
@@ -52,10 +55,20 @@ class ResearchIngestionPipeline(BaseIngestionPipeline):
             connection_manager: Configured ConnectionManager instance.
             embedding_service: Configured EmbeddingService (Gemini provider).
             entity_extractor: Configured EntityExtractionService (Groq).
+            claim_extractor: Optional ClaimExtractionService. If omitted,
+                initializes from GROQ_API_KEY when available.
         """
         super().__init__(connection_manager)
         self._embedder = embedding_service
         self._extractor = entity_extractor
+        self._claim_extractor = claim_extractor
+        if self._claim_extractor is None:
+            groq_api_key = os.getenv("GROQ_API_KEY")
+            if groq_api_key:
+                self._claim_extractor = ClaimExtractionService(
+                    api_key=groq_api_key,
+                    model=getattr(entity_extractor, "model", "llama-3.3-70b-versatile"),
+                )
         self._writer = GraphWriter(connection_manager)
 
     def ingest(self, source: dict[str, Any]) -> dict[str, Any]:
@@ -237,6 +250,14 @@ class ResearchIngestionPipeline(BaseIngestionPipeline):
                     confidence=1.0,
                 )
 
+        if self._claim_extractor is not None:
+            try:
+                claims = self._claim_extractor.extract(content)
+                for claim in claims:
+                    self._write_claim(claim)
+            except Exception as exc:
+                logger.error("Claim extraction failed (non-blocking): %s", exc)
+
         # Also ingest inline findings if provided
         findings_written = 0
         for finding_data in source.get("findings") or []:
@@ -373,3 +394,47 @@ class ResearchIngestionPipeline(BaseIngestionPipeline):
             "project_id": source["project_id"],
             "session_id": source["session_id"],
         }
+
+    def _write_claim(self, claim: dict[str, Any]) -> None:
+        """Write an extracted Entity-to-Entity claim relationship.
+
+        Args:
+            claim: Claim dict with subject, predicate, object, valid_from,
+                valid_to, and confidence keys.
+        """
+        subject_name = claim["subject"]
+        object_name = claim["object"]
+        predicate = claim["predicate"]
+        valid_from = claim.get("valid_from") or self._now()
+        confidence = claim.get("confidence", 1.0)
+
+        self._writer.upsert_entity(subject_name, "unknown")
+        self._writer.upsert_entity(object_name, "unknown")
+
+        cypher = (
+            "MERGE (subj:Entity {name: $subject_name})\n"
+            "ON CREATE SET subj.type = $subject_type\n"
+            "MERGE (obj:Entity {name: $object_name})\n"
+            "ON CREATE SET obj.type = $object_type\n"
+            f"MERGE (subj)-[r:{predicate}]->(obj)\n"
+            "ON CREATE SET r.valid_from = $valid_from,\n"
+            "              r.valid_to = $valid_to,\n"
+            "              r.confidence = $confidence,\n"
+            "              r.support_count = 1,\n"
+            "              r.contradiction_count = 0\n"
+            "ON MATCH SET  r.support_count = r.support_count + 1,\n"
+            "              r.confidence = CASE WHEN $confidence > r.confidence\n"
+            "                                  THEN $confidence\n"
+            "                                  ELSE r.confidence END"
+        )
+        with self._conn.session() as session:
+            session.run(
+                cypher,
+                subject_name=subject_name,
+                subject_type="unknown",
+                object_name=object_name,
+                object_type="unknown",
+                valid_from=valid_from,
+                valid_to=claim.get("valid_to"),
+                confidence=confidence,
+            )

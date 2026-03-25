@@ -244,6 +244,14 @@ Plans:
 - Temporal backfill — existing Phase 1-6 data has no `valid_from`; handle gracefully (use `ingested_at` as fallback)
 - APScheduler persistence — schedule state survives server restarts (use SQLite job store)
 
+**Plans:** 4 plans
+
+Plans:
+- [ ] 07-01-PLAN.md — GraphWriter temporal methods + APScheduler/SQLAlchemy dependencies
+- [ ] 07-02-PLAN.md — Pipeline temporal wiring + migrate-temporal backfill CLI command
+- [ ] 07-03-PLAN.md — ClaimExtractionService + web pipeline SPO extraction pass
+- [ ] 07-04-PLAN.md — ResearchScheduler + CLI commands + MCP tools + as_of search filter
+
 ---
 
 ## Phase 8: SpacetimeDB Maintenance Layer

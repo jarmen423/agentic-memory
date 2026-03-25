@@ -32,6 +32,11 @@
         "https://gemini.google.com/*"
       ],
       "js": [
+        "adapters/base.js",
+        "adapters/chatgpt.js",
+        "adapters/claude.js",
+        "adapters/gemini.js",
+        "adapters/perplexity.js",
         "content.js"
       ],
       "run_at": "document_idle"

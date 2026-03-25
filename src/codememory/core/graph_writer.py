@@ -6,6 +6,7 @@ name + type for Entity nodes).
 """
 
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from codememory.core.connection import ConnectionManager
@@ -151,6 +152,143 @@ class GraphWriter:
             entity_name,
         )
 
+    def _resolve_valid_from(self, valid_from: str | None) -> str:
+        """Return the provided validity start or a current UTC timestamp."""
+        return valid_from or datetime.now(timezone.utc).isoformat()
+
+    def write_temporal_relationship(
+        self,
+        source_key: str,
+        content_hash: str,
+        entity_name: str,
+        entity_type: str,
+        rel_type: str = "ABOUT",
+        valid_from: str | None = None,
+        valid_to: str | None = None,
+        confidence: float = 1.0,
+        support_count: int = 1,
+        contradiction_count: int = 0,
+    ) -> None:
+        """Write a temporal relationship from a Memory node to an Entity node.
+
+        Uses a MERGE pattern keyed only by the relationship type and endpoint
+        identity, then sets temporal metadata in ON CREATE/ON MATCH branches.
+
+        Args:
+            source_key: source_key of the Memory node.
+            content_hash: content_hash of the Memory node.
+            entity_name: name of the Entity node.
+            entity_type: type of the Entity node.
+            rel_type: Relationship type to write.
+            valid_from: ISO-8601 validity start. Defaults to current UTC time.
+            valid_to: Optional ISO-8601 validity end.
+            confidence: Confidence score between 0.0 and 1.0.
+            support_count: Initial support count for a new relationship.
+            contradiction_count: Initial contradiction count for a new relationship.
+        """
+        resolved_valid_from = self._resolve_valid_from(valid_from)
+        cypher = (
+            "MATCH (m {source_key: $source_key, content_hash: $content_hash})\n"
+            "MATCH (e {name: $entity_name, type: $entity_type})\n"
+            f"MERGE (m)-[r:{rel_type}]->(e)\n"
+            "ON CREATE SET r.valid_from = $valid_from,\n"
+            "              r.valid_to = $valid_to,\n"
+            "              r.confidence = $confidence,\n"
+            "              r.support_count = $support_count,\n"
+            "              r.contradiction_count = $contradiction_count\n"
+            "ON MATCH SET  r.support_count = r.support_count + 1,\n"
+            "              r.confidence = CASE WHEN $confidence > r.confidence\n"
+            "                                  THEN $confidence\n"
+            "                                  ELSE r.confidence END"
+        )
+        with self._conn.session() as session:
+            session.run(
+                cypher,
+                source_key=source_key,
+                content_hash=content_hash,
+                entity_name=entity_name,
+                entity_type=entity_type,
+                valid_from=resolved_valid_from,
+                valid_to=valid_to,
+                confidence=confidence,
+                support_count=support_count,
+                contradiction_count=contradiction_count,
+            )
+        logger.debug(
+            "Temporal relationship written: Memory(%s/%s) -[:%s]-> Entity(%s)",
+            source_key,
+            content_hash,
+            rel_type,
+            entity_name,
+        )
+
+    def update_relationship_validity(
+        self,
+        source_key: str,
+        content_hash: str,
+        entity_name: str,
+        entity_type: str,
+        rel_type: str,
+        valid_to: str,
+    ) -> None:
+        """Set the validity end timestamp on an existing relationship.
+
+        Args:
+            source_key: source_key of the Memory node.
+            content_hash: content_hash of the Memory node.
+            entity_name: name of the Entity node.
+            entity_type: type of the Entity node.
+            rel_type: Relationship type to update.
+            valid_to: ISO-8601 validity end timestamp.
+        """
+        cypher = (
+            "MATCH (m {source_key: $source_key, content_hash: $content_hash})\n"
+            "MATCH (e {name: $entity_name, type: $entity_type})\n"
+            f"MATCH (m)-[r:{rel_type}]->(e)\n"
+            "SET r.valid_to = $valid_to"
+        )
+        with self._conn.session() as session:
+            session.run(
+                cypher,
+                source_key=source_key,
+                content_hash=content_hash,
+                entity_name=entity_name,
+                entity_type=entity_type,
+                valid_to=valid_to,
+            )
+
+    def increment_contradiction(
+        self,
+        source_key: str,
+        content_hash: str,
+        entity_name: str,
+        entity_type: str,
+        rel_type: str,
+    ) -> None:
+        """Increment contradiction_count on an existing relationship.
+
+        Args:
+            source_key: source_key of the Memory node.
+            content_hash: content_hash of the Memory node.
+            entity_name: name of the Entity node.
+            entity_type: type of the Entity node.
+            rel_type: Relationship type to update.
+        """
+        cypher = (
+            "MATCH (m {source_key: $source_key, content_hash: $content_hash})\n"
+            "MATCH (e {name: $entity_name, type: $entity_type})\n"
+            f"MATCH (m)-[r:{rel_type}]->(e)\n"
+            "SET r.contradiction_count = coalesce(r.contradiction_count, 0) + 1"
+        )
+        with self._conn.session() as session:
+            session.run(
+                cypher,
+                source_key=source_key,
+                content_hash=content_hash,
+                entity_name=entity_name,
+                entity_type=entity_type,
+            )
+
     def write_report_node(self, properties: dict[str, Any]) -> None:
         """Write (upsert) a Report parent node using MERGE on (project_id, session_id).
 
@@ -205,6 +343,8 @@ class GraphWriter:
         finding_content_hash: str,
         source_url: str,
         rel_props: dict[str, Any],
+        valid_from: str | None = None,
+        confidence: float = 1.0,
     ) -> None:
         """Write :CITES relationship from Finding to Entity:Source.
 
@@ -213,13 +353,29 @@ class GraphWriter:
             finding_content_hash: content_hash of the Finding node.
             source_url: url of the Entity:Source node.
             rel_props: Relationship properties (url, title, snippet, accessed_at, source_agent).
+            valid_from: ISO-8601 validity start. Defaults to current UTC time.
+            confidence: Confidence score between 0.0 and 1.0.
         """
+        resolved_valid_from = self._resolve_valid_from(valid_from)
+        temporal_rel_props = {
+            **rel_props,
+            "valid_from": resolved_valid_from,
+            "valid_to": None,
+            "confidence": confidence,
+            "support_count": 1,
+            "contradiction_count": 0,
+        }
         cypher = (
             "MATCH (f {source_key: $source_key, content_hash: $content_hash})\n"
             "MATCH (s:Entity:Source {url: $source_url})\n"
             "MERGE (f)-[r:CITES]->(s)\n"
             "ON CREATE SET r += $rel_props\n"
-            "ON MATCH SET r.snippet = $rel_props.snippet, r.accessed_at = $rel_props.accessed_at"
+            "ON MATCH SET r.snippet = $rel_props.snippet,\n"
+            "              r.accessed_at = $rel_props.accessed_at,\n"
+            "              r.support_count = r.support_count + 1,\n"
+            "              r.confidence = CASE WHEN $confidence > r.confidence\n"
+            "                                  THEN $confidence\n"
+            "                                  ELSE r.confidence END"
         )
         with self._conn.session() as session:
             session.run(
@@ -227,7 +383,8 @@ class GraphWriter:
                 source_key=finding_source_key,
                 content_hash=finding_content_hash,
                 source_url=source_url,
-                rel_props=rel_props,
+                rel_props=temporal_rel_props,
+                confidence=confidence,
             )
         logger.debug(
             "CITES relationship written: Finding(%s/%s) -> Source(%s)",
@@ -243,6 +400,8 @@ class GraphWriter:
         chunk_source_key: str,
         chunk_content_hash: str,
         order: int,
+        valid_from: str | None = None,
+        confidence: float = 1.0,
     ) -> None:
         """Write :HAS_CHUNK relationship from Report to Chunk with order property.
 
@@ -252,11 +411,23 @@ class GraphWriter:
             chunk_source_key: source_key of the Chunk node.
             chunk_content_hash: content_hash of the Chunk node.
             order: Chunk index for ordered reconstruction.
+            valid_from: ISO-8601 validity start. Defaults to current UTC time.
+            confidence: Confidence score between 0.0 and 1.0.
         """
+        resolved_valid_from = self._resolve_valid_from(valid_from)
         cypher = (
             "MATCH (r:Memory:Research:Report {project_id: $project_id, session_id: $session_id})\n"
             "MATCH (c {source_key: $source_key, content_hash: $content_hash})\n"
-            "MERGE (r)-[rel:HAS_CHUNK {order: $order}]->(c)"
+            "MERGE (r)-[rel:HAS_CHUNK {order: $order}]->(c)\n"
+            "ON CREATE SET rel.valid_from = $valid_from,\n"
+            "              rel.valid_to = null,\n"
+            "              rel.confidence = $confidence,\n"
+            "              rel.support_count = 1,\n"
+            "              rel.contradiction_count = 0\n"
+            "ON MATCH SET  rel.support_count = rel.support_count + 1,\n"
+            "              rel.confidence = CASE WHEN $confidence > rel.confidence\n"
+            "                                    THEN $confidence\n"
+            "                                    ELSE rel.confidence END"
         )
         with self._conn.session() as session:
             session.run(
@@ -266,6 +437,8 @@ class GraphWriter:
                 source_key=chunk_source_key,
                 content_hash=chunk_content_hash,
                 order=order,
+                valid_from=resolved_valid_from,
+                confidence=confidence,
             )
         logger.debug(
             "HAS_CHUNK relationship written: Report(%s/%s) -> Chunk(%s/%s) order=%d",
@@ -282,6 +455,8 @@ class GraphWriter:
         chunk_content_hash: str,
         report_project_id: str,
         report_session_id: str,
+        valid_from: str | None = None,
+        confidence: float = 1.0,
     ) -> None:
         """Write :PART_OF relationship from Chunk back to Report.
 
@@ -293,11 +468,23 @@ class GraphWriter:
             chunk_content_hash: content_hash of the Chunk node.
             report_project_id: project_id of the Report node.
             report_session_id: session_id of the Report node.
+            valid_from: ISO-8601 validity start. Defaults to current UTC time.
+            confidence: Confidence score between 0.0 and 1.0.
         """
+        resolved_valid_from = self._resolve_valid_from(valid_from)
         cypher = (
             "MATCH (c {source_key: $source_key, content_hash: $content_hash})\n"
             "MATCH (r:Memory:Research:Report {project_id: $project_id, session_id: $session_id})\n"
-            "MERGE (c)-[:PART_OF]->(r)"
+            "MERGE (c)-[rel:PART_OF]->(r)\n"
+            "ON CREATE SET rel.valid_from = $valid_from,\n"
+            "              rel.valid_to = null,\n"
+            "              rel.confidence = $confidence,\n"
+            "              rel.support_count = 1,\n"
+            "              rel.contradiction_count = 0\n"
+            "ON MATCH SET  rel.support_count = rel.support_count + 1,\n"
+            "              rel.confidence = CASE WHEN $confidence > rel.confidence\n"
+            "                                    THEN $confidence\n"
+            "                                    ELSE rel.confidence END"
         )
         with self._conn.session() as session:
             session.run(
@@ -306,6 +493,8 @@ class GraphWriter:
                 content_hash=chunk_content_hash,
                 project_id=report_project_id,
                 session_id=report_session_id,
+                valid_from=resolved_valid_from,
+                confidence=confidence,
             )
         logger.debug(
             "PART_OF relationship written: Chunk(%s/%s) -> Report(%s/%s)",
@@ -370,6 +559,8 @@ class GraphWriter:
         turn_source_key: str,
         turn_content_hash: str,
         order: int,
+        valid_from: str | None = None,
+        confidence: float = 1.0,
     ) -> None:
         """Write :HAS_TURN relationship from Session to Turn with order property.
 
@@ -381,11 +572,23 @@ class GraphWriter:
             turn_source_key: source_key of the Turn node (e.g. "chat_mcp").
             turn_content_hash: content_hash of the Turn node (sha256 of session_id:turn_index).
             order: Turn index for ordered reconstruction (same value as turn_index).
+            valid_from: ISO-8601 validity start. Defaults to current UTC time.
+            confidence: Confidence score between 0.0 and 1.0.
         """
+        resolved_valid_from = self._resolve_valid_from(valid_from)
         cypher = (
             "MATCH (s:Memory:Conversation:Session {session_id: $session_id})\n"
             "MATCH (t {source_key: $source_key, content_hash: $content_hash})\n"
-            "MERGE (s)-[rel:HAS_TURN {order: $order}]->(t)"
+            "MERGE (s)-[rel:HAS_TURN {order: $order}]->(t)\n"
+            "ON CREATE SET rel.valid_from = $valid_from,\n"
+            "              rel.valid_to = null,\n"
+            "              rel.confidence = $confidence,\n"
+            "              rel.support_count = 1,\n"
+            "              rel.contradiction_count = 0\n"
+            "ON MATCH SET  rel.support_count = rel.support_count + 1,\n"
+            "              rel.confidence = CASE WHEN $confidence > rel.confidence\n"
+            "                                    THEN $confidence\n"
+            "                                    ELSE rel.confidence END"
         )
         with self._conn.session() as session:
             session.run(
@@ -394,6 +597,8 @@ class GraphWriter:
                 source_key=turn_source_key,
                 content_hash=turn_content_hash,
                 order=order,
+                valid_from=resolved_valid_from,
+                confidence=confidence,
             )
         logger.debug(
             "HAS_TURN relationship written: Session(%s) -> Turn(%s/%s) order=%d",
@@ -408,6 +613,8 @@ class GraphWriter:
         turn_source_key: str,
         turn_content_hash: str,
         session_id: str,
+        valid_from: str | None = None,
+        confidence: float = 1.0,
     ) -> None:
         """Write :PART_OF relationship from Turn back to Session.
 
@@ -418,11 +625,23 @@ class GraphWriter:
             turn_source_key: source_key of the Turn node.
             turn_content_hash: content_hash of the Turn node.
             session_id: session_id of the Session node.
+            valid_from: ISO-8601 validity start. Defaults to current UTC time.
+            confidence: Confidence score between 0.0 and 1.0.
         """
+        resolved_valid_from = self._resolve_valid_from(valid_from)
         cypher = (
             "MATCH (t {source_key: $source_key, content_hash: $content_hash})\n"
             "MATCH (s:Memory:Conversation:Session {session_id: $session_id})\n"
-            "MERGE (t)-[:PART_OF]->(s)"
+            "MERGE (t)-[rel:PART_OF]->(s)\n"
+            "ON CREATE SET rel.valid_from = $valid_from,\n"
+            "              rel.valid_to = null,\n"
+            "              rel.confidence = $confidence,\n"
+            "              rel.support_count = 1,\n"
+            "              rel.contradiction_count = 0\n"
+            "ON MATCH SET  rel.support_count = rel.support_count + 1,\n"
+            "              rel.confidence = CASE WHEN $confidence > rel.confidence\n"
+            "                                    THEN $confidence\n"
+            "                                    ELSE rel.confidence END"
         )
         with self._conn.session() as session:
             session.run(
@@ -430,6 +649,8 @@ class GraphWriter:
                 source_key=turn_source_key,
                 content_hash=turn_content_hash,
                 session_id=session_id,
+                valid_from=resolved_valid_from,
+                confidence=confidence,
             )
         logger.debug(
             "PART_OF relationship written: Turn(%s/%s) -> Session(%s)",

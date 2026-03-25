@@ -135,7 +135,7 @@ class TestGraphWriterPartOfRelationship:
         )
         assert mock_session.run.called
         cypher = mock_session.run.call_args[0][0]
-        assert "MERGE (c)-[:PART_OF]->(r)" in cypher
+        assert "MERGE (c)-[rel:PART_OF]->(r)" in cypher
         # Should match Chunk by (source_key, content_hash)
         assert "source_key: $source_key" in cypher
         assert "content_hash: $content_hash" in cypher

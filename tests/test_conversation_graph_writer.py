@@ -8,8 +8,8 @@ Tests cover:
 All tests mock Neo4j connections — no live services required.
 """
 
-from unittest.mock import MagicMock
 import pytest
+from unittest.mock import MagicMock
 
 from codememory.core.graph_writer import GraphWriter
 
@@ -130,7 +130,7 @@ class TestWritePartOfTurnRelationship:
         )
         assert mock_session.run.called
         cypher = mock_session.run.call_args[0][0]
-        assert "MERGE (t)-[:PART_OF]->(s)" in cypher
+        assert "MERGE (t)-[rel:PART_OF]->(s)" in cypher
 
     def test_write_part_of_turn_relationship_matches_session_by_session_id(self):
         """write_part_of_turn_relationship MATCHes Session node by session_id."""
@@ -155,6 +155,218 @@ class TestWritePartOfTurnRelationship:
         cypher = mock_session.run.call_args[0][0]
         assert "source_key: $source_key" in cypher
         assert "content_hash: $content_hash" in cypher
+
+
+class TestTemporalRelationships:
+    """Tests for the temporal relationship GraphWriter helpers."""
+
+    def test_write_temporal_relationship_sets_temporal_fields(self):
+        """write_temporal_relationship writes temporal fields on create."""
+        writer, _, mock_session = _make_writer()
+
+        writer.write_temporal_relationship(
+            source_key="chat_mcp",
+            content_hash="abc123",
+            entity_name="agentic-memory",
+            entity_type="project",
+            rel_type="ABOUT",
+            valid_from="2026-03-25T12:00:00+00:00",
+            valid_to=None,
+            confidence=0.9,
+            support_count=1,
+            contradiction_count=0,
+        )
+
+        cypher = mock_session.run.call_args[0][0]
+        params = mock_session.run.call_args[1]
+
+        assert "MERGE (m)-[r:ABOUT]->(e)" in cypher
+        assert "ON CREATE SET r.valid_from = $valid_from" in cypher
+        assert "r.valid_to = $valid_to" in cypher
+        assert "r.confidence = $confidence" in cypher
+        assert "r.support_count = $support_count" in cypher
+        assert "r.contradiction_count = $contradiction_count" in cypher
+        assert params["valid_from"] == "2026-03-25T12:00:00+00:00"
+        assert params["confidence"] == 0.9
+
+    def test_write_temporal_relationship_updates_support_and_confidence_on_match(self):
+        """write_temporal_relationship increments support_count and keeps max confidence."""
+        writer, _, mock_session = _make_writer()
+
+        writer.write_temporal_relationship(
+            source_key="chat_mcp",
+            content_hash="abc123",
+            entity_name="agentic-memory",
+            entity_type="project",
+            rel_type="ABOUT",
+            valid_from="2026-03-25T12:00:00+00:00",
+            confidence=0.8,
+        )
+
+        cypher = mock_session.run.call_args[0][0]
+        assert "ON MATCH SET" in cypher
+        assert "r.support_count = r.support_count + 1" in cypher
+        assert "CASE WHEN $confidence > r.confidence" in cypher
+
+    def test_write_temporal_relationship_merge_excludes_temporal_fields(self):
+        """write_temporal_relationship MERGEs only on relationship type and endpoints."""
+        writer, _, mock_session = _make_writer()
+
+        writer.write_temporal_relationship(
+            source_key="chat_mcp",
+            content_hash="abc123",
+            entity_name="agentic-memory",
+            entity_type="project",
+            rel_type="ABOUT",
+            valid_from="2026-03-25T12:00:00+00:00",
+        )
+
+        cypher = mock_session.run.call_args[0][0]
+        merge_line = next(line for line in cypher.splitlines() if line.startswith("MERGE"))
+        assert merge_line == "MERGE (m)-[r:ABOUT]->(e)"
+        assert "valid_from" not in merge_line
+
+    def test_update_relationship_validity_sets_valid_to(self):
+        """update_relationship_validity sets valid_to on an existing relationship."""
+        writer, _, mock_session = _make_writer()
+
+        writer.update_relationship_validity(
+            source_key="chat_mcp",
+            content_hash="abc123",
+            entity_name="agentic-memory",
+            entity_type="project",
+            rel_type="ABOUT",
+            valid_to="2026-03-26T12:00:00+00:00",
+        )
+
+        cypher = mock_session.run.call_args[0][0]
+        params = mock_session.run.call_args[1]
+        assert "MATCH (m)-[r:ABOUT]->(e)" in cypher
+        assert "SET r.valid_to = $valid_to" in cypher
+        assert params["valid_to"] == "2026-03-26T12:00:00+00:00"
+
+    def test_increment_contradiction_updates_counter_only(self):
+        """increment_contradiction increments contradiction_count without touching valid_to."""
+        writer, _, mock_session = _make_writer()
+
+        writer.increment_contradiction(
+            source_key="chat_mcp",
+            content_hash="abc123",
+            entity_name="agentic-memory",
+            entity_type="project",
+            rel_type="ABOUT",
+        )
+
+        cypher = mock_session.run.call_args[0][0]
+        assert "MATCH (m)-[r:ABOUT]->(e)" in cypher
+        assert "contradiction_count" in cypher
+        assert "valid_to" not in cypher
+
+
+class TestDedicatedRelationshipTemporalParameters:
+    """Tests for temporal kwargs on dedicated relationship write methods."""
+
+    def test_write_has_chunk_relationship_accepts_temporal_kwargs(self):
+        """write_has_chunk_relationship adds temporal properties and support tracking."""
+        writer, _, mock_session = _make_writer()
+
+        writer.write_has_chunk_relationship(
+            report_project_id="proj-1",
+            report_session_id="sess-1",
+            chunk_source_key="web_crawl4ai",
+            chunk_content_hash="chunk-1",
+            order=0,
+            valid_from="2026-03-25T12:00:00+00:00",
+            confidence=0.7,
+        )
+
+        cypher = mock_session.run.call_args[0][0]
+        params = mock_session.run.call_args[1]
+        assert "ON CREATE SET" in cypher
+        assert "rel.valid_from = $valid_from" in cypher
+        assert "rel.confidence = $confidence" in cypher
+        assert "rel.support_count = rel.support_count + 1" in cypher
+        assert params["confidence"] == 0.7
+
+    def test_write_part_of_relationship_accepts_temporal_kwargs(self):
+        """write_part_of_relationship adds temporal properties and support tracking."""
+        writer, _, mock_session = _make_writer()
+
+        writer.write_part_of_relationship(
+            chunk_source_key="web_crawl4ai",
+            chunk_content_hash="chunk-1",
+            report_project_id="proj-1",
+            report_session_id="sess-1",
+            valid_from="2026-03-25T12:00:00+00:00",
+            confidence=0.7,
+        )
+
+        cypher = mock_session.run.call_args[0][0]
+        assert "ON CREATE SET" in cypher
+        assert "rel.valid_from = $valid_from" in cypher
+        assert "rel.support_count = rel.support_count + 1" in cypher
+
+    def test_write_cites_relationship_accepts_temporal_kwargs(self):
+        """write_cites_relationship adds temporal properties and support tracking."""
+        writer, _, mock_session = _make_writer()
+
+        writer.write_cites_relationship(
+            finding_source_key="deep_research_agent",
+            finding_content_hash="finding-1",
+            source_url="https://example.com",
+            rel_props={
+                "url": "https://example.com",
+                "title": "Example",
+                "snippet": "snippet",
+                "accessed_at": "2026-03-25T12:00:00+00:00",
+                "source_agent": "claude",
+            },
+            valid_from="2026-03-25T12:00:00+00:00",
+            confidence=0.7,
+        )
+
+        cypher = mock_session.run.call_args[0][0]
+        params = mock_session.run.call_args[1]
+        assert "ON CREATE SET r += $rel_props" in cypher
+        assert "r.support_count = r.support_count + 1" in cypher
+        assert params["rel_props"]["valid_from"] == "2026-03-25T12:00:00+00:00"
+        assert params["rel_props"]["confidence"] == 0.7
+
+    def test_write_has_turn_relationship_accepts_generated_valid_from(self):
+        """write_has_turn_relationship generates valid_from when omitted."""
+        writer, _, mock_session = _make_writer()
+
+        writer.write_has_turn_relationship(
+            session_id="sess-abc",
+            turn_source_key="chat_mcp",
+            turn_content_hash="turn-1",
+            order=2,
+        )
+
+        params = mock_session.run.call_args[1]
+        cypher = mock_session.run.call_args[0][0]
+        assert isinstance(params["valid_from"], str)
+        assert "rel.valid_from = $valid_from" in cypher
+        assert "rel.support_count = rel.support_count + 1" in cypher
+
+    def test_write_part_of_turn_relationship_accepts_temporal_kwargs(self):
+        """write_part_of_turn_relationship adds temporal properties and support tracking."""
+        writer, _, mock_session = _make_writer()
+
+        writer.write_part_of_turn_relationship(
+            turn_source_key="chat_mcp",
+            turn_content_hash="turn-1",
+            session_id="sess-abc",
+            valid_from="2026-03-25T12:00:00+00:00",
+            confidence=0.6,
+        )
+
+        cypher = mock_session.run.call_args[0][0]
+        params = mock_session.run.call_args[1]
+        assert "ON CREATE SET" in cypher
+        assert "rel.valid_from = $valid_from" in cypher
+        assert "rel.support_count = rel.support_count + 1" in cypher
+        assert params["confidence"] == 0.6
 
 
 class TestGraphWriterExistingMethodsUnchanged:

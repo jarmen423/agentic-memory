@@ -3,18 +3,29 @@ import { describe, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
 // Pure logic mirrored from adapters/base.js.
-function extract_session_id() {
-  return null;
+function extract_session_id(pathname, regex_str) {
+  const match = pathname.match(new RegExp(regex_str));
+  return match ? match[1] : `fallback-${Date.now()}`;
 }
 
-function make_debounce(callback) {
+function make_debounce(callback, delay_ms) {
+  let timer = null;
+
   return function debounced() {
-    callback();
+    clearTimeout(timer);
+    timer = setTimeout(callback, delay_ms);
   };
 }
 
-function query_first() {
-  return null;
+function query_first(selector_list, doc) {
+  if (!selector_list) {
+    return null;
+  }
+
+  return selector_list
+    .split(",")
+    .map((selector) => doc.querySelector(selector.trim()))
+    .find((element) => element != null) || null;
 }
 
 function make_doc(matches = {}) {
@@ -82,7 +93,7 @@ describe("make_debounce", () => {
     assert.equal(call_count, 1);
   });
 
-  test("does not fire before 800ms has elapsed", async () => {
+  test("fires after 800ms for a single call and not before", async () => {
     let call_count = 0;
     const debounced = make_debounce(() => {
       call_count += 1;

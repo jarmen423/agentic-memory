@@ -93,33 +93,17 @@ Plans:
 
 ---
 
-## Phase 3: Web Research Scheduling *(Deferred — post-v1)*
+## Phase 3: Web Research Scheduling *(Complete — folded into Phase 7)*
 
-**Status:** Deferred. Classified as a research agent extension, not core agentic memory infrastructure. Will be revisited after Phase 7 (Cross-Module Integration). Current phase advances to Phase 4.
+**Status:** Done. The coverage tracker and topic-steering logic are superseded by the temporal KG (Phase 7) which naturally tracks what has been researched via temporal edges. The remaining deliverables — cron trigger, prompt template system, and simplified LLM variable substitution — are incorporated into Phase 7 scope. All Phase 3 success criteria are satisfied by the combination of Phase 7 (temporal coverage graph + scheduling) and Phase 9 (PPR-guided coverage gap retrieval).
 
-**Goal:** Smart automated research pipeline — set a research template, system runs it on a schedule with LLM-driven variation, building cumulative knowledge over time.
-
-**Deliverables:**
-- Prompt template system with variable placeholders (e.g. `{topic}`, `{angle}`, `{timeframe}`)
-- LLM-driven variable substitution each run: reads existing research graph + conversation history to select variable values that explore new angles, avoids repeating covered topics
-- Topic coverage tracker: graph-based record of what has been researched, used to steer future runs
-- Schedule management: cron-based execution, configurable frequency (daily, weekly, custom)
-- Research session orchestrator: template → variable fill → search → ingest → update coverage
-- Circuit breakers: rate limit handling, cost caps, graceful degradation on API failures
-- MCP tools: `schedule_research`, `run_research_session`, `list_research_schedules`
-- CLI commands: `web-schedule`, `web-run-research`
-
-**Success Criteria:**
-- User defines a research template once; system runs autonomously on schedule
-- Each run produces meaningfully different queries based on what's already in the graph
-- Coverage tracker correctly identifies and avoids already-researched topics
-- Failed runs (API errors, rate limits) are logged and retried gracefully
-- Research output is cumulative — graph grows richer over time without duplication
-
-**Key Risks:**
-- LLM variable substitution quality — prompt engineering for consistent, useful variation
-- Cost management for automated LLM calls on schedule
-- Scheduler library choice (APScheduler vs system cron vs custom)
+**Original deliverables absorbed into Phase 7:**
+- Prompt template system with variable placeholders → Phase 7
+- LLM-driven variable substitution (reads temporal KG for coverage) → Phase 7
+- Topic coverage tracker → replaced by temporal edge graph in Phase 7
+- Schedule management (cron trigger) → Phase 7
+- MCP tools: `schedule_research`, `run_research_session`, `list_research_schedules` → Phase 7
+- CLI commands: `web-schedule`, `web-run-research` → Phase 7
 
 ---
 
@@ -223,30 +207,130 @@ Plans:
 
 ---
 
-## Phase 7: Cross-Module Integration & Hardening
+## Phase 7: Temporal Schema + Claim Extraction + Research Scheduling
 
-**Goal:** Unified agent interface across all three modules, Nvidia Nemotron embedding support, production hardening.
+**Goal:** Add time as a first-class dimension to the knowledge graph. Extend all Neo4j relationships with validity intervals, upgrade entity NER to full SPO triple extraction, and deliver the research scheduling capability originally scoped in Phase 3 — now powered by the temporal coverage graph instead of a custom tracker.
 
 **Deliverables:**
-- Unified MCP router: single server aggregates code + web + conversation results
-- Cross-module search: `search_all_memory` queries all databases, merges and ranks results
+
+*Temporal schema (Neo4j):*
+- Add `valid_from`, `valid_to`, `confidence`, `support_count`, `contradiction_count` as first-class properties on all relationship types in Neo4j — on edges, not nodes
+- Extend `GraphWriter` with temporal relationship methods (`write_temporal_relationship`, `update_relationship_validity`, `increment_contradiction`)
+- Update all three ingestion pipelines (code, web, conversation) to populate temporal fields at write time
+- MCP tools gain temporal filter parameters (`as_of`, `valid_at`, time-range) on existing search tools
+
+*Claim extraction (upgrade entity NER → SPO triples):*
+- New `ClaimExtractionService` using Groq: produces `(subject_entity, predicate, object_entity, valid_from, valid_to)` triples from text, not just entity name/type lists
+- Predicate catalog: typed relation labels aligned to existing relationship taxonomy (`WORKS_AT`, `KNOWS`, `RESEARCHED`, `REFERENCES`, etc.) — extensible via config
+- Update `EntityExtractionService` to call claim extraction as secondary pass; existing entity NER preserved
+
+*Research scheduling (Phase 3 remnants):*
+- Prompt template system with variable placeholders (e.g. `{topic}`, `{angle}`, `{timeframe}`)
+- `ResearchScheduler`: cron/interval trigger (APScheduler) → fill template variables via LLM call that reads temporal KG for coverage context → Brave Search → `ResearchIngestionPipeline`
+- LLM variable fill reads the temporal graph (what predicates exist, what topics have recent edges) to steer toward uncovered angles
+- MCP tools: `schedule_research`, `run_research_session`, `list_research_schedules`
+- CLI commands: `web-schedule`, `web-run-research`
+- Circuit breakers: rate limit handling, cost caps, graceful degradation on API failures
+
+**Success Criteria:**
+- All ingested relationships in Neo4j carry `valid_from` and `confidence` properties
+- `ClaimExtractionService` produces SPO triples from sample conversation turns and research findings
+- `web-schedule` creates a recurring schedule; `web-run-research` triggers a manual run
+- Each scheduled run produces queries that explore different angles than prior runs (verified via temporal edge inspection)
+- MCP `search_conversations` and `search_web_memory` accept `as_of` parameter and filter accordingly
+
+**Key Risks:**
+- SPO triple extraction quality — predicate normalization across sessions is hard; start with a closed predicate catalog
+- Temporal backfill — existing Phase 1-6 data has no `valid_from`; handle gracefully (use `ingested_at` as fallback)
+- APScheduler persistence — schedule state survives server restarts (use SQLite job store)
+
+---
+
+## Phase 8: SpacetimeDB Maintenance Layer
+
+**Goal:** Add an autonomous temporal maintenance engine. SpacetimeDB runs inside-the-database maintenance (decay, pruning, archival) via scheduled reducers, ensuring the temporal graph stays consistent and performant without external orchestration. Neo4j receives only validated, curated edges via a subscription-based sync worker.
+
+**Deliverables:**
+- `packages/am-temporal-kg/` — TypeScript SpacetimeDB module
+  - Tables: `Node`, `Edge` (with `valid_from_us`/`valid_to_us` as identity fields), `Evidence`, `EdgeEvidence`, `EdgeStats` (Welford online variance), `EdgeArchive`, `MaintenanceJob`
+  - Reducers: `upsert_node`, `ingest_temporal_edge`, `check_contradictions_on_insert`
+  - Scheduled reducers (via schedule tables): `nightly_decay` (update `relevance` scores), `archive_expired` (move dead edges to `EdgeArchive`), `mdl_prune` (suppress high-variance contradictory edges)
+  - `edge_id` = `hash(project_id, subj_id, pred, obj_id, valid_from_us, valid_to_us)` — time interval is part of edge identity
+- `packages/am-sync-neo4j/` — TypeScript sync worker
+  - Subscribes to SpacetimeDB `Edge`, `Node`, `Evidence`, `EdgeArchive` tables
+  - On insert/update/delete: applies idempotent Cypher MERGE to Neo4j
+  - Checkpoint system for replay protection
+- **Shadow mode**: SpacetimeDB writes run in parallel with existing Neo4j writes; retrieval unchanged until Phase 9
+
+**Success Criteria:**
+- `spacetime publish` deploys the module cleanly
+- Ingesting a temporal edge via reducer creates the correct row with hash-based `edge_id`
+- Contradictory edges (same subj/pred, different obj, overlapping interval) increment `contradiction_count`
+- Nightly maintenance job archives edges with `valid_to_us < now`; `EdgeStats.n` increments correctly on each ingest
+- Sync worker propagates a new Edge row to Neo4j within 5 seconds of insertion
+- Main Python test suite still passes (shadow mode — no retrieval regression)
+
+**Key Risks:**
+- SpacetimeDB procedures API is beta — `withTx` semantics may change; pin SDK version
+- Sync worker replay correctness — idempotent edge ids (hash includes time interval) make MERGE safe
+- Over-pruning: MDL thresholds conservative by default; archive rather than hard delete
+
+---
+
+## Phase 9: Temporal PPR Retrieval + Benchmark
+
+**Goal:** Replace pure vector similarity search with Personalized PageRank guided by temporal weighting. Validate token reduction and temporal consistency against the baseline vector search on real conversation and research traces.
+
+**Deliverables:**
+- SpacetimeDB procedure: `temporal_ppr_retrieve(project_id, seed_node_ids, as_of_us, max_edges, max_hops, alpha, half_life_hours, min_relevance)`
+  - Bounded PPR over local subgraph (BFS expansion + indexed adjacency lookups)
+  - Temporal decay: `w = confidence × 2^(−Δt / half_life)` where Δt = distance from `as_of` to edge validity interval
+  - Returns ranked edges with `subj_id`, `pred`, `obj_id`, `valid_from_us`, `valid_to_us`, `relevance`, `confidence`
+- Update MCP tools `get_conversation_context` and `search_web_memory` to use temporal PPR as primary retrieval; vector search as fallback
+- `bench/` harness:
+  - `build_temporal_kg.ts` — replay captured conversation traces through ingest reducers
+  - `run_queries.ts` — same query set against baseline (vector) and temporal PPR
+  - `measure_tokens.ts` — count LLM context tokens for each result set
+  - `report_results.ts` — markdown summary with token reduction %, temporal consistency rate
+
+**Success Criteria:**
+- `temporal_ppr_retrieve` returns non-empty results for a seeded query on a populated SpacetimeDB instance
+- PPR results contain only edges valid within ±window of `as_of` time (no temporally inconsistent evidence)
+- Benchmark shows measurable token reduction vs baseline vector search on real traces (target: validate STAR-RAG's directional claim)
+- `get_conversation_context` latency p95 ≤ 200ms on 10k+ edge graph
+- Existing test suites still pass (backward compatible via fallback)
+
+**Key Risks:**
+- PPR latency on large graphs — bounded BFS mitigates; tune `max_hops` and `max_nodes` per workload
+- Token reduction may not reach 97% on all query types — benchmark first, tune thresholds
+- SpacetimeDB procedure `withTx` determinism requirement — no external I/O inside procedure
+
+---
+
+## Phase 10: Cross-Module Integration & Hardening *(original Phase 7)*
+
+**Goal:** Unified agent interface across all three modules, now temporal-aware throughout. Nvidia Nemotron embedding support, production hardening, documentation.
+
+**Deliverables:**
+- Unified MCP router: single server aggregates code + web + conversation results with temporal PPR ranking
+- Cross-module search: `search_all_memory` queries all three modules, merges and re-ranks via temporal relevance
 - Nvidia Nemotron embedding service (NIM API, OpenAI-compatible — ~20 lines via existing abstraction)
 - Structured logging and observability across all modules
 - Error recovery and retry logic standardized across modules
-- Documentation: setup guides, MCP tool reference, provider integration guides
-- End-to-end integration tests across all three modules
+- Documentation: setup guides, MCP tool reference, SpacetimeDB deployment guide, provider integration guides
+- End-to-end integration tests across all modules including temporal retrieval paths
 
 **Success Criteria:**
 - Single MCP server exposes all tools from all three modules
-- `search_all_memory` returns coherent ranked results across code, web, and conversation content
-- Nvidia Nemotron can be selected as embedding model via config
-- All three modules pass integration tests end-to-end
-- Setup guide enables a new user to have all three modules running in under 30 minutes
+- `search_all_memory` returns temporally coherent ranked results across code, web, and conversation content
+- Nvidia Nemotron selectable as embedding model via config
+- All modules pass integration tests end-to-end including temporal PPR paths
+- Setup guide enables a new user to have all modules + SpacetimeDB running in under 30 minutes
 
 **Key Risks:**
-- Cross-module result ranking/merging quality
+- Cross-module temporal ranking (different validity semantics for code vs conversation vs research)
 - MCP server routing complexity with many tools
-- Neo4j Community Edition limits on concurrent connections across 3 databases
+- SpacetimeDB deployment complexity for new users
 
 ---
 
@@ -255,31 +339,39 @@ Plans:
 ```
 Phase 1 (Foundation)
     └── Phase 2 (Web Research Core + REST API foundation)
-            ├── Phase 3 (Web Research Scheduling)
             └── Phase 4 (Conversation Memory Core)
-                    ├── Phase 5 (am-proxy)
-                    └── Phase 6 (am-ext)
-Phase 2 + Phase 4
-    └── Phase 7 (Cross-Module Integration & Hardening)
+                    ├── Phase 5 (am-proxy)          ─┐
+                    └── Phase 6 (am-ext) ─────────────┤ parallel
+                                                       │
+Phase 2 + Phase 4 + Phase 5                           │
+    └── Phase 7 (Temporal Schema + Claim Extraction   ─┘ (6 & 7 parallel)
+                + Research Scheduling)
+            └── Phase 8 (SpacetimeDB Maintenance Layer)
+                    └── Phase 9 (Temporal PPR Retrieval + Benchmark)
+                            └── Phase 10 (Cross-Module Integration & Hardening)
 ```
 
-Phases 3 and 4 can run in parallel after Phase 2 completes.
-Phases 5 and 6 can run in parallel after Phase 4 completes.
-Phase 7 depends on all prior phases.
+Phase 6 (am-ext) and Phase 7 (Temporal Schema) run in parallel — no shared code.
+Phases 8, 9, 10 are strictly sequential.
 
 ---
 
-## Open Research Questions (Pre-Implementation)
+## Branch Strategy
+
+- `v1-baseline` — frozen at end of Phase 5; original v1 (no temporal layer). Finish with Phase 6 + original Phase 7 for A/B comparison.
+- `main` — full v1 with temporal GraphRAG (Phases 6-10 as above).
+
+---
+
+## Open Research Questions
 
 | Question | Blocks | Priority |
 |----------|--------|----------|
-| Gemini embedding API: model name, dimensionality, auth (Vertex AI vs AI Studio) | Phase 1, 2 | Critical |
-| Neo4j Community Edition: multi-database support on single instance | Phase 1 | Critical |
-| Vercel agent-browser: current API surface, install method, JS rendering reliability | Phase 2 | High |
-| Crawl4AI: current stable version, PDF support status | Phase 2 | High |
-| Brave Search: rate limits, response schema, free tier constraints | Phase 2, 3 | High |
-| Cursor/Windsurf/ChatGPT: available hooks or integration points for conversation capture | Phase 4 | Medium |
-| APScheduler vs system cron vs custom: best fit for research scheduling | Phase 3 | Medium |
+| SpacetimeDB TypeScript module SDK version to pin | Phase 8 | Critical |
+| SpacetimeDB deployment: maincloud vs self-hosted for dev | Phase 8 | High |
+| Predicate catalog: closed set or open with normalization? | Phase 7 | High |
+| APScheduler SQLite job store: persistence across Docker restarts | Phase 7 | Medium |
+| PPR half-life default: what values work for conversation vs research memory? | Phase 9 | Medium |
 
 ---
 *Last updated: 2026-03-21 after passive ingestion spec integration (am-proxy Phase 5, am-ext Phase 6; former Phase 5 renumbered to Phase 7; total phases: 7)*

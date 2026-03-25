@@ -1,12 +1,12 @@
 ---
 gsd_state_version: 1.0
 milestone: v1.0
-milestone_name: — Full Multi-Module Memory System
+milestone_name: — Full Multi-Module Memory System with Temporal GraphRAG
 current_phase: 6
-status: unknown
+status: active
 last_updated: "2026-03-25T00:00:00Z"
 progress:
-  total_phases: 7
+  total_phases: 10
   completed_phases: 5
   total_plans: 14
   completed_plans: 14
@@ -15,17 +15,27 @@ progress:
 # Agentic Memory — Project State
 
 **Last Updated:** 2026-03-25
-**Current Phase:** 6
-**Phase Status:** Not Started
-**Last Session Stopped At:** Phase 5 verified — ready to begin Phase 6
+**Current Phase:** 6 + 7 (parallel execution)
+**Phase Status:** Not Started — planning in progress
+**Last Session Stopped At:** Roadmap restructured for temporal GraphRAG. v1-baseline branch created. Phase 6 (am-ext) + Phase 7 (Temporal Schema + Claim Extraction + Research Scheduling) execute in parallel next.
 
 ---
 
 ## Active Phase
 
-**Phase 6: am-ext (Browser Extension passive capture)**
+**Phase 6: am-ext (Browser Extension)** ← parallel track A
+**Phase 7: Temporal Schema + Claim Extraction + Research Scheduling** ← parallel track B
 
-**Next Action:** Begin Phase 6 context gathering and planning
+**Next Action:** Plan and execute Phase 6 + Phase 7 simultaneously
+
+---
+
+## Branch Strategy
+
+| Branch | Description |
+|--------|-------------|
+| `main` | Full v1 with temporal GraphRAG (Phases 6-10) — active development |
+| `v1-baseline` | Frozen at Phase 5 completion — finish original Phase 6 + 7 here for A/B comparison |
 
 ---
 
@@ -35,11 +45,14 @@ progress:
 |-------|------|--------|
 | 1 | Foundation | Complete |
 | 2 | Web Research Core | Complete |
-| 3 | Web Research Scheduling | Deferred (post-v1) |
+| 3 | Web Research Scheduling | Complete (folded into Phase 7) |
 | 4 | Conversation Memory Core | Complete |
 | 5 | am-proxy (ACP Proxy) | Complete |
 | 6 | am-ext (Browser Extension) | Not Started |
-| 7 | Cross-Module Integration & Hardening | Not Started |
+| 7 | Temporal Schema + Claim Extraction + Research Scheduling | Not Started |
+| 8 | SpacetimeDB Maintenance Layer | Not Started |
+| 9 | Temporal PPR Retrieval + Benchmark | Not Started |
+| 10 | Cross-Module Integration & Hardening | Not Started |
 
 ---
 

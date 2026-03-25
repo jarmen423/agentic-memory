@@ -841,7 +841,7 @@ def memory_ingest_research(
 @mcp.tool()
 @rate_limit
 @log_tool_call
-def search_web_memory(query: str, limit: int = 5) -> str:
+def search_web_memory(query: str, limit: int = 5, as_of: str | None = None) -> str:
     """
     Search web research memory for relevant reports, findings, and research content.
 
@@ -851,6 +851,7 @@ def search_web_memory(query: str, limit: int = 5) -> str:
     Args:
         query: Natural language search query
         limit: Maximum number of results (default: 5)
+        as_of: Optional ISO-8601 cutoff for temporal filtering
 
     Returns:
         Formatted string with search results including text, source, and scores
@@ -877,6 +878,7 @@ def search_web_memory(query: str, limit: int = 5) -> str:
         node.confidence AS confidence,
         node.source_key AS source_key,
         node.project_id AS project_id,
+        node.ingested_at AS ingested_at,
         labels(node) AS node_labels,
         score
     ORDER BY score DESC
@@ -889,6 +891,13 @@ def search_web_memory(query: str, limit: int = 5) -> str:
                 limit=safe_limit,
                 embedding=embedding,
             ).data()
+        if as_of is not None:
+            # Phase 7: node-level ingested_at heuristic. Full graph-level filter in Phase 9.
+            results = [
+                result
+                for result in results
+                if (result.get("ingested_at") or "") <= as_of
+            ]
 
         if not results:
             return "No relevant research found."
@@ -981,9 +990,17 @@ def brave_search(query: str, count: int = 10) -> str:
 # Import here (not at module top) to avoid any circular-import risk.
 # register_conversation_tools() decorates its inner functions with @mcp.tool()
 # so registration happens at import time of app.py.
-from codememory.server.tools import register_conversation_tools  # noqa: E402,PLC0415
+from codememory.server.tools import (  # noqa: E402,PLC0415
+    register_conversation_tools,
+    register_schedule_tools,
+)
 
 register_conversation_tools(mcp)
+register_schedule_tools(
+    mcp,
+    groq_api_key=os.getenv("GROQ_API_KEY"),
+    brave_api_key=os.getenv("BRAVE_SEARCH_API_KEY") or os.getenv("BRAVE_API_KEY"),
+)
 
 
 def run_server(port: int, repo_root: Optional[Path] = None):

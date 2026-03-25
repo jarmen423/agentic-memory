@@ -1,5 +1,6 @@
 from typing import Any, Dict, List, Optional
 import asyncio
+import json
 import logging
 import os
 from functools import lru_cache
@@ -9,6 +10,8 @@ from codememory.chat.pipeline import ConversationIngestionPipeline
 from codememory.core.connection import ConnectionManager
 from codememory.core.embedding import EmbeddingService
 from codememory.core.entity_extraction import EntityExtractionService
+from codememory.core.scheduler import ResearchScheduler
+from codememory.web.pipeline import ResearchIngestionPipeline
 from codememory.ingestion.graph import KnowledgeGraphBuilder
 
 logger = logging.getLogger(__name__)
@@ -22,13 +25,51 @@ def _get_mcp_conversation_pipeline() -> ConversationIngestionPipeline:
     get_conversation_pipeline() — MCP server and am-server are distinct processes.
     """
     conn = ConnectionManager(
-        uri=os.environ["NEO4J_URI"],
-        user=os.environ["NEO4J_USER"],
-        password=os.environ["NEO4J_PASSWORD"],
+        uri=os.getenv("NEO4J_URI", "bolt://localhost:7687"),
+        user=os.getenv("NEO4J_USER") or os.getenv("NEO4J_USERNAME", "neo4j"),
+        password=os.getenv("NEO4J_PASSWORD", "password"),
     )
     embedder = EmbeddingService(provider="gemini", api_key=os.environ["GEMINI_API_KEY"])
     extractor = EntityExtractionService(api_key=os.environ["GROQ_API_KEY"])
     return ConversationIngestionPipeline(conn, embedder, extractor)
+
+
+@lru_cache(maxsize=1)
+def _get_mcp_research_pipeline() -> ResearchIngestionPipeline | None:
+    """Cached ResearchIngestionPipeline for MCP tool registration."""
+    google_api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    groq_api_key = os.getenv("GROQ_API_KEY")
+    if not google_api_key or not groq_api_key:
+        logger.warning("Research MCP pipeline unavailable: missing Google/Groq API key.")
+        return None
+
+    conn = ConnectionManager(
+        uri=os.getenv("NEO4J_URI", "bolt://localhost:7687"),
+        user=os.getenv("NEO4J_USER") or os.getenv("NEO4J_USERNAME", "neo4j"),
+        password=os.getenv("NEO4J_PASSWORD", "password"),
+    )
+    embedder = EmbeddingService(provider="gemini", api_key=google_api_key)
+    extractor = EntityExtractionService(api_key=groq_api_key)
+    return ResearchIngestionPipeline(conn, embedder, extractor)
+
+
+@lru_cache(maxsize=1)
+def _get_mcp_research_scheduler() -> ResearchScheduler | None:
+    """Cached ResearchScheduler started alongside the MCP tool layer."""
+    pipeline = _get_mcp_research_pipeline()
+    groq_api_key = os.getenv("GROQ_API_KEY")
+    brave_api_key = os.getenv("BRAVE_SEARCH_API_KEY") or os.getenv("BRAVE_API_KEY")
+    if pipeline is None or not groq_api_key or not brave_api_key:
+        logger.warning("Research scheduler unavailable: missing pipeline or API keys.")
+        return None
+
+    return ResearchScheduler(
+        connection_manager=pipeline._conn,  # type: ignore[attr-defined]
+        groq_api_key=groq_api_key,
+        groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+        brave_api_key=brave_api_key,
+        pipeline=pipeline,
+    )
 
 class Toolkit:
     """
@@ -156,6 +197,7 @@ def register_conversation_tools(mcp: object) -> None:  # type: ignore[type-arg]
         project_id: str | None = None,
         role: str | None = None,
         limit: int = 10,
+        as_of: str | None = None,
     ) -> list[dict]:
         """Semantic search over conversation turn embeddings.
 
@@ -167,7 +209,7 @@ def register_conversation_tools(mcp: object) -> None:  # type: ignore[type-arg]
 
         Returns:
             List of dicts: [{session_id, turn_index, role, content,
-                source_agent, timestamp, entities, score}]
+                source_agent, timestamp, ingested_at, entities, score}]
         """
         pipeline = _get_mcp_conversation_pipeline()
         conn = pipeline._conn  # type: ignore[attr-defined]
@@ -192,6 +234,7 @@ def register_conversation_tools(mcp: object) -> None:  # type: ignore[type-arg]
                         "    node.content        AS content, "
                         "    node.source_agent   AS source_agent, "
                         "    node.timestamp      AS timestamp, "
+                        "    node.ingested_at    AS ingested_at, "
                         "    node.entities       AS entities, "
                         "    score "
                         "ORDER BY score DESC "
@@ -204,7 +247,14 @@ def register_conversation_tools(mcp: object) -> None:  # type: ignore[type-arg]
                         role=role,
                         limit=limit,
                     )
-                    return [dict(r) for r in result]
+                    rows = [dict(r) for r in result]
+                    if as_of is not None:
+                        rows = [
+                            row
+                            for row in rows
+                            if (row.get("ingested_at") or "") <= as_of
+                        ]
+                    return rows
             except Exception as exc:
                 logger.error("search_conversations failed: %s", exc)
                 return []
@@ -224,6 +274,7 @@ def register_conversation_tools(mcp: object) -> None:  # type: ignore[type-arg]
         project_id: str,
         limit: int = 5,
         include_session_context: bool = True,
+        as_of: str | None = None,
     ) -> dict:
         """Retrieve structured conversation context for LLM grounding.
 
@@ -264,6 +315,7 @@ def register_conversation_tools(mcp: object) -> None:  # type: ignore[type-arg]
                         "    node.turn_index AS turn_index, "
                         "    node.role       AS role, "
                         "    node.content    AS content, "
+                        "    node.ingested_at AS ingested_at, "
                         "    score "
                         "ORDER BY score DESC "
                         "LIMIT $limit"
@@ -275,6 +327,12 @@ def register_conversation_tools(mcp: object) -> None:  # type: ignore[type-arg]
                         limit=limit,
                     )
                     matched_turns = [dict(r) for r in result]
+                    if as_of is not None:
+                        matched_turns = [
+                            turn
+                            for turn in matched_turns
+                            if (turn.get("ingested_at") or "") <= as_of
+                        ]
 
                 turns_with_context = []
                 for turn in matched_turns:
@@ -297,7 +355,8 @@ def register_conversation_tools(mcp: object) -> None:  # type: ignore[type-arg]
                                 "RETURN "
                                 "    t.turn_index AS turn_index, "
                                 "    t.role       AS role, "
-                                "    t.content    AS content "
+                                "    t.content    AS content, "
+                                "    t.ingested_at AS ingested_at "
                                 "ORDER BY t.turn_index"
                             )
                             ctx_result = session.run(
@@ -308,6 +367,12 @@ def register_conversation_tools(mcp: object) -> None:  # type: ignore[type-arg]
                                 matched_turn_index=t_idx,
                             )
                             context_window = [dict(r) for r in ctx_result]
+                            if as_of is not None:
+                                context_window = [
+                                    row
+                                    for row in context_window
+                                    if (row.get("ingested_at") or "") <= as_of
+                                ]
 
                     turn_data["context_window"] = context_window
                     turns_with_context.append(turn_data)
@@ -390,3 +455,126 @@ def register_conversation_tools(mcp: object) -> None:  # type: ignore[type-arg]
         except Exception as exc:
             logger.error("add_message failed: %s", exc)
             return {"error": str(exc)}
+
+
+def register_schedule_tools(
+    mcp: object,  # type: ignore[type-arg]
+    connection_manager: ConnectionManager | None = None,
+    groq_api_key: str | None = None,
+    brave_api_key: str | None = None,
+    pipeline: ResearchIngestionPipeline | None = None,
+) -> None:
+    """Register recurring research scheduling tools on the provided MCP instance."""
+
+    scheduler_singleton: ResearchScheduler | None = None
+
+    def _get_scheduler():
+        nonlocal scheduler_singleton
+        if scheduler_singleton is not None:
+            return scheduler_singleton
+
+        if connection_manager and pipeline and groq_api_key and brave_api_key:
+            scheduler_singleton = ResearchScheduler(
+                connection_manager=connection_manager,
+                groq_api_key=groq_api_key,
+                groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+                brave_api_key=brave_api_key,
+                pipeline=pipeline,
+            )
+            return scheduler_singleton
+
+        scheduler_singleton = _get_mcp_research_scheduler()
+        return scheduler_singleton
+
+    _get_scheduler()
+
+    @mcp.tool(  # type: ignore[attr-defined]
+        description=(
+            "Create a recurring research schedule backed by APScheduler and Neo4j. "
+            "Use this when you want ongoing automated research for a project."
+        )
+    )
+    async def schedule_research(
+        template: str,
+        variables: list[str],
+        cron_expr: str,
+        project_id: str,
+        max_runs_per_day: int = 5,
+    ) -> str:
+        """Create and persist a recurring research schedule."""
+        scheduler = _get_scheduler()
+        if scheduler is None:
+            return json.dumps(
+                {"status": "error", "error": "Research scheduler is not configured."}
+            )
+
+        loop = asyncio.get_event_loop()
+
+        def _run() -> str:
+            return scheduler.create_schedule(
+                template=template,
+                variables=variables,
+                cron_expr=cron_expr,
+                project_id=project_id,
+                max_runs_per_day=max_runs_per_day,
+            )
+
+        schedule_id = await loop.run_in_executor(None, _run)
+        return json.dumps({"status": "ok", "schedule_id": schedule_id})
+
+    @mcp.tool(  # type: ignore[attr-defined]
+        description=(
+            "Run a recurring research session now. Use an existing schedule_id or provide "
+            "an ad hoc project/template/variables tuple."
+        )
+    )
+    async def run_research_session(
+        schedule_id: str | None = None,
+        project_id: str | None = None,
+        template: str | None = None,
+        variables: list[str] | None = None,
+    ) -> str:
+        """Trigger one scheduled or ad hoc research session."""
+        if not schedule_id and not (project_id and template):
+            return json.dumps(
+                {
+                    "status": "error",
+                    "error": "Provide schedule_id or (project_id + template).",
+                }
+            )
+
+        scheduler = _get_scheduler()
+        if scheduler is None:
+            return json.dumps(
+                {"status": "error", "error": "Research scheduler is not configured."}
+            )
+
+        loop = asyncio.get_event_loop()
+
+        def _run() -> dict[str, Any]:
+            return scheduler.run_research_session(
+                schedule_id=schedule_id,
+                ad_hoc_template=template,
+                ad_hoc_variables=variables,
+                project_id=project_id,
+            )
+
+        result = await loop.run_in_executor(None, _run)
+        return json.dumps(result)
+
+    @mcp.tool(  # type: ignore[attr-defined]
+        description=(
+            "List the stored recurring research schedules for a project."
+        )
+    )
+    async def list_research_schedules(project_id: str) -> str:
+        """List recurring research schedules for a project."""
+        scheduler = _get_scheduler()
+        if scheduler is None:
+            return json.dumps(
+                {"status": "error", "error": "Research scheduler is not configured."}
+            )
+
+        loop = asyncio.get_event_loop()
+        schedules = await loop.run_in_executor(None, scheduler.list_schedules, project_id)
+        return json.dumps({"status": "ok", "schedules": schedules})

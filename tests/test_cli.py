@@ -731,6 +731,7 @@ def test_stub_commands_are_registered_in_parser():
     from unittest.mock import Mock, patch
 
     # Commands that can be invoked without required args — exit != 2 means registered.
+    # Commands with required args are invoked below with minimal valid placeholders.
     # chat-ingest is excluded: it requires --project-id, so argparse exits 2 by design.
     mock_conn = Mock()
     mock_session = Mock()
@@ -748,6 +749,20 @@ def test_stub_commands_are_registered_in_parser():
             # 2 = argparse "unrecognized command" — anything else means it's registered
             assert exc.code != 2, (
                 f"Command '{cmd}' exited with code {exc.code} — likely not registered"
+            )
+
+    commands_with_args = [
+        ["web-schedule", "--template", "Research {topic}", "--variables", "topic", "--cron", "0 9 * * 1", "--project-id", "proj1"],
+        ["web-run-research", "--project-id", "proj1", "--template", "Research {topic}", "--variables", "topic"],
+    ]
+    for argv in commands_with_args:
+        try:
+            with _mock.patch("sys.argv", ["codememory", *argv]), \
+                 patch.object(cli, "_resolve_scheduler_dependencies", Mock(side_effect=SystemExit(0))):
+                cli.main()
+        except SystemExit as exc:
+            assert exc.code != 2, (
+                f"Command '{argv[0]}' exited with code {exc.code} — likely not registered"
             )
 
 
@@ -899,6 +914,80 @@ def test_web_search_stub_prints_not_implemented(capsys):
     assert exc.value.code == 0
     out = capsys.readouterr().out
     assert "Not yet implemented" in out
+
+
+def test_web_schedule_calls_scheduler(capsys):
+    """web-schedule instantiates ResearchScheduler and prints the new schedule id."""
+    from unittest.mock import Mock, patch
+
+    mock_pipeline = Mock()
+    mock_pipeline._conn = Mock()
+    mock_scheduler = Mock()
+    mock_scheduler.create_schedule.return_value = "sched-1"
+
+    with patch.object(
+        cli,
+        "_resolve_scheduler_dependencies",
+        Mock(return_value=(mock_pipeline, "groq-key", "brave-key")),
+    ), patch("codememory.core.scheduler.ResearchScheduler", Mock(return_value=mock_scheduler)):
+        cli.cmd_web_schedule(
+            argparse.Namespace(
+                template="Research {topic}",
+                variables=["topic"],
+                cron_expr="0 9 * * 1",
+                project_id="proj1",
+                max_runs_per_day=5,
+            )
+        )
+
+    mock_scheduler.create_schedule.assert_called_once_with(
+        template="Research {topic}",
+        variables=["topic"],
+        cron_expr="0 9 * * 1",
+        project_id="proj1",
+        max_runs_per_day=5,
+    )
+    mock_scheduler.close.assert_called_once()
+    out = capsys.readouterr().out
+    assert "sched-1" in out
+
+
+def test_web_run_research_calls_scheduler_for_ad_hoc_run(capsys):
+    """web-run-research supports ad hoc execution without a schedule id."""
+    from unittest.mock import Mock, patch
+
+    mock_pipeline = Mock()
+    mock_pipeline._conn = Mock()
+    mock_scheduler = Mock()
+    mock_scheduler.run_research_session.return_value = {
+        "status": "ok",
+        "results": 1,
+        "query": "Research AI agents",
+    }
+
+    with patch.object(
+        cli,
+        "_resolve_scheduler_dependencies",
+        Mock(return_value=(mock_pipeline, "groq-key", "brave-key")),
+    ), patch("codememory.core.scheduler.ResearchScheduler", Mock(return_value=mock_scheduler)):
+        cli.cmd_web_run_research(
+            argparse.Namespace(
+                schedule_id=None,
+                project_id="proj1",
+                template="Research {topic}",
+                variables=["topic"],
+            )
+        )
+
+    mock_scheduler.run_research_session.assert_called_once_with(
+        schedule_id=None,
+        ad_hoc_template="Research {topic}",
+        ad_hoc_variables=["topic"],
+        project_id="proj1",
+    )
+    mock_scheduler.close.assert_called_once()
+    out = capsys.readouterr().out
+    assert '"status": "ok"' in out
 
 
 def test_migrate_temporal_runs_all_backfill_statements(capsys):

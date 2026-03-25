@@ -1064,6 +1064,100 @@ def cmd_web_search(args: argparse.Namespace) -> None:
     sys.exit(0)
 
 
+def _resolve_scheduler_dependencies() -> tuple[Any, str, str]:
+    """Build the shared dependencies required by research scheduler commands."""
+    google_api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    groq_api_key = os.getenv("GROQ_API_KEY")
+    brave_api_key = os.getenv("BRAVE_SEARCH_API_KEY") or os.getenv("BRAVE_API_KEY")
+    if not google_api_key:
+        print("web-schedule: GOOGLE_API_KEY or GEMINI_API_KEY environment variable required.")
+        sys.exit(1)
+    if not groq_api_key:
+        print("web-schedule: GROQ_API_KEY environment variable required.")
+        sys.exit(1)
+    if not brave_api_key:
+        print("web-schedule: BRAVE_SEARCH_API_KEY or BRAVE_API_KEY environment variable required.")
+        sys.exit(1)
+
+    neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+    neo4j_user = os.getenv("NEO4J_USER") or os.getenv("NEO4J_USERNAME", "neo4j")
+    password = os.getenv("NEO4J_PASSWORD", "password")
+
+    from codememory.core.connection import ConnectionManager  # noqa: PLC0415
+    from codememory.core.embedding import EmbeddingService  # noqa: PLC0415
+    from codememory.core.entity_extraction import EntityExtractionService  # noqa: PLC0415
+    from codememory.web.pipeline import ResearchIngestionPipeline  # noqa: PLC0415
+
+    conn = ConnectionManager(neo4j_uri, neo4j_user, password)
+    embedder = EmbeddingService(provider="gemini", api_key=google_api_key)
+    extractor = EntityExtractionService(api_key=groq_api_key)
+    pipeline = ResearchIngestionPipeline(conn, embedder, extractor)
+    return pipeline, groq_api_key, brave_api_key
+
+
+def cmd_web_schedule(args: argparse.Namespace) -> None:
+    """Create a recurring research schedule."""
+    from codememory.core.scheduler import ResearchScheduler  # noqa: PLC0415
+
+    pipeline, groq_api_key, brave_api_key = _resolve_scheduler_dependencies()
+    scheduler = ResearchScheduler(
+        connection_manager=pipeline._conn,  # type: ignore[attr-defined]
+        groq_api_key=groq_api_key,
+        groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+        brave_api_key=brave_api_key,
+        pipeline=pipeline,
+    )
+    try:
+        schedule_id = scheduler.create_schedule(
+            template=args.template,
+            variables=args.variables,
+            cron_expr=args.cron_expr,
+            project_id=args.project_id,
+            max_runs_per_day=args.max_runs_per_day,
+        )
+        print(f"web-schedule: created schedule {schedule_id}")
+    except Exception as e:
+        print(f"web-schedule failed: {e}")
+        sys.exit(1)
+    finally:
+        scheduler.close()
+
+
+def cmd_web_run_research(args: argparse.Namespace) -> None:
+    """Run a scheduled or ad hoc research session immediately."""
+    from codememory.core.scheduler import ResearchScheduler  # noqa: PLC0415
+
+    if not args.schedule_id and not (args.project_id and args.template):
+        print(
+            "web-run-research: provide --schedule-id or "
+            "(--project-id and --template, optionally --variables)."
+        )
+        sys.exit(1)
+
+    pipeline, groq_api_key, brave_api_key = _resolve_scheduler_dependencies()
+    scheduler = ResearchScheduler(
+        connection_manager=pipeline._conn,  # type: ignore[attr-defined]
+        groq_api_key=groq_api_key,
+        groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+        brave_api_key=brave_api_key,
+        pipeline=pipeline,
+        start_scheduler=False,
+    )
+    try:
+        result = scheduler.run_research_session(
+            schedule_id=args.schedule_id,
+            ad_hoc_template=args.template,
+            ad_hoc_variables=args.variables,
+            project_id=args.project_id,
+        )
+        print(f"web-run-research: {json.dumps(result)}")
+    except Exception as e:
+        print(f"web-run-research failed: {e}")
+        sys.exit(1)
+    finally:
+        scheduler.close()
+
+
 def cmd_chat_init(args: argparse.Namespace) -> None:
     """Initialize conversation memory: create vector indexes at correct dimensions.
 
@@ -1739,6 +1833,59 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
     web_ingest_parser.add_argument("url", nargs="?", help="URL to ingest")
     web_search_parser = subparsers.add_parser("web-search", help="Search web research memory")
     web_search_parser.add_argument("query", nargs="?", help="Search query")
+    web_schedule_parser = subparsers.add_parser(
+        "web-schedule",
+        help="Create a recurring research schedule",
+    )
+    web_schedule_parser.add_argument(
+        "--template",
+        required=True,
+        help="Research query template with {variable} placeholders",
+    )
+    web_schedule_parser.add_argument(
+        "--variables",
+        nargs="+",
+        required=True,
+        help="Variable names to fill via the scheduler LLM",
+    )
+    web_schedule_parser.add_argument(
+        "--cron",
+        dest="cron_expr",
+        required=True,
+        help="Cron expression, for example '0 9 * * 1'",
+    )
+    web_schedule_parser.add_argument(
+        "--project-id",
+        required=True,
+        help="Project identifier for the schedule",
+    )
+    web_schedule_parser.add_argument(
+        "--max-runs-per-day",
+        type=int,
+        default=5,
+        help="Maximum number of successful runs allowed for this schedule",
+    )
+    web_run_research_parser = subparsers.add_parser(
+        "web-run-research",
+        help="Trigger a research run (scheduled or ad hoc)",
+    )
+    web_run_research_parser.add_argument(
+        "--schedule-id",
+        help="Existing schedule UUID to run immediately",
+    )
+    web_run_research_parser.add_argument(
+        "--project-id",
+        help="Project ID for an ad hoc research run",
+    )
+    web_run_research_parser.add_argument(
+        "--template",
+        help="Ad hoc research query template",
+    )
+    web_run_research_parser.add_argument(
+        "--variables",
+        nargs="+",
+        help="Variable names to fill for an ad hoc research run",
+    )
     subparsers.add_parser(
         "migrate-temporal",
         help="Backfill temporal fields on all existing relationships (safe to re-run)",
@@ -1857,6 +2004,10 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
         cmd_web_ingest(args)
     elif args.command == "web-search":
         cmd_web_search(args)
+    elif args.command == "web-schedule":
+        cmd_web_schedule(args)
+    elif args.command == "web-run-research":
+        cmd_web_run_research(args)
     elif args.command == "migrate-temporal":
         cmd_migrate_temporal(args)
     elif args.command == "chat-init":

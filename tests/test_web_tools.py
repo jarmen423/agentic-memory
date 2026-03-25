@@ -265,6 +265,56 @@ class TestSearchWebMemory:
 
         assert "Error" in result
 
+    def test_search_web_memory_as_of_filters_future_results(self, monkeypatch):
+        """search_web_memory applies the Phase 7 ingested_at cutoff when as_of is provided."""
+        mock_pipeline = _make_mock_pipeline()
+        mock_pipeline._embedder.embed.return_value = [0.1] * 768
+
+        rows = [
+            {
+                "text": "Old research",
+                "score": 0.92,
+                "source_agent": "claude",
+                "research_question": "What changed?",
+                "confidence": "high",
+                "source_key": "deep_research_agent",
+                "project_id": "proj1",
+                "ingested_at": "2026-03-01T00:00:00+00:00",
+                "node_labels": ["Memory", "Research", "Finding"],
+            },
+            {
+                "text": "Future research",
+                "score": 0.88,
+                "source_agent": "claude",
+                "research_question": "What changed later?",
+                "confidence": "medium",
+                "source_key": "deep_research_agent",
+                "project_id": "proj1",
+                "ingested_at": "2026-03-20T00:00:00+00:00",
+                "node_labels": ["Memory", "Research", "Finding"],
+            },
+        ]
+        mock_run = Mock()
+        mock_run.data.return_value = rows
+        mock_session = Mock()
+        mock_session.run.return_value = mock_run
+        session_ctx = MagicMock()
+        session_ctx.__enter__ = Mock(return_value=mock_session)
+        session_ctx.__exit__ = Mock(return_value=False)
+        mock_pipeline._conn.session.return_value = session_ctx
+
+        from codememory.server import app as app_module
+        monkeypatch.setattr(app_module, "_get_research_pipeline", lambda: mock_pipeline)
+
+        result = app_module.search_web_memory(
+            query="graph database",
+            limit=5,
+            as_of="2026-03-05T00:00:00+00:00",
+        )
+
+        assert "Old research" in result
+        assert "Future research" not in result
+
 
 # ---------------------------------------------------------------------------
 # brave_search tests

@@ -22,6 +22,17 @@ def _result(payload):
     return result
 
 
+def _consume_result(properties_set=0):
+    """Build a mock Neo4j result object with consume() counters."""
+    result = Mock()
+    summary = Mock()
+    counters = Mock()
+    counters.properties_set = properties_set
+    summary.counters = counters
+    result.consume.return_value = summary
+    return result
+
+
 def _parse_json_stdout(capsys):
     """Parse JSON output from stdout."""
     stdout = capsys.readouterr().out.strip()
@@ -722,7 +733,11 @@ def test_stub_commands_are_registered_in_parser():
     # Commands that can be invoked without required args — exit != 2 means registered.
     # chat-ingest is excluded: it requires --project-id, so argparse exits 2 by design.
     mock_conn = Mock()
-    registered_commands = ["web-init", "web-ingest", "web-search", "chat-init"]
+    mock_session = Mock()
+    mock_conn.session.return_value.__enter__ = Mock(return_value=mock_session)
+    mock_conn.session.return_value.__exit__ = Mock(return_value=None)
+    mock_session.run.return_value = _consume_result()
+    registered_commands = ["web-init", "web-ingest", "web-search", "migrate-temporal", "chat-init"]
     for cmd in registered_commands:
         try:
             with _mock.patch("sys.argv", ["codememory", cmd]), \
@@ -884,3 +899,41 @@ def test_web_search_stub_prints_not_implemented(capsys):
     assert exc.value.code == 0
     out = capsys.readouterr().out
     assert "Not yet implemented" in out
+
+
+def test_migrate_temporal_runs_all_backfill_statements(capsys):
+    """migrate-temporal executes the full ordered backfill and prints a summary."""
+    from unittest.mock import Mock, patch
+
+    mock_conn = Mock()
+    mock_session = Mock()
+    mock_conn.session.return_value.__enter__ = Mock(return_value=mock_session)
+    mock_conn.session.return_value.__exit__ = Mock(return_value=None)
+    mock_session.run.return_value = _consume_result(properties_set=5)
+
+    with patch("codememory.core.connection.ConnectionManager", Mock(return_value=mock_conn)):
+        cli.cmd_migrate_temporal(argparse.Namespace())
+
+    assert mock_session.run.call_count == 14
+    out = capsys.readouterr().out
+    assert "migrate-temporal: ABOUT backfill complete" in out
+    assert "14 relationship types processed" in out
+
+
+def test_migrate_temporal_handles_unavailable_neo4j(capsys):
+    """migrate-temporal exits non-zero with a clear message on connection failure."""
+    from unittest.mock import Mock, patch
+
+    mock_conn = Mock()
+    mock_session = Mock()
+    mock_conn.session.return_value.__enter__ = Mock(return_value=mock_session)
+    mock_conn.session.return_value.__exit__ = Mock(return_value=None)
+    mock_session.run.side_effect = cli.neo4j.exceptions.ServiceUnavailable("down")
+
+    with patch("codememory.core.connection.ConnectionManager", Mock(return_value=mock_conn)):
+        with pytest.raises(SystemExit) as exc:
+            cli.cmd_migrate_temporal(argparse.Namespace())
+
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert "Neo4j unavailable" in out

@@ -467,6 +467,7 @@ class TestResearchIngestionPipelineReportFlow:
         # HAS_CHUNK and PART_OF called same number of times as chunk nodes written
         assert mock_writer.write_has_chunk_relationship.call_count == chunk_count
         assert mock_writer.write_part_of_relationship.call_count == chunk_count
+        assert mock_writer.write_temporal_relationship.call_count == chunk_count
 
         assert result["type"] == "report"
         assert "chunks" in result
@@ -496,6 +497,20 @@ class TestResearchIngestionPipelineReportFlow:
             kwargs = call[1]  # keyword args
             assert kwargs.get("report_project_id") == "proj-test"
             assert kwargs.get("report_session_id") == "sess-abc"
+            assert kwargs.get("valid_from")
+            assert kwargs.get("confidence") == 1.0
+
+    def test_ingest_report_uses_temporal_relationship_writes(self):
+        """Chunk entity wiring uses write_temporal_relationship with valid_from."""
+        pipeline, mock_writer = _make_pipeline()
+        pipeline.ingest(_report_source())
+
+        assert mock_writer.write_relationship.call_count == 0
+        assert mock_writer.write_temporal_relationship.call_count >= 1
+        for call in mock_writer.write_temporal_relationship.call_args_list:
+            kwargs = call[1]
+            assert kwargs.get("valid_from")
+            assert kwargs.get("confidence") == 1.0
 
 
 class TestChunkContentHashSessionScoped:
@@ -594,6 +609,9 @@ class TestResearchIngestionPipelineFindingFlow:
         finding_hash = call_args[0][1]["content_hash"]
         cites_call = mock_writer.write_cites_relationship.call_args
         assert cites_call[1]["finding_content_hash"] == finding_hash
+        assert cites_call[1]["valid_from"]
+        assert cites_call[1]["confidence"] == 1.0
+        assert mock_writer.write_temporal_relationship.call_count == 1
 
         assert result["type"] == "finding"
 

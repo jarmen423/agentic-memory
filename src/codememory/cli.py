@@ -1336,6 +1336,181 @@ def cmd_chat_search(args: argparse.Namespace) -> None:
         conn.driver.close()
 
 
+def _temporal_backfill_statements() -> list[tuple[str, str, dict[str, Any]]]:
+    """Return ordered temporal backfill Cypher statements.
+
+    The migration is idempotent because every statement guards on
+    `WHERE r.valid_from IS NULL`.
+    """
+    legacy_timestamp = "2026-01-01T00:00:00+00:00"
+    migration_timestamp = "2026-03-25T00:00:00+00:00"
+    memory_tail = (
+        "SET r.valid_from = coalesce(m.ingested_at, $legacy_timestamp),\n"
+        "    r.valid_to = null,\n"
+        "    r.confidence = 0.5,\n"
+        "    r.support_count = 1,\n"
+        "    r.contradiction_count = 0"
+    )
+    return [
+        (
+            "ABOUT",
+            "MATCH (m)-[r:ABOUT]->()\n"
+            "WHERE r.valid_from IS NULL\n"
+            f"{memory_tail}",
+            {"legacy_timestamp": legacy_timestamp},
+        ),
+        (
+            "MENTIONS",
+            "MATCH (m)-[r:MENTIONS]->()\n"
+            "WHERE r.valid_from IS NULL\n"
+            f"{memory_tail}",
+            {"legacy_timestamp": legacy_timestamp},
+        ),
+        (
+            "BELONGS_TO",
+            "MATCH (m)-[r:BELONGS_TO]->()\n"
+            "WHERE r.valid_from IS NULL\n"
+            f"{memory_tail}",
+            {"legacy_timestamp": legacy_timestamp},
+        ),
+        (
+            "HAS_CHUNK",
+            "MATCH (m:Memory:Research:Report)-[r:HAS_CHUNK]->()\n"
+            "WHERE r.valid_from IS NULL\n"
+            f"{memory_tail}",
+            {"legacy_timestamp": legacy_timestamp},
+        ),
+        (
+            "PART_OF_RESEARCH",
+            "MATCH (m:Memory:Research:Chunk)-[r:PART_OF]->(:Memory:Research:Report)\n"
+            "WHERE r.valid_from IS NULL\n"
+            f"{memory_tail}",
+            {"legacy_timestamp": legacy_timestamp},
+        ),
+        (
+            "PART_OF_CONVERSATION",
+            "MATCH (m:Memory:Conversation:Turn)-[r:PART_OF]->(:Memory:Conversation:Session)\n"
+            "WHERE r.valid_from IS NULL\n"
+            f"{memory_tail}",
+            {"legacy_timestamp": legacy_timestamp},
+        ),
+        (
+            "HAS_TURN",
+            "MATCH (m:Memory:Conversation:Session)-[r:HAS_TURN]->()\n"
+            "WHERE r.valid_from IS NULL\n"
+            "SET r.valid_from = coalesce(m.started_at, m.ingested_at, $legacy_timestamp),\n"
+            "    r.valid_to = null,\n"
+            "    r.confidence = 0.5,\n"
+            "    r.support_count = 1,\n"
+            "    r.contradiction_count = 0",
+            {"legacy_timestamp": legacy_timestamp},
+        ),
+        (
+            "CITES",
+            "MATCH (m:Memory:Research:Finding)-[r:CITES]->()\n"
+            "WHERE r.valid_from IS NULL\n"
+            f"{memory_tail}",
+            {"legacy_timestamp": legacy_timestamp},
+        ),
+        (
+            "DEFINES",
+            "MATCH ()-[r:DEFINES]->()\n"
+            "WHERE r.valid_from IS NULL\n"
+            "SET r.valid_from = $migration_timestamp,\n"
+            "    r.valid_to = null,\n"
+            "    r.confidence = 0.5,\n"
+            "    r.support_count = 1,\n"
+            "    r.contradiction_count = 0",
+            {"migration_timestamp": migration_timestamp},
+        ),
+        (
+            "HAS_METHOD",
+            "MATCH ()-[r:HAS_METHOD]->()\n"
+            "WHERE r.valid_from IS NULL\n"
+            "SET r.valid_from = $migration_timestamp,\n"
+            "    r.valid_to = null,\n"
+            "    r.confidence = 0.5,\n"
+            "    r.support_count = 1,\n"
+            "    r.contradiction_count = 0",
+            {"migration_timestamp": migration_timestamp},
+        ),
+        (
+            "DESCRIBES",
+            "MATCH ()-[r:DESCRIBES]->()\n"
+            "WHERE r.valid_from IS NULL\n"
+            "SET r.valid_from = $migration_timestamp,\n"
+            "    r.valid_to = null,\n"
+            "    r.confidence = 0.5,\n"
+            "    r.support_count = 1,\n"
+            "    r.contradiction_count = 0",
+            {"migration_timestamp": migration_timestamp},
+        ),
+        (
+            "IMPORTS",
+            "MATCH ()-[r:IMPORTS]->()\n"
+            "WHERE r.valid_from IS NULL\n"
+            "SET r.valid_from = $migration_timestamp,\n"
+            "    r.valid_to = null,\n"
+            "    r.confidence = 0.5,\n"
+            "    r.support_count = 1,\n"
+            "    r.contradiction_count = 0",
+            {"migration_timestamp": migration_timestamp},
+        ),
+        (
+            "CALLS",
+            "MATCH ()-[r:CALLS]->()\n"
+            "WHERE r.valid_from IS NULL\n"
+            "SET r.valid_from = $migration_timestamp,\n"
+            "    r.valid_to = null,\n"
+            "    r.confidence = 0.5,\n"
+            "    r.support_count = 1,\n"
+            "    r.contradiction_count = 0",
+            {"migration_timestamp": migration_timestamp},
+        ),
+        (
+            "PART_OF_PR",
+            "MATCH ()-[r:PART_OF_PR]->()\n"
+            "WHERE r.valid_from IS NULL\n"
+            "SET r.valid_from = $migration_timestamp,\n"
+            "    r.valid_to = null,\n"
+            "    r.confidence = 0.5,\n"
+            "    r.support_count = 1,\n"
+            "    r.contradiction_count = 0",
+            {"migration_timestamp": migration_timestamp},
+        ),
+    ]
+
+
+def cmd_migrate_temporal(args: argparse.Namespace) -> None:
+    """Backfill temporal fields on existing graph relationships."""
+    from codememory.core.connection import ConnectionManager  # noqa: PLC0415
+
+    uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+    user = os.getenv("NEO4J_USER") or os.getenv("NEO4J_USERNAME", "neo4j")
+    password = os.getenv("NEO4J_PASSWORD", "password")
+
+    conn = ConnectionManager(uri, user, password)
+    try:
+        with conn.session() as session:
+            for rel_name, cypher, params in _temporal_backfill_statements():
+                result = session.run(cypher, **params)
+                summary = result.consume()
+                properties_set = summary.counters.properties_set
+                print(
+                    f"migrate-temporal: {rel_name} backfill complete "
+                    f"({properties_set} properties set)."
+                )
+        print(
+            "migrate-temporal: backfill complete. "
+            f"{len(_temporal_backfill_statements())} relationship types processed."
+        )
+    except neo4j.exceptions.ServiceUnavailable:
+        print("migrate-temporal: Neo4j unavailable — is Docker running?")
+        sys.exit(1)
+    finally:
+        conn.driver.close()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Agentic Memory: Structural Code Graph with Neo4j and MCP",
@@ -1564,6 +1739,10 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
     web_ingest_parser.add_argument("url", nargs="?", help="URL to ingest")
     web_search_parser = subparsers.add_parser("web-search", help="Search web research memory")
     web_search_parser.add_argument("query", nargs="?", help="Search query")
+    subparsers.add_parser(
+        "migrate-temporal",
+        help="Backfill temporal fields on all existing relationships (safe to re-run)",
+    )
 
     # Conversation Memory commands (Phase 4)
     subparsers.add_parser("chat-init", help="Initialize conversation memory module")
@@ -1678,6 +1857,8 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
         cmd_web_ingest(args)
     elif args.command == "web-search":
         cmd_web_search(args)
+    elif args.command == "migrate-temporal":
+        cmd_migrate_temporal(args)
     elif args.command == "chat-init":
         cmd_chat_init(args)
     elif args.command == "chat-ingest":

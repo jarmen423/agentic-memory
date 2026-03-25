@@ -141,14 +141,19 @@ class TestEmbeddableTurnFlow:
         pipeline.ingest(_turn_source(role="user"))
         assert mock_writer.write_has_turn_relationship.call_count == 1
         assert mock_writer.write_part_of_turn_relationship.call_count == 1
+        assert mock_writer.write_has_turn_relationship.call_args[1]["valid_from"]
+        assert mock_writer.write_part_of_turn_relationship.call_args[1]["valid_from"]
 
     def test_user_turn_wires_entity_relationships(self):
-        """ingest(role='user') calls upsert_entity and write_relationship per entity."""
+        """ingest(role='user') calls upsert_entity and write_temporal_relationship per entity."""
         pipeline, mock_writer = _make_pipeline()
         pipeline.ingest(_turn_source(role="user"))
         # Mock extractor returns 1 entity
         assert mock_writer.upsert_entity.call_count == 1
-        assert mock_writer.write_relationship.call_count == 1
+        assert mock_writer.write_relationship.call_count == 0
+        assert mock_writer.write_temporal_relationship.call_count == 1
+        assert mock_writer.write_temporal_relationship.call_args[1]["valid_from"]
+        assert mock_writer.write_temporal_relationship.call_args[1]["confidence"] == 1.0
 
     def test_user_turn_result_has_embedded_true(self):
         """ingest(role='user') returns dict with embedded=True."""
@@ -199,11 +204,12 @@ class TestNonEmbeddableTurnFlow:
         assert mock_writer.write_session_node.call_count == 1
 
     def test_system_turn_does_not_wire_entity_relationships(self):
-        """ingest(role='system') does NOT call upsert_entity or write_relationship."""
+        """ingest(role='system') does NOT call upsert_entity or write_temporal_relationship."""
         pipeline, mock_writer = _make_pipeline()
         pipeline.ingest(_turn_source(role="system"))
         assert mock_writer.upsert_entity.call_count == 0
         assert mock_writer.write_relationship.call_count == 0
+        assert mock_writer.write_temporal_relationship.call_count == 0
 
     def test_system_turn_result_has_embedded_false(self):
         """ingest(role='system') returns dict with embedded=False."""

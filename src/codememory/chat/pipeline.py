@@ -191,11 +191,15 @@ class ConversationIngestionPipeline(BaseIngestionPipeline):
             turn_source_key=source_key,
             turn_content_hash=content_hash,
             order=turn_index,
+            valid_from=now,
+            confidence=1.0,
         )
         self._writer.write_part_of_turn_relationship(
             turn_source_key=source_key,
             turn_content_hash=content_hash,
             session_id=session_id,
+            valid_from=now,
+            confidence=1.0,
         )
 
         # 7. Wire entity relationships (only for embedded turns)
@@ -203,12 +207,14 @@ class ConversationIngestionPipeline(BaseIngestionPipeline):
             for entity in entities:
                 self._writer.upsert_entity(entity["name"], entity["type"])
                 rel_type = "ABOUT" if entity["type"] == "project" else "MENTIONS"
-                self._writer.write_relationship(
+                self._writer.write_temporal_relationship(
                     source_key=source_key,
                     content_hash=content_hash,
                     entity_name=entity["name"],
                     entity_type=entity["type"],
                     rel_type=rel_type,
+                    valid_from=now,
+                    confidence=1.0,
                 )
 
         logger.info(

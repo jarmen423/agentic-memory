@@ -207,6 +207,8 @@ class ResearchIngestionPipeline(BaseIngestionPipeline):
                 chunk_source_key=chunk_source_key,
                 chunk_content_hash=chunk_hash,
                 order=chunk.index,
+                valid_from=now,
+                confidence=1.0,
             )
 
             # Wire PART_OF (Chunk -> Report) per CONTEXT.md schema
@@ -215,6 +217,8 @@ class ResearchIngestionPipeline(BaseIngestionPipeline):
                 chunk_content_hash=chunk_hash,
                 report_project_id=project_id,
                 report_session_id=session_id,
+                valid_from=now,
+                confidence=1.0,
             )
 
         # 7. Wire entity relationships on each chunk
@@ -223,12 +227,14 @@ class ResearchIngestionPipeline(BaseIngestionPipeline):
             for entity in entities:
                 self._writer.upsert_entity(entity["name"], entity["type"])
                 rel_type = "ABOUT" if entity["type"] == "project" else "MENTIONS"
-                self._writer.write_relationship(
+                self._writer.write_temporal_relationship(
                     source_key=chunk_source_key,
                     content_hash=chunk_hash,
                     entity_name=entity["name"],
                     entity_type=entity["type"],
                     rel_type=rel_type,
+                    valid_from=now,
+                    confidence=1.0,
                 )
 
         # Also ingest inline findings if provided
@@ -334,18 +340,22 @@ class ResearchIngestionPipeline(BaseIngestionPipeline):
                     "accessed_at": now,
                     "source_agent": source.get("source_agent", "unknown"),
                 },
+                valid_from=now,
+                confidence=1.0,
             )
 
         # 6. Wire entity relationships
         for entity in entities:
             self._writer.upsert_entity(entity["name"], entity["type"])
             rel_type = "ABOUT" if entity["type"] == "project" else "MENTIONS"
-            self._writer.write_relationship(
+            self._writer.write_temporal_relationship(
                 source_key=source_key,
                 content_hash=content_hash,
                 entity_name=entity["name"],
                 entity_type=entity["type"],
                 rel_type=rel_type,
+                valid_from=now,
+                confidence=1.0,
             )
 
         logger.info(

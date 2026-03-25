@@ -16,8 +16,8 @@ progress:
 
 **Last Updated:** 2026-03-25
 **Current Phase:** 5
-**Phase Status:** Active (Plan 02 complete)
-**Last Session Stopped At:** Completed 05-02-PLAN.md
+**Phase Status:** Complete (all 3 plans done)
+**Last Session Stopped At:** Completed 05-03-PLAN.md
 
 ---
 
@@ -27,8 +27,9 @@ progress:
 
 - Standalone packages/am-proxy/ package scaffold with hatchling, ProxyConfig TOML loader, AGENT_CONFIGS registry
 - IngestClient (fire-and-forget, GC-safe _pending set) + ACPProxy (full ACP routing, buffer TTL, turn construction)
+- CLI entry point (main()), Windows ProactorEventLoop policy, setup subcommand, 41 total tests passing
 
-**Next Action:** Continue Phase 5 — Plan 03 (cli.py entry point)
+**Next Action:** Begin Phase 6 — am-ext (Browser Extension passive capture)
 
 ---
 
@@ -70,6 +71,7 @@ progress:
 - [x] Plan 04-03: REST endpoints POST /ingest/conversation + GET /search/conversations; 3 MCP tools (search_conversations, get_conversation_context, add_message); register_conversation_tools() pattern (2026-03-22)
 - [x] Plan 05-01: packages/am-proxy/ standalone package scaffold; ProxyConfig dataclass + load_config() TOML loader; AGENT_CONFIGS registry (claude/codex/gemini/opencode/kiro); pytest conftest fixtures (2026-03-25)
 - [x] Plan 05-02: IngestClient fire-and-forget (GC-safe _pending set, silent failure); ACPProxy with full ACP routing table, buffer TTL, turn construction; 22 unit tests (2026-03-25)
+- [x] Plan 05-03: cli.py entry point with argparse, Windows ProactorEventLoop policy, setup subcommand; 19 CLI unit tests; 41 total am-proxy tests passing (2026-03-25)
 
 ---
 
@@ -102,6 +104,8 @@ progress:
 | threads/update ingests unless explicitly done=False | Default True means partial updates ingested; only streaming chunks (done=False) skipped |
 | Browser extension: 800ms debounce on MutationObserver | Streaming responses cause hundreds of DOM mutations per turn; debounce fires once on turn completion |\
 | Passive ingestion: am-proxy (CLI agents) + am-ext (web UIs) | Covers full spectrum without OAuth scraping — proxy wraps ACP stdio, extension observes DOM |
+| am-proxy CLI: parse_known_args() not REMAINDER for passthrough | Python 3.13 subparser treats bare positional args as invalid subcommand choices even in parse_known_args; flag-style extras work via remaining list |
+| asyncio.run mock in tests uses side_effect with coro.close() | Prevents RuntimeWarning: coroutine never awaited when patching asyncio.run with return_value |
 | ingestion_mode: "passive" for proxy and extension payloads | Distinguishes auto-captured turns from explicit MCP writes in query and analytics |
 | Module-level imports (try/except) for markdownify and pymupdf4llm | Enables pytest patch() interception; fallback None values for environments without optional deps |
 | Overlap in _recursive_split as word-count (int(overlap_tokens/1.3)) | Consistent with _token_count approximation; ~38 words for 50-token overlap |
@@ -136,6 +140,7 @@ progress:
 | 04 | 03 | 7 | 2 | 6 |
 | 05 | 01 | 15 | 4 | 7 |
 | 05 | 02 | 15 | 3 | 4 |
+| 05 | 03 | 15 | 2 | 2 |
 
 ## Blockers / Open Questions
 

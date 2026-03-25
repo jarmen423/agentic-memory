@@ -14,20 +14,20 @@ progress:
 
 # Agentic Memory — Project State
 
-**Last Updated:** 2026-03-22
+**Last Updated:** 2026-03-25
 **Current Phase:** 5
-**Phase Status:** Active (Plan 03 complete)
-**Last Session Stopped At:** Completed 04-03-PLAN.md
+**Phase Status:** Active (Plan 01 complete)
+**Last Session Stopped At:** Completed 05-01-PLAN.md
 
 ---
 
 ## Active Phase
 
-**Phase 4: Conversation Memory Core**
+**Phase 5: am-proxy (ACP Proxy)**
 
-- ConversationIngestionPipeline, /ingest/conversation REST endpoint, search_conversations MCP tool, chat-init/ingest/search CLI
+- Standalone packages/am-proxy/ package scaffold with hatchling, ProxyConfig TOML loader, AGENT_CONFIGS registry
 
-**Next Action:** Begin Phase 4 — Conversation Memory Core
+**Next Action:** Continue Phase 5 — Plan 02 (proxy.py + ingest.py core logic)
 
 ---
 
@@ -39,7 +39,7 @@ progress:
 | 2 | Web Research Core | Complete |
 | 3 | Web Research Scheduling | Deferred (post-v1) |
 | 4 | Conversation Memory Core | Active |
-| 5 | am-proxy (ACP Proxy) | Not Started |
+| 5 | am-proxy (ACP Proxy) | Active |
 | 6 | am-ext (Browser Extension) | Not Started |
 | 7 | Cross-Module Integration & Hardening | Not Started |
 
@@ -67,6 +67,7 @@ progress:
 - [x] Plan 04-01: Vector index bug fix (768d), fix_vector_index_dimensions() migration, GraphWriter conversation methods (write_session_node, write_has_turn_relationship, write_part_of_turn_relationship), 12 unit tests (2026-03-22)
 - [x] Plan 04-02: ConversationIngestionPipeline with role-conditional embedding, session upsert, entity wiring; all 4 chat source keys registered; 22 unit tests (2026-03-22)
 - [x] Plan 04-03: REST endpoints POST /ingest/conversation + GET /search/conversations; 3 MCP tools (search_conversations, get_conversation_context, add_message); register_conversation_tools() pattern (2026-03-22)
+- [x] Plan 05-01: packages/am-proxy/ standalone package scaffold; ProxyConfig dataclass + load_config() TOML loader; AGENT_CONFIGS registry (claude/codex/gemini/opencode/kiro); pytest conftest fixtures (2026-03-25)
 
 ---
 
@@ -92,6 +93,8 @@ progress:
 | Output-centric research ingestion (agent output, not source pages) | Source pages are ephemeral agent context; Reports/Findings/Citations are the durable knowledge artifacts |
 | REST API (`am-server`) foundation built in Phase 2 | Web research endpoints + auth land in Phase 2 (02-04-PLAN); Phase 4 extends with `/ingest/conversation`. Connectors unblocked sooner. |
 | am-proxy: asyncio.call_later TTL for request/response buffer | Per-entry cancel handle prevents unbounded buffer growth; 300s TTL covers longest real tool calls |
+| am-proxy uses dataclasses.dataclass for ProxyConfig (not Pydantic) | Keeps package dependency footprint minimal; no pydantic required for a thin proxy tool |
+| get_agent_config() passthrough for unknown names | Unknown agent treated as its own binary — zero-config for custom agents, no raise needed |
 | Browser extension: 800ms debounce on MutationObserver | Streaming responses cause hundreds of DOM mutations per turn; debounce fires once on turn completion |\
 | Passive ingestion: am-proxy (CLI agents) + am-ext (web UIs) | Covers full spectrum without OAuth scraping — proxy wraps ACP stdio, extension observes DOM |
 | ingestion_mode: "passive" for proxy and extension payloads | Distinguishes auto-captured turns from explicit MCP writes in query and analytics |
@@ -126,6 +129,7 @@ progress:
 | 04 | 01 | 4 | 3 | 3 |
 | 04 | 02 | 7 | 2 | 3 |
 | 04 | 03 | 7 | 2 | 6 |
+| 05 | 01 | 15 | 4 | 7 |
 
 ## Blockers / Open Questions
 

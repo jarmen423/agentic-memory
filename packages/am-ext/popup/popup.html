@@ -4,11 +4,45 @@
     <meta charset="utf-8">
     <title>am-ext</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="popup.css">
+    <script src="popup.js" defer></script>
   </head>
-  <body>
-    <main>
-      <h1>am-ext</h1>
-      <p>Popup UI arrives in plan 06-03.</p>
+  <body class="popup-body">
+    <main class="popup-shell">
+      <header class="popup-header">
+        <p class="eyebrow">Browser capture</p>
+        <h1>am-ext</h1>
+      </header>
+
+      <section class="popup-card" aria-label="Extension status">
+        <div class="info-row">
+          <span class="row-label">Platform</span>
+          <span id="platform-value" class="row-value">Loading...</span>
+        </div>
+
+        <div class="info-row">
+          <span class="row-label">Status</span>
+          <span id="status-badge" class="status-badge status-neutral">Loading...</span>
+        </div>
+
+        <div class="info-row">
+          <span class="row-label">Session</span>
+          <span id="session-value" class="row-value row-mono">--</span>
+        </div>
+
+        <div class="info-row">
+          <span class="row-label">Turns this session</span>
+          <span id="turn-count" class="row-value row-mono">--</span>
+        </div>
+      </section>
+
+      <div class="action-row">
+        <button id="pause-btn" class="pause-btn" type="button">Pause</button>
+      </div>
+
+      <footer class="popup-footer">
+        <a id="settings-link" class="settings-link" href="onboarding.html">Settings</a>
+      </footer>
     </main>
   </body>
 </html>

@@ -4,11 +4,70 @@
     <meta charset="utf-8">
     <title>am-ext onboarding</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="onboarding.css">
+    <script src="onboarding.js" defer></script>
   </head>
-  <body>
-    <main>
-      <h1>am-ext onboarding</h1>
-      <p>Configuration UI arrives in plan 06-03.</p>
+  <body class="onboarding-body">
+    <main class="onboarding-shell">
+      <section class="hero-card">
+        <p class="eyebrow">First-run setup</p>
+        <h1>am-ext Setup</h1>
+        <p class="hero-copy">Configure your agentic memory connection.</p>
+      </section>
+
+      <section class="form-card" aria-label="Extension settings">
+        <div class="field-group">
+          <label for="endpoint">Memory Server URL</label>
+          <input id="endpoint" type="text" placeholder="http://localhost:8000" autocomplete="url">
+        </div>
+
+        <div class="field-group">
+          <label for="api-key">API Key</label>
+          <input id="api-key" type="password" placeholder="Your Bearer token" autocomplete="off">
+        </div>
+
+        <div class="field-group">
+          <label for="project-id">Project ID</label>
+          <input id="project-id" type="text" placeholder="browser" autocomplete="off">
+        </div>
+
+        <div class="connection-row">
+          <button id="test-btn" class="secondary-btn" type="button">Test Connection</button>
+          <span id="test-status" class="status-chip status-neutral" hidden></span>
+        </div>
+
+        <section class="platforms-section" aria-labelledby="platforms-heading">
+          <div class="section-header">
+            <h2 id="platforms-heading">Capture platforms</h2>
+            <p>Enable the sites that should ship turns to agentic memory.</p>
+          </div>
+
+          <label class="checkbox-row" for="cb-chatgpt">
+            <input id="cb-chatgpt" type="checkbox" checked>
+            <span>ChatGPT</span>
+          </label>
+
+          <label class="checkbox-row" for="cb-claude">
+            <input id="cb-claude" type="checkbox" checked>
+            <span>Claude</span>
+          </label>
+
+          <label class="checkbox-row" for="cb-gemini">
+            <input id="cb-gemini" type="checkbox" checked>
+            <span>Gemini</span>
+          </label>
+
+          <label class="checkbox-row" for="cb-perplexity">
+            <input id="cb-perplexity" type="checkbox" checked>
+            <span>Perplexity</span>
+          </label>
+        </section>
+
+        <div class="save-row">
+          <button id="save-btn" class="primary-btn" type="button">Save Settings</button>
+          <div id="saved-msg" class="saved-msg" hidden>Settings saved.</div>
+        </div>
+      </section>
     </main>
   </body>
 </html>

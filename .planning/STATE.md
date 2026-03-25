@@ -16,8 +16,8 @@ progress:
 
 **Last Updated:** 2026-03-25
 **Current Phase:** 5
-**Phase Status:** Active (Plan 01 complete)
-**Last Session Stopped At:** Completed 05-01-PLAN.md
+**Phase Status:** Active (Plan 02 complete)
+**Last Session Stopped At:** Completed 05-02-PLAN.md
 
 ---
 
@@ -26,8 +26,9 @@ progress:
 **Phase 5: am-proxy (ACP Proxy)**
 
 - Standalone packages/am-proxy/ package scaffold with hatchling, ProxyConfig TOML loader, AGENT_CONFIGS registry
+- IngestClient (fire-and-forget, GC-safe _pending set) + ACPProxy (full ACP routing, buffer TTL, turn construction)
 
-**Next Action:** Continue Phase 5 — Plan 02 (proxy.py + ingest.py core logic)
+**Next Action:** Continue Phase 5 — Plan 03 (cli.py entry point)
 
 ---
 
@@ -68,6 +69,7 @@ progress:
 - [x] Plan 04-02: ConversationIngestionPipeline with role-conditional embedding, session upsert, entity wiring; all 4 chat source keys registered; 22 unit tests (2026-03-22)
 - [x] Plan 04-03: REST endpoints POST /ingest/conversation + GET /search/conversations; 3 MCP tools (search_conversations, get_conversation_context, add_message); register_conversation_tools() pattern (2026-03-22)
 - [x] Plan 05-01: packages/am-proxy/ standalone package scaffold; ProxyConfig dataclass + load_config() TOML loader; AGENT_CONFIGS registry (claude/codex/gemini/opencode/kiro); pytest conftest fixtures (2026-03-25)
+- [x] Plan 05-02: IngestClient fire-and-forget (GC-safe _pending set, silent failure); ACPProxy with full ACP routing table, buffer TTL, turn construction; 22 unit tests (2026-03-25)
 
 ---
 
@@ -95,6 +97,9 @@ progress:
 | am-proxy: asyncio.call_later TTL for request/response buffer | Per-entry cancel handle prevents unbounded buffer growth; 300s TTL covers longest real tool calls |
 | am-proxy uses dataclasses.dataclass for ProxyConfig (not Pydantic) | Keeps package dependency footprint minimal; no pydantic required for a thin proxy tool |
 | get_agent_config() passthrough for unknown names | Unknown agent treated as its own binary — zero-config for custom agents, no raise needed |
+| fire_and_forget uses _pending set for GC-safe task retention | asyncio.create_task() holds only weak reference on Python 3.12+ (CPython #117379); _pending set holds strong reference until done callback discards |
+| _handle_line wrapped in bare except Exception: pass | Routing errors must never surface to the agent session — silent failure contract |
+| threads/update ingests unless explicitly done=False | Default True means partial updates ingested; only streaming chunks (done=False) skipped |
 | Browser extension: 800ms debounce on MutationObserver | Streaming responses cause hundreds of DOM mutations per turn; debounce fires once on turn completion |\
 | Passive ingestion: am-proxy (CLI agents) + am-ext (web UIs) | Covers full spectrum without OAuth scraping — proxy wraps ACP stdio, extension observes DOM |
 | ingestion_mode: "passive" for proxy and extension payloads | Distinguishes auto-captured turns from explicit MCP writes in query and analytics |
@@ -130,6 +135,7 @@ progress:
 | 04 | 02 | 7 | 2 | 3 |
 | 04 | 03 | 7 | 2 | 6 |
 | 05 | 01 | 15 | 4 | 7 |
+| 05 | 02 | 15 | 3 | 4 |
 
 ## Blockers / Open Questions
 

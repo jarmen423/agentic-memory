@@ -1,0 +1,13 @@
+{
+  "name": "agentic-memory-workspace",
+  "private": true,
+  "workspaces": [
+    "packages/am-temporal-kg",
+    "packages/am-sync-neo4j"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace am-temporal-kg && npm run build --workspace am-sync-neo4j",
+    "typecheck": "npm run typecheck --workspace am-temporal-kg && npm run typecheck --workspace am-sync-neo4j",
+    "lint": "npm run lint --workspace am-temporal-kg && npm run lint --workspace am-sync-neo4j"
+  }
+}

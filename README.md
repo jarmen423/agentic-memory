@@ -128,6 +128,17 @@ Full workflow and options: [docs/TOOL_USE_ANNOTATION.md](docs/TOOL_USE_ANNOTATIO
 
 ---
 
+## ⏱️ Experimental Temporal GraphRAG
+
+Phase 8 adds a shadow-mode temporal maintenance layer alongside the existing Neo4j graph:
+
+- `packages/am-temporal-kg/` — SpacetimeDB TypeScript module for temporal edge ingest, scheduled maintenance, and deterministic temporal retrieval
+- `packages/am-sync-neo4j/` — subscription worker that mirrors curated temporal rows back into Neo4j
+
+This layer is additive in the current branch. Existing retrieval paths remain unchanged until the later retrieval cutover phase.
+
+---
+
 ## 🔌 MCP Tools Available to AI Agents
 
 | Tool | Description |

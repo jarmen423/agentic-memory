@@ -5,7 +5,14 @@
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(dir:*)",
-      "Bash(test:*)"
+      "Bash(test:*)",
+      "Bash(gh repo:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebSearch",
+      "Bash(powershell -NoProfile -ExecutionPolicy Bypass -File \"D:\\\\code\\\\agent-tts\\\\.claude\\\\hooks-windows\\\\play-tts.ps1\" \"Semi-automatic. The SessionStart hook injects TTS instructions into my context, then I manually call the script each response.\")",
+      "Bash(powershell -NoProfile -ExecutionPolicy Bypass -File \"D:\\\\code\\\\agent-tts\\\\.claude\\\\hooks-windows\\\\play-tts.ps1\" \"Researching automatic TTS hook options\")",
+      "Bash(powershell -NoProfile -ExecutionPolicy Bypass -File \"D:\\\\code\\\\agent-tts\\\\.claude\\\\hooks-windows\\\\play-tts.ps1\" \"Auto TTS is ready. Use slash tts to toggle anytime.\")"
     ]
   }
 }

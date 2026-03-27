@@ -1,0 +1,23 @@
+{
+  "name": "am-sync-neo4j",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "SpacetimeDB to Neo4j sync worker for Agentic Memory",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "start": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "neo4j-driver": "^5.27.0",
+    "spacetimedb": "2.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

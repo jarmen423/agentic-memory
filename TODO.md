@@ -8,6 +8,17 @@
 [ ] Add CLI support for `codememory --version`
 ## Next Session Reminder
 
+- [ ] Finish Phase 6 am-ext UAT checks that depend on the Neo4j instance behind `am-server`:
+  - [ ] Confirm which Neo4j instance `am-server` is using in the active environment
+  - [ ] Re-run ChatGPT turn-capture verification and confirm `browser_ext_chatgpt` turns are written
+- [ ] Resume Phase 6 am-ext manual verification after architecture work:
+  - [ ] Verify debounced streaming capture stores exactly one completed assistant turn per response
+  - [ ] Verify platform disable toggle stops ingestion for the disabled platform
+  - [ ] Verify global pause toggle blocks ingestion across supported platforms
+  - [ ] Verify silent failure behavior when `am-server` is unreachable
+  - [ ] Verify selector hotpatch behavior without reinstalling the extension
+  - [ ] Verify SPA navigation resets session capture on `claude.ai`
+
 - [X] Publish updated release before further validation:
   - [ ] Bump version
   - [ ] Build + upload to TestPyPI

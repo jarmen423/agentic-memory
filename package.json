@@ -8,6 +8,10 @@
   "scripts": {
     "build": "npm run build --workspace am-temporal-kg && npm run build --workspace am-sync-neo4j",
     "typecheck": "npm run typecheck --workspace am-temporal-kg && npm run typecheck --workspace am-sync-neo4j",
-    "lint": "npm run lint --workspace am-temporal-kg && npm run lint --workspace am-sync-neo4j"
+    "lint": "npm run lint --workspace am-temporal-kg && npm run lint --workspace am-sync-neo4j",
+    "bench:build-temporal": "tsx bench/build_temporal_kg.ts",
+    "bench:run-queries": "tsx bench/run_queries.ts",
+    "bench:tokens": "tsx bench/measure_tokens.ts",
+    "bench:report": "tsx bench/report_results.ts"
   }
 }

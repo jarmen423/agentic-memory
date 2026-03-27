@@ -11,10 +11,289 @@ from codememory.core.connection import ConnectionManager
 from codememory.core.embedding import EmbeddingService
 from codememory.core.entity_extraction import EntityExtractionService
 from codememory.core.scheduler import ResearchScheduler
+from codememory.temporal.bridge import get_temporal_bridge
+from codememory.temporal.seeds import (
+    collect_seed_entities,
+    extract_query_seed_entities,
+    parse_as_of_to_micros,
+    parse_conversation_source_id,
+)
 from codememory.web.pipeline import ResearchIngestionPipeline
 from codememory.ingestion.graph import KnowledgeGraphBuilder
 
 logger = logging.getLogger(__name__)
+
+
+def _filter_rows_as_of(rows: list[dict[str, Any]], as_of: str | None) -> list[dict[str, Any]]:
+    """Apply the Phase 7 ingested_at cutoff when provided."""
+    if as_of is None:
+        return rows
+    return [row for row in rows if (row.get("ingested_at") or "") <= as_of]
+
+
+def _vector_conversation_search(
+    conn: ConnectionManager,
+    embedder: EmbeddingService,
+    *,
+    query: str,
+    project_id: str | None,
+    role: str | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Baseline conversation vector search with seed metadata."""
+    query_embedding = embedder.embed(query)
+    with conn.session() as session:
+        cypher = (
+            "CALL db.index.vector.queryNodes("
+            "  'chat_embeddings', $limit, $embedding"
+            ") YIELD node, score "
+            "WHERE ($project_id IS NULL OR node.project_id = $project_id)"
+            "  AND ($role IS NULL OR node.role = $role) "
+            "RETURN "
+            "    node.session_id     AS session_id, "
+            "    node.turn_index     AS turn_index, "
+            "    node.role           AS role, "
+            "    node.content        AS content, "
+            "    node.source_agent   AS source_agent, "
+            "    node.timestamp      AS timestamp, "
+            "    node.ingested_at    AS ingested_at, "
+            "    node.entities       AS entities, "
+            "    node.entity_types   AS entity_types, "
+            "    score "
+            "ORDER BY score DESC "
+            "LIMIT $limit"
+        )
+        return [dict(r) for r in session.run(
+            cypher,
+            embedding=query_embedding,
+            project_id=project_id,
+            role=role,
+            limit=limit,
+        )]
+
+
+def _text_conversation_search(
+    conn: ConnectionManager,
+    *,
+    query: str,
+    project_id: str | None,
+    role: str | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Existing deterministic text fallback for conversation search."""
+    with conn.session() as session:
+        text_cypher = (
+            "MATCH (n:Memory:Conversation:Turn) "
+            "WHERE toLower(n.content) CONTAINS toLower($q) "
+            "  AND ($project_id IS NULL OR n.project_id = $project_id) "
+            "  AND ($role IS NULL OR n.role = $role) "
+            "RETURN "
+            "    n.session_id    AS session_id, "
+            "    n.turn_index    AS turn_index, "
+            "    n.role          AS role, "
+            "    n.content       AS content, "
+            "    n.source_agent  AS source_agent, "
+            "    n.timestamp     AS timestamp, "
+            "    n.ingested_at   AS ingested_at, "
+            "    n.entities      AS entities, "
+            "    n.entity_types  AS entity_types, "
+            "    1.0 AS score "
+            "LIMIT $limit"
+        )
+        return [dict(record) for record in session.run(
+            text_cypher,
+            q=query,
+            project_id=project_id,
+            role=role,
+            limit=limit,
+        )]
+
+
+def _fetch_conversation_turn(
+    conn: ConnectionManager,
+    *,
+    session_id: str,
+    turn_index: int,
+) -> dict[str, Any] | None:
+    """Hydrate one conversation turn by stable session/turn identity."""
+    with conn.session() as session:
+        result = session.run(
+            (
+                "MATCH (t:Memory:Conversation:Turn {session_id: $session_id, turn_index: $turn_index}) "
+                "RETURN "
+                "    t.session_id AS session_id, "
+                "    t.turn_index AS turn_index, "
+                "    t.role AS role, "
+                "    t.content AS content, "
+                "    t.source_agent AS source_agent, "
+                "    t.timestamp AS timestamp, "
+                "    t.ingested_at AS ingested_at, "
+                "    t.entities AS entities"
+            ),
+            session_id=session_id,
+            turn_index=turn_index,
+        ).single()
+    return dict(result) if result else None
+
+
+def _fetch_conversation_context_window(
+    conn: ConnectionManager,
+    *,
+    session_id: str,
+    turn_index: int,
+    as_of: str | None,
+) -> list[dict[str, Any]]:
+    """Fetch the immediate surrounding turns for one matched turn."""
+    with conn.session() as session:
+        ctx_result = session.run(
+            (
+                "MATCH (t:Memory:Conversation:Turn {session_id: $session_id}) "
+                "WHERE t.turn_index IN [$prev_index, $next_index] "
+                "  AND t.turn_index <> $matched_turn_index "
+                "RETURN "
+                "    t.turn_index AS turn_index, "
+                "    t.role AS role, "
+                "    t.content AS content, "
+                "    t.ingested_at AS ingested_at "
+                "ORDER BY t.turn_index"
+            ),
+            session_id=session_id,
+            prev_index=turn_index - 1,
+            next_index=turn_index + 1,
+            matched_turn_index=turn_index,
+        )
+        window = [dict(r) for r in ctx_result]
+    return _filter_rows_as_of(window, as_of)
+
+
+def _hydrate_temporal_conversation_results(
+    conn: ConnectionManager,
+    temporal_results: list[dict[str, Any]],
+    *,
+    limit: int,
+    role: str | None,
+    as_of: str | None,
+) -> list[dict[str, Any]]:
+    """Resolve temporal evidence back to conversation turns."""
+    hydrated: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+
+    for ranked in temporal_results:
+        temporal_score = float(ranked.get("confidence", 0.0) or 0.0) * float(
+            ranked.get("relevance", 1.0) or 1.0
+        )
+        for evidence in ranked.get("evidence") or []:
+            if evidence.get("sourceKind") != "conversation_turn":
+                continue
+            try:
+                session_id, turn_index = parse_conversation_source_id(
+                    str(evidence.get("sourceId", ""))
+                )
+            except (ValueError, TypeError):
+                continue
+            key = (session_id, turn_index)
+            if key in seen:
+                continue
+            turn = _fetch_conversation_turn(
+                conn,
+                session_id=session_id,
+                turn_index=turn_index,
+            )
+            if turn is None:
+                continue
+            if role is not None and turn.get("role") != role:
+                continue
+            if as_of is not None and (turn.get("ingested_at") or "") > as_of:
+                continue
+            turn["score"] = temporal_score
+            hydrated.append(turn)
+            seen.add(key)
+            if len(hydrated) >= limit:
+                return hydrated
+
+    return hydrated
+
+
+def search_conversation_turns_sync(
+    pipeline: ConversationIngestionPipeline,
+    *,
+    query: str,
+    project_id: str | None,
+    role: str | None,
+    limit: int,
+    as_of: str | None,
+    log_prefix: str,
+) -> list[dict[str, Any]]:
+    """Temporal-first conversation search with deterministic fallback."""
+    conn = pipeline._conn  # type: ignore[attr-defined]
+    embedder = pipeline._embedder  # type: ignore[attr-defined]
+    extractor = pipeline._extractor  # type: ignore[attr-defined]
+    bridge = pipeline.__dict__.get("_temporal_bridge") if hasattr(pipeline, "__dict__") else None
+
+    try:
+        baseline_rows = _vector_conversation_search(
+            conn,
+            embedder,
+            query=query,
+            project_id=project_id,
+            role=role,
+            limit=limit,
+        )
+    except Exception as exc:
+        logger.warning("%s falling back to text search after vector failure: %s", log_prefix, exc)
+        return _filter_rows_as_of(
+            _text_conversation_search(
+                conn,
+                query=query,
+                project_id=project_id,
+                role=role,
+                limit=limit,
+            ),
+            as_of,
+        )
+
+    filtered_baseline = _filter_rows_as_of(baseline_rows, as_of)
+    if project_id is None:
+        return filtered_baseline
+    if bridge is None or not bridge.is_available():
+        logger.info("%s falling back to baseline conversation search: temporal bridge unavailable", log_prefix)
+        return filtered_baseline
+
+    seeds = collect_seed_entities(filtered_baseline, limit=5)
+    if not seeds:
+        try:
+            seeds = extract_query_seed_entities(query, extractor)
+        except Exception as exc:
+            logger.warning("%s query seed extraction failed: %s", log_prefix, exc)
+            seeds = []
+
+    if not seeds:
+        logger.info("%s falling back to baseline conversation search: no temporal seeds", log_prefix)
+        return filtered_baseline
+
+    try:
+        temporal_payload = bridge.retrieve(
+            project_id=project_id,
+            seed_entities=seeds,
+            as_of_us=parse_as_of_to_micros(as_of),
+            max_edges=max(limit * 2, limit),
+        )
+    except Exception as exc:
+        logger.warning("%s falling back to baseline conversation search: %s", log_prefix, exc)
+        return filtered_baseline
+
+    temporal_hits = _hydrate_temporal_conversation_results(
+        conn,
+        temporal_payload.get("results") or [],
+        limit=limit,
+        role=role,
+        as_of=as_of,
+    )
+    if temporal_hits:
+        return temporal_hits
+
+    logger.info("%s falling back to baseline conversation search: empty temporal result", log_prefix)
+    return filtered_baseline
 
 
 @lru_cache(maxsize=1)
@@ -31,7 +310,12 @@ def _get_mcp_conversation_pipeline() -> ConversationIngestionPipeline:
     )
     embedder = EmbeddingService(provider="gemini", api_key=os.environ["GEMINI_API_KEY"])
     extractor = EntityExtractionService(api_key=os.environ["GROQ_API_KEY"])
-    return ConversationIngestionPipeline(conn, embedder, extractor)
+    return ConversationIngestionPipeline(
+        conn,
+        embedder,
+        extractor,
+        temporal_bridge=get_temporal_bridge(),
+    )
 
 
 @lru_cache(maxsize=1)
@@ -50,7 +334,12 @@ def _get_mcp_research_pipeline() -> ResearchIngestionPipeline | None:
     )
     embedder = EmbeddingService(provider="gemini", api_key=google_api_key)
     extractor = EntityExtractionService(api_key=groq_api_key)
-    return ResearchIngestionPipeline(conn, embedder, extractor)
+    return ResearchIngestionPipeline(
+        conn,
+        embedder,
+        extractor,
+        temporal_bridge=get_temporal_bridge(),
+    )
 
 
 @lru_cache(maxsize=1)
@@ -295,84 +584,32 @@ def register_conversation_tools(mcp: object) -> None:  # type: ignore[type-arg]
         """
         pipeline = _get_mcp_conversation_pipeline()
         conn = pipeline._conn  # type: ignore[attr-defined]
-        embedder = pipeline._embedder  # type: ignore[attr-defined]
 
         loop = asyncio.get_event_loop()
 
         def _run() -> dict:
             try:
-                query_embedding = embedder.embed(query)
-
-                with conn.session() as session:
-                    # Primary vector search, filtered to project_id
-                    cypher = (
-                        "CALL db.index.vector.queryNodes("
-                        "  'chat_embeddings', $limit, $embedding"
-                        ") YIELD node, score "
-                        "WHERE node.project_id = $project_id "
-                        "RETURN "
-                        "    node.session_id AS session_id, "
-                        "    node.turn_index AS turn_index, "
-                        "    node.role       AS role, "
-                        "    node.content    AS content, "
-                        "    node.ingested_at AS ingested_at, "
-                        "    score "
-                        "ORDER BY score DESC "
-                        "LIMIT $limit"
-                    )
-                    result = session.run(
-                        cypher,
-                        embedding=query_embedding,
-                        project_id=project_id,
-                        limit=limit,
-                    )
-                    matched_turns = [dict(r) for r in result]
-                    if as_of is not None:
-                        matched_turns = [
-                            turn
-                            for turn in matched_turns
-                            if (turn.get("ingested_at") or "") <= as_of
-                        ]
-
+                matched_turns = search_conversation_turns_sync(
+                    pipeline,
+                    query=query,
+                    project_id=project_id,
+                    role=None,
+                    limit=limit,
+                    as_of=as_of,
+                    log_prefix="get_conversation_context",
+                )
                 turns_with_context = []
                 for turn in matched_turns:
                     turn_data = dict(turn)
                     context_window: list[dict] = []
 
                     if include_session_context:
-                        sess_id = turn["session_id"]
-                        t_idx = turn["turn_index"]
-                        # +/-1 surrounding turns; use -1 as prev guard (never matches)
-                        prev_idx = t_idx - 1
-                        next_idx = t_idx + 1
-
-                        with conn.session() as session:
-                            # Fetch surrounding turns, exclude the matched turn itself
-                            ctx_cypher = (
-                                "MATCH (t:Memory:Conversation:Turn {session_id: $session_id}) "
-                                "WHERE t.turn_index IN [$prev_index, $next_index] "
-                                "  AND t.turn_index <> $matched_turn_index "
-                                "RETURN "
-                                "    t.turn_index AS turn_index, "
-                                "    t.role       AS role, "
-                                "    t.content    AS content, "
-                                "    t.ingested_at AS ingested_at "
-                                "ORDER BY t.turn_index"
-                            )
-                            ctx_result = session.run(
-                                ctx_cypher,
-                                session_id=sess_id,
-                                prev_index=prev_idx,
-                                next_index=next_idx,
-                                matched_turn_index=t_idx,
-                            )
-                            context_window = [dict(r) for r in ctx_result]
-                            if as_of is not None:
-                                context_window = [
-                                    row
-                                    for row in context_window
-                                    if (row.get("ingested_at") or "") <= as_of
-                                ]
+                        context_window = _fetch_conversation_context_window(
+                            conn,
+                            session_id=turn["session_id"],
+                            turn_index=turn["turn_index"],
+                            as_of=as_of,
+                        )
 
                     turn_data["context_window"] = context_window
                     turns_with_context.append(turn_data)

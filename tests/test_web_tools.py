@@ -27,6 +27,10 @@ def _make_mock_pipeline():
     }
     pipeline._embedder = Mock()
     pipeline._embedder.embed.return_value = [0.1] * 768
+    pipeline._extractor = Mock()
+    pipeline._extractor.extract.return_value = [{"name": "Neo4j", "type": "technology"}]
+    pipeline._temporal_bridge = Mock()
+    pipeline._temporal_bridge.is_available.return_value = False
     pipeline._conn = Mock()
     return pipeline
 
@@ -314,6 +318,102 @@ class TestSearchWebMemory:
 
         assert "Old research" in result
         assert "Future research" not in result
+
+    def test_search_web_memory_uses_temporal_results_when_available(self, monkeypatch):
+        """Temporal retrieval becomes the primary formatting path when seeds and bridge data exist."""
+        mock_pipeline = _make_mock_pipeline()
+        mock_pipeline._temporal_bridge.is_available.return_value = True
+        mock_pipeline._temporal_bridge.retrieve.return_value = {
+            "results": [
+                {
+                    "subject": {"name": "Agentic Memory"},
+                    "predicate": "USES",
+                    "object": {"name": "Neo4j"},
+                    "confidence": 0.8,
+                    "relevance": 0.9,
+                    "evidence": [
+                        {
+                            "sourceKind": "research_finding",
+                            "sourceId": "deep_research_agent:abc",
+                            "rawExcerpt": "Temporal snippet",
+                        }
+                    ],
+                }
+            ]
+        }
+
+        rows = [
+            {
+                "text": "Baseline research",
+                "score": 0.92,
+                "source_agent": "claude",
+                "research_question": "What is Neo4j?",
+                "confidence": "high",
+                "source_key": "deep_research_agent",
+                "content_hash": "abc",
+                "project_id": "proj1",
+                "ingested_at": "2026-03-01T00:00:00+00:00",
+                "entities": ["Neo4j"],
+                "entity_types": ["technology"],
+                "node_labels": ["Memory", "Research", "Finding"],
+            }
+        ]
+        mock_run = Mock()
+        mock_run.data.return_value = rows
+        mock_session = Mock()
+        mock_session.run.return_value = mock_run
+        session_ctx = MagicMock()
+        session_ctx.__enter__ = Mock(return_value=mock_session)
+        session_ctx.__exit__ = Mock(return_value=False)
+        mock_pipeline._conn.session.return_value = session_ctx
+
+        from codememory.server import app as app_module
+        monkeypatch.setattr(app_module, "_get_research_pipeline", lambda: mock_pipeline)
+
+        result = app_module.search_web_memory(query="graph database", limit=5)
+
+        assert "[Temporal]" in result
+        assert "Temporal snippet" in result
+        mock_pipeline._temporal_bridge.retrieve.assert_called_once()
+
+    def test_search_web_memory_falls_back_when_temporal_bridge_fails(self, monkeypatch):
+        """Temporal bridge errors keep the baseline result shape and content."""
+        mock_pipeline = _make_mock_pipeline()
+        mock_pipeline._temporal_bridge.is_available.return_value = True
+        mock_pipeline._temporal_bridge.retrieve.side_effect = RuntimeError("bridge down")
+
+        rows = [
+            {
+                "text": "Baseline research",
+                "score": 0.92,
+                "source_agent": "claude",
+                "research_question": "What is Neo4j?",
+                "confidence": "high",
+                "source_key": "deep_research_agent",
+                "content_hash": "abc",
+                "project_id": "proj1",
+                "ingested_at": "2026-03-01T00:00:00+00:00",
+                "entities": ["Neo4j"],
+                "entity_types": ["technology"],
+                "node_labels": ["Memory", "Research", "Finding"],
+            }
+        ]
+        mock_run = Mock()
+        mock_run.data.return_value = rows
+        mock_session = Mock()
+        mock_session.run.return_value = mock_run
+        session_ctx = MagicMock()
+        session_ctx.__enter__ = Mock(return_value=mock_session)
+        session_ctx.__exit__ = Mock(return_value=False)
+        mock_pipeline._conn.session.return_value = session_ctx
+
+        from codememory.server import app as app_module
+        monkeypatch.setattr(app_module, "_get_research_pipeline", lambda: mock_pipeline)
+
+        result = app_module.search_web_memory(query="graph database", limit=5)
+
+        assert "Baseline research" in result
+        assert "[Temporal]" not in result
 
 
 # ---------------------------------------------------------------------------

@@ -19,6 +19,11 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 import neo4j
 from codememory.ingestion.graph import KnowledgeGraphBuilder
+from codememory.temporal.seeds import (
+    collect_seed_entities,
+    extract_query_seed_entities,
+    parse_as_of_to_micros,
+)
 from codememory.telemetry import TelemetryStore, resolve_telemetry_db_path
 
 logger = logging.getLogger(__name__)
@@ -762,12 +767,18 @@ def _get_research_pipeline():
     from codememory.core.connection import ConnectionManager
     from codememory.core.embedding import EmbeddingService
     from codememory.core.entity_extraction import EntityExtractionService
+    from codememory.temporal.bridge import get_temporal_bridge
     from codememory.web.pipeline import ResearchIngestionPipeline
 
     conn = ConnectionManager(neo4j_uri, neo4j_user, neo4j_password)
     embedder = EmbeddingService(provider="gemini", api_key=google_api_key)
     extractor = EntityExtractionService(api_key=groq_api_key)
-    _research_pipeline = ResearchIngestionPipeline(conn, embedder, extractor)
+    _research_pipeline = ResearchIngestionPipeline(
+        conn,
+        embedder,
+        extractor,
+        temporal_bridge=get_temporal_bridge(),
+    )
     return _research_pipeline
 
 
@@ -838,6 +849,75 @@ def memory_ingest_research(
         return f"Error: Research ingestion failed: {str(e)}"
 
 
+def _format_baseline_research_results(results: list[dict[str, Any]]) -> str:
+    """Format baseline vector-search research rows for MCP output."""
+    output = f"Found {len(results)} relevant research result(s):\n\n"
+    for i, row in enumerate(results, 1):
+        text = (row.get("text") or "")[:300]
+        score = row.get("score", 0)
+        source_agent = row.get("source_agent", "unknown")
+        labels = row.get("node_labels", [])
+        node_type = "Finding" if "Finding" in labels else "Chunk" if "Chunk" in labels else "Research"
+        question = row.get("research_question") or ""
+        confidence = row.get("confidence") or ""
+
+        output += f"{i}. [{node_type}] [Score: {score:.2f}] (by {source_agent})\n"
+        if question:
+            output += f"   Question: {question}\n"
+        if confidence:
+            output += f"   Confidence: {confidence}\n"
+        output += f"   ```\n{text}...\n   ```\n\n"
+
+    return output.strip()
+
+
+def _format_temporal_research_results(results: list[dict[str, Any]]) -> str:
+    """Format temporal retrieval rows while preserving the string-style MCP contract."""
+    output = f"Found {len(results)} relevant research result(s):\n\n"
+    for i, row in enumerate(results, 1):
+        subject = (row.get("subject") or {}).get("name", "unknown")
+        predicate = row.get("predicate", "RELATED_TO")
+        obj = (row.get("object") or {}).get("name", "unknown")
+        confidence = float(row.get("confidence", 0.0) or 0.0)
+        relevance = float(row.get("relevance", 0.0) or 0.0)
+        evidence = (row.get("evidence") or [{}])[0]
+        source_kind = evidence.get("sourceKind", "unknown")
+        snippet = (evidence.get("rawExcerpt") or "")[:300]
+
+        output += (
+            f"{i}. [Temporal] [Score: {(confidence * relevance):.2f}] "
+            f"[{source_kind}] {subject} -[{predicate}]-> {obj}\n"
+        )
+        if snippet:
+            output += f"   ```\n{snippet}...\n   ```\n\n"
+        else:
+            output += "\n"
+
+    return output.strip()
+
+
+def _filter_rows_as_of(rows: list[dict[str, Any]], as_of: str | None) -> list[dict[str, Any]]:
+    """Apply the current ingested_at cutoff heuristic when provided."""
+    if as_of is None:
+        return rows
+    return [row for row in rows if (row.get("ingested_at") or "") <= as_of]
+
+
+def _dominant_project_id(rows: list[dict[str, Any]]) -> str | None:
+    """Choose the best project id for temporal replay from baseline results."""
+    project_scores: dict[str, float] = {}
+    for row in rows:
+        project_id = row.get("project_id")
+        if not project_id:
+            continue
+        project_scores[project_id] = project_scores.get(project_id, 0.0) + float(
+            row.get("score", 1.0) or 1.0
+        )
+    if not project_scores:
+        return None
+    return max(project_scores.items(), key=lambda item: item[1])[0]
+
+
 @mcp.tool()
 @rate_limit
 @log_tool_call
@@ -860,66 +940,76 @@ def search_web_memory(query: str, limit: int = 5, as_of: str | None = None) -> s
     if pipeline is None:
         return "Error: Research pipeline not available. Check GOOGLE_API_KEY and GROQ_API_KEY environment variables."
 
-    try:
-        embedding = pipeline._embedder.embed(query)
-    except Exception as e:
-        logger.error("Embedding failed for search query: %s", e)
-        return f"Error: Failed to embed search query: {str(e)}"
-
     safe_limit = max(1, int(limit))
 
-    search_cypher = """
-    CALL db.index.vector.queryNodes('research_embeddings', $limit, $embedding)
-    YIELD node, score
-    RETURN
-        node.text AS text,
-        node.source_agent AS source_agent,
-        node.research_question AS research_question,
-        node.confidence AS confidence,
-        node.source_key AS source_key,
-        node.project_id AS project_id,
-        node.ingested_at AS ingested_at,
-        labels(node) AS node_labels,
-        score
-    ORDER BY score DESC
-    """
-
     try:
+        embedding = pipeline._embedder.embed(query)
         with pipeline._conn.session() as session:
-            results = session.run(
-                search_cypher,
+            baseline_results = session.run(
+                """
+                CALL db.index.vector.queryNodes('research_embeddings', $limit, $embedding)
+                YIELD node, score
+                RETURN
+                    node.text AS text,
+                    node.source_agent AS source_agent,
+                    node.research_question AS research_question,
+                    node.confidence AS confidence,
+                    node.source_key AS source_key,
+                    node.content_hash AS content_hash,
+                    node.project_id AS project_id,
+                    node.ingested_at AS ingested_at,
+                    node.entities AS entities,
+                    node.entity_types AS entity_types,
+                    labels(node) AS node_labels,
+                    score
+                ORDER BY score DESC
+                """,
                 limit=safe_limit,
                 embedding=embedding,
             ).data()
-        if as_of is not None:
-            # Phase 7: node-level ingested_at heuristic. Full graph-level filter in Phase 9.
-            results = [
-                result
-                for result in results
-                if (result.get("ingested_at") or "") <= as_of
-            ]
+        baseline_results = _filter_rows_as_of(baseline_results, as_of)
 
-        if not results:
+        if not baseline_results:
             return "No relevant research found."
 
-        output = f"Found {len(results)} relevant research result(s):\n\n"
-        for i, r in enumerate(results, 1):
-            text = (r.get("text") or "")[:300]
-            score = r.get("score", 0)
-            source_agent = r.get("source_agent", "unknown")
-            labels = r.get("node_labels", [])
-            node_type = "Finding" if "Finding" in labels else "Chunk" if "Chunk" in labels else "Research"
-            question = r.get("research_question") or ""
-            confidence = r.get("confidence") or ""
+        bridge = pipeline.__dict__.get("_temporal_bridge") if hasattr(pipeline, "__dict__") else None
+        project_id = _dominant_project_id(baseline_results)
+        if bridge is not None and bridge.is_available() and project_id is not None:
+            seeds = collect_seed_entities(baseline_results, limit=5)
+            if not seeds:
+                try:
+                    seeds = extract_query_seed_entities(query, pipeline._extractor)  # type: ignore[attr-defined]
+                except Exception as exc:
+                    logger.warning("search_web_memory query seed extraction failed: %s", exc)
+                    seeds = []
 
-            output += f"{i}. [{node_type}] [Score: {score:.2f}] (by {source_agent})\n"
-            if question:
-                output += f"   Question: {question}\n"
-            if confidence:
-                output += f"   Confidence: {confidence}\n"
-            output += f"   ```\n{text}...\n   ```\n\n"
+            if seeds:
+                try:
+                    temporal_payload = bridge.retrieve(
+                        project_id=project_id,
+                        seed_entities=seeds,
+                        as_of_us=parse_as_of_to_micros(as_of),
+                        max_edges=max(safe_limit * 2, safe_limit),
+                    )
+                    temporal_results = temporal_payload.get("results") or []
+                    if temporal_results:
+                        return validate_tool_output(
+                            _format_temporal_research_results(temporal_results)
+                        )
+                    logger.info(
+                        "search_web_memory falling back to baseline: empty temporal result"
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "search_web_memory falling back to baseline after temporal failure: %s",
+                        exc,
+                    )
+            else:
+                logger.info("search_web_memory falling back to baseline: no temporal seeds")
+        else:
+            logger.info("search_web_memory falling back to baseline: temporal bridge unavailable")
 
-        return validate_tool_output(output.strip())
+        return validate_tool_output(_format_baseline_research_results(baseline_results))
     except Exception as e:
         logger.error("Research search failed: %s", e)
         return f"Error: Research search failed: {str(e)}"

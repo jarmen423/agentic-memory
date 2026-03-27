@@ -2,31 +2,30 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: — Full Multi-Module Memory System with Temporal GraphRAG
-current_phase: 6
+current_phase: 9
 status: active
-last_updated: "2026-03-25T00:00:00Z"
+last_updated: "2026-03-26T23:55:00Z"
 progress:
   total_phases: 10
-  completed_phases: 5
+  completed_phases: 8
   total_plans: 14
   completed_plans: 14
 ---
 
 # Agentic Memory — Project State
 
-**Last Updated:** 2026-03-25
-**Current Phase:** 6 + 7 (parallel execution)
-**Phase Status:** Not Started — planning in progress
-**Last Session Stopped At:** Roadmap restructured for temporal GraphRAG. v1-baseline branch created. Phase 6 (am-ext) + Phase 7 (Temporal Schema + Claim Extraction + Research Scheduling) execute in parallel next.
+**Last Updated:** 2026-03-26
+**Current Phase:** 9
+**Phase Status:** Ready for discuss/planning
+**Last Session Stopped At:** Phase 8 runtime verification completed on the local stack. Phase 9 is the next active workflow target.
 
 ---
 
 ## Active Phase
 
-**Phase 6: am-ext (Browser Extension)** ← parallel track A
-**Phase 7: Temporal Schema + Claim Extraction + Research Scheduling** ← parallel track B
+**Phase 9: Temporal PPR Retrieval + Benchmark**
 
-**Next Action:** Plan and execute Phase 6 + Phase 7 simultaneously
+**Next Action:** Run Phase 9 GSD workflow starting with discuss/research/planning
 
 ---
 
@@ -48,9 +47,9 @@ progress:
 | 3 | Web Research Scheduling | Complete (folded into Phase 7) |
 | 4 | Conversation Memory Core | Complete |
 | 5 | am-proxy (ACP Proxy) | Complete |
-| 6 | am-ext (Browser Extension) | Not Started |
-| 7 | Temporal Schema + Claim Extraction + Research Scheduling | Not Started |
-| 8 | SpacetimeDB Maintenance Layer | Not Started |
+| 6 | am-ext (Browser Extension) | Complete |
+| 7 | Temporal Schema + Claim Extraction + Research Scheduling | Complete |
+| 8 | SpacetimeDB Maintenance Layer | Complete |
 | 9 | Temporal PPR Retrieval + Benchmark | Not Started |
 | 10 | Cross-Module Integration & Hardening | Not Started |
 

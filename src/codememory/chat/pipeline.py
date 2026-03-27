@@ -17,6 +17,7 @@ from codememory.core.embedding import EmbeddingService
 from codememory.core.entity_extraction import EntityExtractionService, build_embed_text
 from codememory.core.graph_writer import GraphWriter
 from codememory.core.registry import register_source
+from codememory.temporal.bridge import TemporalBridge
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ class ConversationIngestionPipeline(BaseIngestionPipeline):
         connection_manager: ConnectionManager,
         embedding_service: EmbeddingService,
         entity_extractor: EntityExtractionService,
+        temporal_bridge: TemporalBridge | None = None,
     ) -> None:
         """Initialize the conversation ingestion pipeline.
 
@@ -62,6 +64,7 @@ class ConversationIngestionPipeline(BaseIngestionPipeline):
         self._embedder = embedding_service
         self._extractor = entity_extractor
         self._writer = GraphWriter(connection_manager)
+        self._temporal_bridge = temporal_bridge
 
     def ingest(self, source: dict[str, Any]) -> dict[str, Any]:
         """Ingest a single conversation turn into the memory graph.
@@ -216,6 +219,15 @@ class ConversationIngestionPipeline(BaseIngestionPipeline):
                     valid_from=now,
                     confidence=1.0,
                 )
+                self._shadow_write_entity_relation(
+                    project_id=project_id,
+                    session_id=session_id,
+                    turn_index=turn_index,
+                    timestamp=timestamp,
+                    content=content,
+                    entity=entity,
+                    predicate=rel_type,
+                )
 
         logger.info(
             "Turn ingested: session_id=%s turn_index=%d role=%s embedded=%s entities=%d",
@@ -260,3 +272,54 @@ class ConversationIngestionPipeline(BaseIngestionPipeline):
             ISO-8601 UTC datetime string.
         """
         return datetime.now(timezone.utc).isoformat()
+
+    def _shadow_write_entity_relation(
+        self,
+        *,
+        project_id: str,
+        session_id: str,
+        turn_index: int,
+        timestamp: str,
+        content: str,
+        entity: dict[str, Any],
+        predicate: str,
+    ) -> None:
+        """Best-effort temporal shadow write for conversation entity mentions."""
+        if self._temporal_bridge is None or not self._temporal_bridge.is_available():
+            return
+
+        source_id = f"{session_id}:{turn_index}"
+        evidence = {
+            "sourceKind": "conversation_turn",
+            "sourceId": source_id,
+            "capturedAtUs": self._iso_to_micros(timestamp),
+            "rawExcerpt": content[:500],
+        }
+
+        try:
+            self._temporal_bridge.ingest_relation(
+                project_id=project_id,
+                subject_kind="conversation_turn",
+                subject_name=source_id,
+                predicate=predicate,
+                object_kind=entity["type"],
+                object_name=entity["name"],
+                valid_from_us=self._iso_to_micros(timestamp),
+                confidence=1.0,
+                evidence=evidence,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Conversation temporal shadow write failed: session_id=%s turn_index=%s error=%s",
+                session_id,
+                turn_index,
+                exc,
+            )
+
+    def _iso_to_micros(self, value: str) -> int:
+        """Convert an ISO timestamp to UTC microseconds."""
+        normalized = value.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp() * 1_000_000)

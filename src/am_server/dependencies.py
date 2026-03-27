@@ -9,6 +9,7 @@ from codememory.chat.pipeline import ConversationIngestionPipeline
 from codememory.core.connection import ConnectionManager
 from codememory.core.embedding import EmbeddingService
 from codememory.core.entity_extraction import EntityExtractionService
+from codememory.temporal.bridge import get_temporal_bridge
 from codememory.web.pipeline import ResearchIngestionPipeline
 
 
@@ -28,7 +29,12 @@ def get_pipeline() -> ResearchIngestionPipeline:
         api_key=os.environ["GEMINI_API_KEY"],
     )
     extractor = EntityExtractionService(api_key=os.environ["GROQ_API_KEY"])
-    return ResearchIngestionPipeline(conn, embedder, extractor)
+    return ResearchIngestionPipeline(
+        conn,
+        embedder,
+        extractor,
+        temporal_bridge=get_temporal_bridge(),
+    )
 
 
 @lru_cache(maxsize=1)
@@ -47,4 +53,9 @@ def get_conversation_pipeline() -> ConversationIngestionPipeline:
         api_key=os.environ["GEMINI_API_KEY"],
     )
     extractor = EntityExtractionService(api_key=os.environ["GROQ_API_KEY"])
-    return ConversationIngestionPipeline(conn, embedder, extractor)
+    return ConversationIngestionPipeline(
+        conn,
+        embedder,
+        extractor,
+        temporal_bridge=get_temporal_bridge(),
+    )

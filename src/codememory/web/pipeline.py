@@ -19,6 +19,7 @@ from codememory.core.embedding import EmbeddingService
 from codememory.core.entity_extraction import EntityExtractionService, build_embed_text
 from codememory.core.graph_writer import GraphWriter
 from codememory.core.registry import register_source
+from codememory.temporal.bridge import TemporalBridge
 from codememory.web.chunker import RawContent, _to_markdown, chunk_markdown
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,7 @@ class ResearchIngestionPipeline(BaseIngestionPipeline):
         embedding_service: EmbeddingService,
         entity_extractor: EntityExtractionService,
         claim_extractor: ClaimExtractionService | None = None,
+        temporal_bridge: TemporalBridge | None = None,
     ) -> None:
         """Initialize the research ingestion pipeline.
 
@@ -70,6 +72,7 @@ class ResearchIngestionPipeline(BaseIngestionPipeline):
                     model=getattr(entity_extractor, "model", "llama-3.3-70b-versatile"),
                 )
         self._writer = GraphWriter(connection_manager)
+        self._temporal_bridge = temporal_bridge
 
     def ingest(self, source: dict[str, Any]) -> dict[str, Any]:
         """Route ingestion by content type.
@@ -185,6 +188,7 @@ class ResearchIngestionPipeline(BaseIngestionPipeline):
 
         # 4-6. Embed and write each chunk; wire HAS_CHUNK and PART_OF
         chunk_source_key = "web_crawl4ai"
+        chunk_shadow_sources: list[tuple[str, str, str]] = []
         for chunk in chunks:
             # CRITICAL: Chunk content_hash encodes (session_id, chunk_index, text)
             # per CONTEXT.md Chunk dedup key of (session_id, chunk_index).
@@ -212,6 +216,8 @@ class ResearchIngestionPipeline(BaseIngestionPipeline):
             }
             labels = self.node_labels(chunk_source_key)
             self._writer.write_memory_node(labels, chunk_props)
+            chunk_source_id = f"{chunk_source_key}:{chunk_hash}"
+            chunk_shadow_sources.append((chunk_source_id, chunk_hash, chunk.text))
 
             # Wire HAS_CHUNK (Report -> Chunk)
             self._writer.write_has_chunk_relationship(
@@ -249,12 +255,34 @@ class ResearchIngestionPipeline(BaseIngestionPipeline):
                     valid_from=now,
                     confidence=1.0,
                 )
+                self._shadow_write_relation(
+                    project_id=project_id,
+                    subject_kind="research_chunk",
+                    subject_name=f"{chunk_source_key}:{chunk_hash}",
+                    predicate=rel_type,
+                    object_kind=entity["type"],
+                    object_name=entity["name"],
+                    source_kind="research_chunk",
+                    source_id=f"{chunk_source_key}:{chunk_hash}",
+                    source_text=chunk.text,
+                    captured_at=now,
+                )
 
         if self._claim_extractor is not None:
             try:
                 claims = self._claim_extractor.extract(content)
                 for claim in claims:
                     self._write_claim(claim)
+                    if chunk_shadow_sources:
+                        source_id, _, source_text = chunk_shadow_sources[0]
+                        self._shadow_write_claim(
+                            project_id=project_id,
+                            claim=claim,
+                            source_kind="research_chunk",
+                            source_id=source_id,
+                            source_text=source_text,
+                            captured_at=now,
+                        )
             except Exception as exc:
                 logger.error("Claim extraction failed (non-blocking): %s", exc)
 
@@ -378,6 +406,18 @@ class ResearchIngestionPipeline(BaseIngestionPipeline):
                 valid_from=now,
                 confidence=1.0,
             )
+            self._shadow_write_relation(
+                project_id=source["project_id"],
+                subject_kind="research_finding",
+                subject_name=f"{source_key}:{content_hash}",
+                predicate=rel_type,
+                object_kind=entity["type"],
+                object_name=entity["name"],
+                source_kind="research_finding",
+                source_id=f"{source_key}:{content_hash}",
+                source_text=text,
+                captured_at=now,
+            )
 
         logger.info(
             "Finding ingested: project_id=%s content_hash=%s citations=%d",
@@ -438,3 +478,105 @@ class ResearchIngestionPipeline(BaseIngestionPipeline):
                 valid_to=claim.get("valid_to"),
                 confidence=confidence,
             )
+
+    def _shadow_write_relation(
+        self,
+        *,
+        project_id: str,
+        subject_kind: str,
+        subject_name: str,
+        predicate: str,
+        object_kind: str,
+        object_name: str,
+        source_kind: str,
+        source_id: str,
+        source_text: str,
+        captured_at: str,
+    ) -> None:
+        """Best-effort temporal shadow write for research mentions."""
+        if self._temporal_bridge is None or not self._temporal_bridge.is_available():
+            return
+
+        evidence = {
+            "sourceKind": source_kind,
+            "sourceId": source_id,
+            "capturedAtUs": self._iso_to_micros(captured_at),
+            "rawExcerpt": source_text[:500],
+        }
+
+        try:
+            self._temporal_bridge.ingest_relation(
+                project_id=project_id,
+                subject_kind=subject_kind,
+                subject_name=subject_name,
+                predicate=predicate,
+                object_kind=object_kind,
+                object_name=object_name,
+                valid_from_us=self._iso_to_micros(captured_at),
+                confidence=1.0,
+                evidence=evidence,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Research temporal relation shadow write failed: source_kind=%s source_id=%s error=%s",
+                source_kind,
+                source_id,
+                exc,
+            )
+
+    def _shadow_write_claim(
+        self,
+        *,
+        project_id: str,
+        claim: dict[str, Any],
+        source_kind: str,
+        source_id: str,
+        source_text: str,
+        captured_at: str,
+    ) -> None:
+        """Best-effort temporal shadow write for extracted claims."""
+        if self._temporal_bridge is None or not self._temporal_bridge.is_available():
+            return
+
+        evidence = {
+            "sourceKind": source_kind,
+            "sourceId": source_id,
+            "capturedAtUs": self._iso_to_micros(captured_at),
+            "rawExcerpt": source_text[:500],
+        }
+
+        try:
+            self._temporal_bridge.ingest_claim(
+                project_id=project_id,
+                subject_kind="unknown",
+                subject_name=claim["subject"],
+                predicate=claim["predicate"],
+                object_kind="unknown",
+                object_name=claim["object"],
+                valid_from_us=self._claim_time_to_micros(claim.get("valid_from"), captured_at),
+                valid_to_us=self._claim_time_to_micros(claim.get("valid_to"), None),
+                confidence=float(claim.get("confidence", 1.0)),
+                evidence=evidence,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Research temporal claim shadow write failed: source_kind=%s source_id=%s error=%s",
+                source_kind,
+                source_id,
+                exc,
+            )
+
+    def _claim_time_to_micros(self, value: str | None, fallback: str | None) -> int | None:
+        """Parse claim timestamps, falling back when needed."""
+        target = value or fallback
+        if target is None:
+            return None
+        return self._iso_to_micros(target)
+
+    def _iso_to_micros(self, value: str) -> int:
+        """Convert an ISO timestamp to UTC microseconds."""
+        normalized = value.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp() * 1_000_000)

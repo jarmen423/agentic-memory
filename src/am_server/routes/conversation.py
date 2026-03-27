@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Query
 from am_server.auth import require_auth
 from am_server.dependencies import get_conversation_pipeline
 from am_server.models import ConversationIngestRequest
+from codememory.server.tools import search_conversation_turns_sync
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ async def search_conversations(
     project_id: str | None = Query(None, description="Optional project filter"),
     role: str | None = Query(None, description="Optional role filter: user | assistant"),
     limit: int = Query(10, ge=1, le=50, description="Max results to return"),
+    as_of: str | None = Query(None, description="Optional ISO-8601 temporal cutoff"),
 ) -> dict:
     """Search the conversation memory graph by semantic similarity.
 
@@ -46,76 +48,22 @@ async def search_conversations(
     """
     pipeline = get_conversation_pipeline()
     try:
-        conn = pipeline._conn  # type: ignore[attr-defined]
-        embedder = pipeline._embedder  # type: ignore[attr-defined]
         loop = asyncio.get_event_loop()
 
         def _query() -> list:
-            # Embed the query for vector search
-            query_embedding = embedder.embed(q)
-
-            with conn.session() as session:
-                # Vector search path
-                cypher = (
-                    "CALL db.index.vector.queryNodes("
-                    "  'chat_embeddings', $limit, $embedding"
-                    ") YIELD node, score "
-                    "WHERE ($project_id IS NULL OR node.project_id = $project_id)"
-                    "  AND ($role IS NULL OR node.role = $role) "
-                    "RETURN "
-                    "    node.session_id     AS session_id, "
-                    "    node.turn_index     AS turn_index, "
-                    "    node.role           AS role, "
-                    "    node.content        AS content, "
-                    "    node.source_agent   AS source_agent, "
-                    "    node.timestamp      AS timestamp, "
-                    "    node.entities       AS entities, "
-                    "    score "
-                    "ORDER BY score DESC "
-                    "LIMIT $limit"
-                )
-                result = session.run(
-                    cypher,
-                    embedding=query_embedding,
-                    project_id=project_id,
-                    role=role,
-                    limit=limit,
-                )
-                return [dict(record) for record in result]
+            return search_conversation_turns_sync(
+                pipeline,
+                query=q,
+                project_id=project_id,
+                role=role,
+                limit=limit,
+                as_of=as_of,
+                log_prefix="/search/conversations",
+            )
 
         results = await loop.run_in_executor(None, _query)
     except Exception:
-        logger.exception("search_conversations failed, falling back to text search")
-        # Text fallback
-        try:
-            conn = pipeline._conn  # type: ignore[attr-defined]
-            loop = asyncio.get_event_loop()
-
-            def _text_query() -> list:
-                with conn.session() as session:
-                    text_cypher = (
-                        "MATCH (n:Memory:Conversation:Turn) "
-                        "WHERE toLower(n.content) CONTAINS toLower($q) "
-                        "  AND ($project_id IS NULL OR n.project_id = $project_id) "
-                        "  AND ($role IS NULL OR n.role = $role) "
-                        "RETURN "
-                        "    n.session_id    AS session_id, "
-                        "    n.turn_index    AS turn_index, "
-                        "    n.role          AS role, "
-                        "    n.content       AS content, "
-                        "    n.source_agent  AS source_agent, "
-                        "    n.timestamp     AS timestamp, "
-                        "    n.entities      AS entities, "
-                        "    1.0 AS score "
-                        "LIMIT $limit"
-                    )
-                    result = session.run(
-                        text_cypher, q=q, project_id=project_id, role=role, limit=limit
-                    )
-                    return [dict(record) for record in result]
-
-            results = await loop.run_in_executor(None, _text_query)
-        except Exception:
-            results = []
+        logger.exception("search_conversations failed")
+        results = []
 
     return {"results": results}

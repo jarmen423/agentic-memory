@@ -1,7 +1,7 @@
 # Phase 8 Summary: SpacetimeDB Maintenance Layer
 
-**Date:** 2026-03-25  
-**Status:** Execution complete, runtime verification pending
+**Date:** 2026-03-26  
+**Status:** Complete
 
 ## Delivered
 
@@ -42,13 +42,21 @@
    - `NEO4J_USER`
    - `NEO4J_PASSWORD`
 
-## Verification Gap
+## Verification
 
-Runtime verification was not completed in this session because the local Node/SpacetimeDB toolchain was not available from the terminal. The code and package scaffolding are in place, but these still need to be exercised:
+Runtime verification completed on the local development stack:
 
 - `npm install`
 - `npm run typecheck --workspace am-temporal-kg`
 - `npm run typecheck --workspace am-sync-neo4j`
-- `spacetime publish agentic-memory-temporal`
-- `spacetime generate --lang typescript ...`
-- live sync into Neo4j with sample temporal edges
+- `npm run build --workspace am-temporal-kg`
+- `npm run build --workspace am-sync-neo4j`
+- local `spacetime publish` against the standalone server
+- local bindings generation via `spacetime generate ... --module-path .`
+- live sync worker startup with subscription applied
+- seeded temporal claim mirrored into Neo4j as `:TemporalNode`, `SYNCS_TO`, and `:TemporalEvidence`
+
+## Follow-On
+
+- Local debug seed data was cleared after verification.
+- Phase 9 is the next GSD step: temporal PPR retrieval cutover and benchmark harness.

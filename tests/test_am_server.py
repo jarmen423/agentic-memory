@@ -14,6 +14,18 @@ from am_server import dependencies
 from am_server.app import create_app
 
 
+def _iter_result(rows):
+    result = MagicMock()
+    result.__iter__.return_value = iter(rows)
+    return result
+
+
+def _single_result(payload):
+    result = MagicMock()
+    result.single.return_value = payload
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -36,7 +48,22 @@ def client(monkeypatch):
         lambda *args, **kwargs: mock_pipeline,
     )
 
+    mock_conversation_pipeline = MagicMock()
+    mock_conversation_pipeline.ingest.return_value = {"stored": True}
+    mock_conversation_pipeline._embedder = MagicMock()
+    mock_conversation_pipeline._embedder.embed.return_value = [0.1] * 768
+    mock_conversation_pipeline._extractor = MagicMock()
+    mock_conversation_pipeline._extractor.extract.return_value = [{"name": "Neo4j", "type": "technology"}]
+    mock_conversation_pipeline._temporal_bridge = MagicMock()
+    mock_conversation_pipeline._temporal_bridge.is_available.return_value = False
+    mock_conversation_pipeline._conn = MagicMock()
+    monkeypatch.setattr(
+        "am_server.dependencies.ConversationIngestionPipeline",
+        lambda *args, **kwargs: mock_conversation_pipeline,
+    )
+
     dependencies.get_pipeline.cache_clear()
+    dependencies.get_conversation_pipeline.cache_clear()
     app = create_app()
     with TestClient(app, raise_server_exceptions=False) as c:
         yield c
@@ -200,3 +227,104 @@ def test_mcp_mounted(client):
     """
     resp = client.get("/mcp", follow_redirects=False)
     assert resp.status_code != 404
+
+
+def test_search_conversations_temporal_results_keep_shape(client, auth_headers):
+    """Temporal-ranked conversation search preserves the REST response contract."""
+    pipeline = dependencies.get_conversation_pipeline()
+    pipeline._temporal_bridge.is_available.return_value = True
+    pipeline._temporal_bridge.retrieve.return_value = {
+        "results": [
+            {
+                "confidence": 0.8,
+                "relevance": 0.9,
+                "evidence": [{"sourceKind": "conversation_turn", "sourceId": "sess-1:0"}],
+            }
+        ]
+    }
+
+    session = MagicMock()
+    session.run.side_effect = [
+        _iter_result(
+            [
+                {
+                    "session_id": "sess-1",
+                    "turn_index": 0,
+                    "role": "user",
+                    "content": "baseline",
+                    "source_agent": "claude",
+                    "timestamp": "2026-03-01T00:00:00+00:00",
+                    "ingested_at": "2026-03-01T00:00:00+00:00",
+                    "entities": ["Neo4j"],
+                    "entity_types": ["technology"],
+                    "score": 0.9,
+                }
+            ]
+        ),
+        _single_result(
+            {
+                "session_id": "sess-1",
+                "turn_index": 0,
+                "role": "assistant",
+                "content": "temporal result",
+                "source_agent": "claude",
+                "timestamp": "2026-03-01T00:00:00+00:00",
+                "ingested_at": "2026-03-01T00:00:00+00:00",
+                "entities": ["Neo4j"],
+            }
+        ),
+    ]
+    session_ctx = MagicMock()
+    session_ctx.__enter__.return_value = session
+    session_ctx.__exit__.return_value = False
+    pipeline._conn.session.return_value = session_ctx
+
+    resp = client.get(
+        "/search/conversations?q=neo4j&project_id=proj1&as_of=2026-03-05T00:00:00+00:00",
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["results"][0]["content"] == "temporal result"
+    assert body["results"][0]["session_id"] == "sess-1"
+
+
+def test_search_conversations_temporal_failure_falls_back(client, auth_headers):
+    """Temporal bridge errors fall back to the baseline vector result shape."""
+    pipeline = dependencies.get_conversation_pipeline()
+    pipeline._temporal_bridge.is_available.return_value = True
+    pipeline._temporal_bridge.retrieve.side_effect = RuntimeError("bridge down")
+
+    session = MagicMock()
+    session.run.side_effect = [
+        _iter_result(
+            [
+                {
+                    "session_id": "sess-1",
+                    "turn_index": 0,
+                    "role": "user",
+                    "content": "baseline result",
+                    "source_agent": "claude",
+                    "timestamp": "2026-03-01T00:00:00+00:00",
+                    "ingested_at": "2026-03-01T00:00:00+00:00",
+                    "entities": ["Neo4j"],
+                    "entity_types": ["technology"],
+                    "score": 0.9,
+                }
+            ]
+        )
+    ]
+    session_ctx = MagicMock()
+    session_ctx.__enter__.return_value = session
+    session_ctx.__exit__.return_value = False
+    pipeline._conn.session.return_value = session_ctx
+
+    resp = client.get(
+        "/search/conversations?q=neo4j&project_id=proj1",
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["results"][0]["content"] == "baseline result"

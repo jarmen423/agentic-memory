@@ -22,7 +22,7 @@ import pytest
 from codememory.core.graph_writer import GraphWriter
 
 
-def _make_pipeline(source_key: str = "chat_mcp"):
+def _make_pipeline(source_key: str = "chat_mcp", temporal_bridge: MagicMock | None = None):
     """Return a (pipeline, mock_writer) pair with all dependencies mocked."""
     from codememory.chat.pipeline import ConversationIngestionPipeline
 
@@ -37,7 +37,12 @@ def _make_pipeline(source_key: str = "chat_mcp"):
     mock_extractor = MagicMock()
     mock_extractor.extract.return_value = [{"name": "agentic-memory", "type": "project"}]
 
-    pipeline = ConversationIngestionPipeline(mock_conn, mock_embedder, mock_extractor)
+    pipeline = ConversationIngestionPipeline(
+        mock_conn,
+        mock_embedder,
+        mock_extractor,
+        temporal_bridge=temporal_bridge,
+    )
 
     # Replace writer with MagicMock to inspect calls without hitting Neo4j
     mock_writer = MagicMock()
@@ -167,6 +172,33 @@ class TestEmbeddableTurnFlow:
         pipeline, _ = _make_pipeline()
         pipeline.ingest(_turn_source(role="assistant"))
         assert pipeline._embedder.embed.call_count == 1
+
+    def test_user_turn_shadow_writes_temporal_relation(self):
+        """Embedded turns attempt a best-effort temporal bridge shadow write."""
+        bridge = MagicMock()
+        bridge.is_available.return_value = True
+        pipeline, _ = _make_pipeline(temporal_bridge=bridge)
+
+        pipeline.ingest(_turn_source(role="user"))
+
+        bridge.ingest_relation.assert_called_once()
+        kwargs = bridge.ingest_relation.call_args.kwargs
+        assert kwargs["subject_kind"] == "conversation_turn"
+        assert kwargs["subject_name"] == "sess-test-abc:0"
+        assert kwargs["evidence"]["sourceKind"] == "conversation_turn"
+        assert kwargs["evidence"]["sourceId"] == "sess-test-abc:0"
+
+    def test_user_turn_shadow_write_failure_is_swallowed(self):
+        """Bridge failures never break the primary Neo4j ingestion path."""
+        bridge = MagicMock()
+        bridge.is_available.return_value = True
+        bridge.ingest_relation.side_effect = RuntimeError("bridge down")
+        pipeline, _ = _make_pipeline(temporal_bridge=bridge)
+
+        result = pipeline.ingest(_turn_source(role="user"))
+
+        assert result["embedded"] is True
+        bridge.ingest_relation.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

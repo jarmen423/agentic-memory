@@ -370,7 +370,7 @@ class TestCrawlUrl:
 # ---------------------------------------------------------------------------
 
 
-def _make_pipeline():
+def _make_pipeline(temporal_bridge: MagicMock | None = None):
     """Return a (pipeline, mock_writer) pair with all dependencies mocked."""
     from codememory.web.pipeline import ResearchIngestionPipeline
 
@@ -385,7 +385,12 @@ def _make_pipeline():
     mock_extractor = MagicMock()
     mock_extractor.extract.return_value = [{"name": "SaaS", "type": "concept"}]
 
-    pipeline = ResearchIngestionPipeline(mock_conn, mock_embedder, mock_extractor)
+    pipeline = ResearchIngestionPipeline(
+        mock_conn,
+        mock_embedder,
+        mock_extractor,
+        temporal_bridge=temporal_bridge,
+    )
     pipeline._claim_extractor = MagicMock()
     pipeline._claim_extractor.extract.return_value = []
 
@@ -558,6 +563,54 @@ class TestResearchIngestionPipelineReportFlow:
         assert result["type"] == "report"
         assert mock_writer.write_report_node.call_count == 1
 
+    def test_ingest_report_shadow_writes_chunk_relations(self):
+        """Chunk-level entity relationships are mirrored to the temporal bridge."""
+        bridge = MagicMock()
+        bridge.is_available.return_value = True
+        pipeline, _ = _make_pipeline(temporal_bridge=bridge)
+
+        pipeline.ingest(_report_source())
+
+        assert bridge.ingest_relation.call_count >= 1
+        first_call = bridge.ingest_relation.call_args_list[0].kwargs
+        assert first_call["subject_kind"] == "research_chunk"
+        assert first_call["evidence"]["sourceKind"] == "research_chunk"
+        assert first_call["evidence"]["sourceId"].startswith("web_crawl4ai:")
+
+    def test_ingest_report_shadow_writes_claims(self):
+        """Extracted report claims are mirrored with research_chunk evidence ids."""
+        bridge = MagicMock()
+        bridge.is_available.return_value = True
+        pipeline, _ = _make_pipeline(temporal_bridge=bridge)
+        pipeline._claim_extractor.extract.return_value = [
+            {
+                "subject": "Agentic Memory",
+                "predicate": "USES",
+                "object": "Neo4j",
+                "valid_from": "2026-03-25T12:00:00+00:00",
+                "valid_to": None,
+                "confidence": 0.75,
+            }
+        ]
+
+        pipeline.ingest(_report_source())
+
+        bridge.ingest_claim.assert_called_once()
+        kwargs = bridge.ingest_claim.call_args.kwargs
+        assert kwargs["evidence"]["sourceKind"] == "research_chunk"
+        assert kwargs["evidence"]["sourceId"].startswith("web_crawl4ai:")
+
+    def test_ingest_report_shadow_write_failures_are_swallowed(self):
+        """Temporal shadow write failures do not break report ingest."""
+        bridge = MagicMock()
+        bridge.is_available.return_value = True
+        bridge.ingest_relation.side_effect = RuntimeError("bridge down")
+        pipeline, _ = _make_pipeline(temporal_bridge=bridge)
+
+        result = pipeline.ingest(_report_source())
+
+        assert result["type"] == "report"
+
 
 class TestChunkContentHashSessionScoped:
     """Tests verifying chunk content_hash includes session_id (CONTEXT.md dedup key)."""
@@ -667,6 +720,20 @@ class TestResearchIngestionPipelineFindingFlow:
         pipeline.ingest(_finding_source(citations=[]))
         assert mock_writer.write_source_node.call_count == 0
         assert mock_writer.write_cites_relationship.call_count == 0
+
+    def test_ingest_finding_shadow_writes_temporal_relation(self):
+        """Findings mirror entity relations to the temporal bridge using stable ids."""
+        bridge = MagicMock()
+        bridge.is_available.return_value = True
+        pipeline, _ = _make_pipeline(temporal_bridge=bridge)
+
+        pipeline.ingest(_finding_source(citations=[]))
+
+        bridge.ingest_relation.assert_called_once()
+        kwargs = bridge.ingest_relation.call_args.kwargs
+        assert kwargs["subject_kind"] == "research_finding"
+        assert kwargs["evidence"]["sourceKind"] == "research_finding"
+        assert kwargs["evidence"]["sourceId"].startswith("deep_research_agent:")
 
 
 class TestSourceRegistration:

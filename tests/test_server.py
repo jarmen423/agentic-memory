@@ -350,3 +350,51 @@ class TestGitMCPTools:
 
             assert "invalid commit sha" in result.lower()
             mock_graph.get_commit_context.assert_not_called()
+
+
+class TestTemporalSeedHelpers:
+    """Tests for shared temporal seed-discovery helpers."""
+
+    def test_collect_seed_entities_ranks_deterministically(self):
+        """Entity seed collection combines row scores and preserves deterministic ordering."""
+        from codememory.temporal.seeds import collect_seed_entities
+
+        rows = [
+            {
+                "entities": ["Neo4j", "Agentic Memory"],
+                "entity_types": ["technology", "project"],
+                "score": 0.9,
+            },
+            {
+                "entities": ["Neo4j"],
+                "entity_types": ["technology"],
+                "score": 0.8,
+            },
+        ]
+
+        seeds = collect_seed_entities(rows, limit=2)
+
+        assert seeds[0]["name"] == "Neo4j"
+        assert seeds[0]["kind"] == "technology"
+        assert len(seeds) == 2
+
+    def test_collect_seed_entities_empty_rows(self):
+        """Empty search rows return no seed entities."""
+        from codememory.temporal.seeds import collect_seed_entities
+
+        assert collect_seed_entities([], limit=5) == []
+
+    def test_parse_as_of_to_micros_invalid_returns_none(self):
+        """Invalid as_of strings do not crash temporal retrieval setup."""
+        from codememory.temporal.seeds import parse_as_of_to_micros
+
+        assert parse_as_of_to_micros("definitely-not-a-date") is None
+
+    def test_parse_conversation_source_id(self):
+        """Conversation source ids parse into session and turn index."""
+        from codememory.temporal.seeds import parse_conversation_source_id
+
+        session_id, turn_index = parse_conversation_source_id("sess-1:4")
+
+        assert session_id == "sess-1"
+        assert turn_index == 4

@@ -18,6 +18,7 @@ from pathlib import Path
 import httpx
 from mcp.server.fastmcp import FastMCP
 import neo4j
+from codememory.core.extraction_llm import resolve_extraction_llm_config
 from codememory.ingestion.graph import KnowledgeGraphBuilder
 from codememory.temporal.seeds import (
     collect_seed_entities,
@@ -752,7 +753,7 @@ def _get_research_pipeline():
         return _research_pipeline
 
     google_api_key = os.getenv("GOOGLE_API_KEY")
-    groq_api_key = os.getenv("GROQ_API_KEY")
+    extraction_llm = resolve_extraction_llm_config()
     neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
     neo4j_user = os.getenv("NEO4J_USER") or os.getenv("NEO4J_USERNAME", "neo4j")
     neo4j_password = os.getenv("NEO4J_PASSWORD", "password")
@@ -760,8 +761,8 @@ def _get_research_pipeline():
     if not google_api_key:
         logger.error("GOOGLE_API_KEY not set — research pipeline unavailable")
         return None
-    if not groq_api_key:
-        logger.error("GROQ_API_KEY not set — research pipeline unavailable")
+    if not extraction_llm.api_key:
+        logger.error("Extraction LLM API key not set — research pipeline unavailable")
         return None
 
     from codememory.core.connection import ConnectionManager
@@ -772,7 +773,12 @@ def _get_research_pipeline():
 
     conn = ConnectionManager(neo4j_uri, neo4j_user, neo4j_password)
     embedder = EmbeddingService(provider="gemini", api_key=google_api_key)
-    extractor = EntityExtractionService(api_key=groq_api_key)
+    extractor = EntityExtractionService(
+        api_key=extraction_llm.api_key,
+        model=extraction_llm.model,
+        provider=extraction_llm.provider,
+        base_url=extraction_llm.base_url,
+    )
     _research_pipeline = ResearchIngestionPipeline(
         conn,
         embedder,
@@ -825,7 +831,10 @@ def memory_ingest_research(
     """
     pipeline = _get_research_pipeline()
     if pipeline is None:
-        return "Error: Research pipeline not available. Check GOOGLE_API_KEY and GROQ_API_KEY environment variables."
+        return (
+            "Error: Research pipeline not available. Check GOOGLE_API_KEY and "
+            "the configured extraction LLM API key environment variables."
+        )
 
     source_dict = {
         "type": type,
@@ -938,7 +947,10 @@ def search_web_memory(query: str, limit: int = 5, as_of: str | None = None) -> s
     """
     pipeline = _get_research_pipeline()
     if pipeline is None:
-        return "Error: Research pipeline not available. Check GOOGLE_API_KEY and GROQ_API_KEY environment variables."
+        return (
+            "Error: Research pipeline not available. Check GOOGLE_API_KEY and "
+            "the configured extraction LLM API key environment variables."
+        )
 
     safe_limit = max(1, int(limit))
 
@@ -1088,7 +1100,7 @@ from codememory.server.tools import (  # noqa: E402,PLC0415
 register_conversation_tools(mcp)
 register_schedule_tools(
     mcp,
-    groq_api_key=os.getenv("GROQ_API_KEY"),
+    groq_api_key=resolve_extraction_llm_config().api_key,
     brave_api_key=os.getenv("BRAVE_SEARCH_API_KEY") or os.getenv("BRAVE_API_KEY"),
 )
 

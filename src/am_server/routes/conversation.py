@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from am_server.auth import require_auth
 from am_server.dependencies import get_conversation_pipeline
@@ -28,7 +28,10 @@ async def ingest_conversation(body: ConversationIngestRequest) -> dict:
     """
     pipeline = get_conversation_pipeline()
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, pipeline.ingest, body.model_dump())
+    try:
+        result = await loop.run_in_executor(None, pipeline.ingest, body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"status": "ok", "result": result}
 
 

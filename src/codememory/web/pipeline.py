@@ -8,7 +8,6 @@ two-branch ingest routing:
 
 import hashlib
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -58,18 +57,19 @@ class ResearchIngestionPipeline(BaseIngestionPipeline):
             embedding_service: Configured EmbeddingService (Gemini provider).
             entity_extractor: Configured EntityExtractionService (Groq).
             claim_extractor: Optional ClaimExtractionService. If omitted,
-                initializes from GROQ_API_KEY when available.
+                mirrors the configured entity extraction provider/model.
         """
         super().__init__(connection_manager)
         self._embedder = embedding_service
         self._extractor = entity_extractor
         self._claim_extractor = claim_extractor
         if self._claim_extractor is None:
-            groq_api_key = os.getenv("GROQ_API_KEY")
-            if groq_api_key:
+            if getattr(entity_extractor, "api_key", None):
                 self._claim_extractor = ClaimExtractionService(
-                    api_key=groq_api_key,
+                    api_key=entity_extractor.api_key,
                     model=getattr(entity_extractor, "model", "llama-3.3-70b-versatile"),
+                    provider=getattr(entity_extractor, "provider", "groq"),
+                    base_url=getattr(entity_extractor, "base_url", None),
                 )
         self._writer = GraphWriter(connection_manager)
         self._temporal_bridge = temporal_bridge

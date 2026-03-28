@@ -10,6 +10,7 @@ from codememory.chat.pipeline import ConversationIngestionPipeline
 from codememory.core.connection import ConnectionManager
 from codememory.core.embedding import EmbeddingService
 from codememory.core.entity_extraction import EntityExtractionService
+from codememory.core.extraction_llm import resolve_extraction_llm_config
 from codememory.core.scheduler import ResearchScheduler
 from codememory.temporal.bridge import get_temporal_bridge
 from codememory.temporal.seeds import (
@@ -309,7 +310,7 @@ def _get_mcp_conversation_pipeline() -> ConversationIngestionPipeline:
         password=os.getenv("NEO4J_PASSWORD", "password"),
     )
     embedder = EmbeddingService(provider="gemini", api_key=os.environ["GEMINI_API_KEY"])
-    extractor = EntityExtractionService(api_key=os.environ["GROQ_API_KEY"])
+    extractor = EntityExtractionService.from_env()
     return ConversationIngestionPipeline(
         conn,
         embedder,
@@ -322,9 +323,11 @@ def _get_mcp_conversation_pipeline() -> ConversationIngestionPipeline:
 def _get_mcp_research_pipeline() -> ResearchIngestionPipeline | None:
     """Cached ResearchIngestionPipeline for MCP tool registration."""
     google_api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-    groq_api_key = os.getenv("GROQ_API_KEY")
-    if not google_api_key or not groq_api_key:
-        logger.warning("Research MCP pipeline unavailable: missing Google/Groq API key.")
+    extraction_llm = resolve_extraction_llm_config()
+    if not google_api_key or not extraction_llm.api_key:
+        logger.warning(
+            "Research MCP pipeline unavailable: missing Google or extraction LLM API key."
+        )
         return None
 
     conn = ConnectionManager(
@@ -333,7 +336,12 @@ def _get_mcp_research_pipeline() -> ResearchIngestionPipeline | None:
         password=os.getenv("NEO4J_PASSWORD", "password"),
     )
     embedder = EmbeddingService(provider="gemini", api_key=google_api_key)
-    extractor = EntityExtractionService(api_key=groq_api_key)
+    extractor = EntityExtractionService(
+        api_key=extraction_llm.api_key,
+        model=extraction_llm.model,
+        provider=extraction_llm.provider,
+        base_url=extraction_llm.base_url,
+    )
     return ResearchIngestionPipeline(
         conn,
         embedder,
@@ -346,16 +354,18 @@ def _get_mcp_research_pipeline() -> ResearchIngestionPipeline | None:
 def _get_mcp_research_scheduler() -> ResearchScheduler | None:
     """Cached ResearchScheduler started alongside the MCP tool layer."""
     pipeline = _get_mcp_research_pipeline()
-    groq_api_key = os.getenv("GROQ_API_KEY")
+    extraction_llm = resolve_extraction_llm_config()
     brave_api_key = os.getenv("BRAVE_SEARCH_API_KEY") or os.getenv("BRAVE_API_KEY")
-    if pipeline is None or not groq_api_key or not brave_api_key:
+    if pipeline is None or not extraction_llm.api_key or not brave_api_key:
         logger.warning("Research scheduler unavailable: missing pipeline or API keys.")
         return None
 
     return ResearchScheduler(
         connection_manager=pipeline._conn,  # type: ignore[attr-defined]
-        groq_api_key=groq_api_key,
-        groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+        extraction_llm_api_key=extraction_llm.api_key,
+        extraction_llm_model=extraction_llm.model,
+        extraction_llm_provider=extraction_llm.provider,
+        extraction_llm_base_url=extraction_llm.base_url,
         brave_api_key=brave_api_key,
         pipeline=pipeline,
     )
@@ -711,10 +721,13 @@ def register_schedule_tools(
             return scheduler_singleton
 
         if connection_manager and pipeline and groq_api_key and brave_api_key:
+            extraction_llm = resolve_extraction_llm_config(api_key=groq_api_key)
             scheduler_singleton = ResearchScheduler(
                 connection_manager=connection_manager,
-                groq_api_key=groq_api_key,
-                groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+                extraction_llm_api_key=extraction_llm.api_key,
+                extraction_llm_model=extraction_llm.model,
+                extraction_llm_provider=extraction_llm.provider,
+                extraction_llm_base_url=extraction_llm.base_url,
                 brave_api_key=brave_api_key,
                 pipeline=pipeline,
             )

@@ -980,12 +980,13 @@ def cmd_web_ingest(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     google_api_key = os.getenv("GOOGLE_API_KEY")
-    groq_api_key = os.getenv("GROQ_API_KEY")
+    from codememory.core.extraction_llm import resolve_extraction_llm_config  # noqa: PLC0415
+    extraction_llm = resolve_extraction_llm_config()
     if not google_api_key:
         print("web-ingest: GOOGLE_API_KEY environment variable required.")
         sys.exit(1)
-    if not groq_api_key:
-        print("web-ingest: GROQ_API_KEY environment variable required.")
+    if not extraction_llm.api_key:
+        print("web-ingest: extraction LLM API key environment variable required.")
         sys.exit(1)
 
     neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
@@ -1031,7 +1032,12 @@ def cmd_web_ingest(args: argparse.Namespace) -> None:
 
         conn = ConnectionManager(neo4j_uri, neo4j_user, password)
         embedder = EmbeddingService(provider="gemini", api_key=google_api_key)
-        extractor = EntityExtractionService(api_key=groq_api_key)
+        extractor = EntityExtractionService(
+            api_key=extraction_llm.api_key,
+            model=extraction_llm.model,
+            provider=extraction_llm.provider,
+            base_url=extraction_llm.base_url,
+        )
         pipeline = ResearchIngestionPipeline(conn, embedder, extractor)
 
         source: dict = {
@@ -1064,16 +1070,17 @@ def cmd_web_search(args: argparse.Namespace) -> None:
     sys.exit(0)
 
 
-def _resolve_scheduler_dependencies() -> tuple[Any, str, str]:
+def _resolve_scheduler_dependencies() -> tuple[Any, Any, str]:
     """Build the shared dependencies required by research scheduler commands."""
     google_api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-    groq_api_key = os.getenv("GROQ_API_KEY")
+    from codememory.core.extraction_llm import resolve_extraction_llm_config  # noqa: PLC0415
+    extraction_llm = resolve_extraction_llm_config()
     brave_api_key = os.getenv("BRAVE_SEARCH_API_KEY") or os.getenv("BRAVE_API_KEY")
     if not google_api_key:
         print("web-schedule: GOOGLE_API_KEY or GEMINI_API_KEY environment variable required.")
         sys.exit(1)
-    if not groq_api_key:
-        print("web-schedule: GROQ_API_KEY environment variable required.")
+    if not extraction_llm.api_key:
+        print("web-schedule: extraction LLM API key environment variable required.")
         sys.exit(1)
     if not brave_api_key:
         print("web-schedule: BRAVE_SEARCH_API_KEY or BRAVE_API_KEY environment variable required.")
@@ -1090,20 +1097,40 @@ def _resolve_scheduler_dependencies() -> tuple[Any, str, str]:
 
     conn = ConnectionManager(neo4j_uri, neo4j_user, password)
     embedder = EmbeddingService(provider="gemini", api_key=google_api_key)
-    extractor = EntityExtractionService(api_key=groq_api_key)
+    extractor = EntityExtractionService(
+        api_key=extraction_llm.api_key,
+        model=extraction_llm.model,
+        provider=extraction_llm.provider,
+        base_url=extraction_llm.base_url,
+    )
     pipeline = ResearchIngestionPipeline(conn, embedder, extractor)
-    return pipeline, groq_api_key, brave_api_key
+    return pipeline, extraction_llm, brave_api_key
+
+
+def _coerce_extraction_llm_config(value: Any) -> Any:
+    """Accept both the new config object and the legacy raw API-key string."""
+    if hasattr(value, "api_key") and hasattr(value, "model"):
+        return value
+
+    from codememory.core.extraction_llm import resolve_extraction_llm_config  # noqa: PLC0415
+
+    if isinstance(value, str):
+        return resolve_extraction_llm_config(api_key=value)
+    return resolve_extraction_llm_config()
 
 
 def cmd_web_schedule(args: argparse.Namespace) -> None:
     """Create a recurring research schedule."""
     from codememory.core.scheduler import ResearchScheduler  # noqa: PLC0415
 
-    pipeline, groq_api_key, brave_api_key = _resolve_scheduler_dependencies()
+    pipeline, extraction_llm, brave_api_key = _resolve_scheduler_dependencies()
+    extraction_llm = _coerce_extraction_llm_config(extraction_llm)
     scheduler = ResearchScheduler(
         connection_manager=pipeline._conn,  # type: ignore[attr-defined]
-        groq_api_key=groq_api_key,
-        groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+        extraction_llm_api_key=extraction_llm.api_key,
+        extraction_llm_model=extraction_llm.model,
+        extraction_llm_provider=extraction_llm.provider,
+        extraction_llm_base_url=extraction_llm.base_url,
         brave_api_key=brave_api_key,
         pipeline=pipeline,
     )
@@ -1134,11 +1161,14 @@ def cmd_web_run_research(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    pipeline, groq_api_key, brave_api_key = _resolve_scheduler_dependencies()
+    pipeline, extraction_llm, brave_api_key = _resolve_scheduler_dependencies()
+    extraction_llm = _coerce_extraction_llm_config(extraction_llm)
     scheduler = ResearchScheduler(
         connection_manager=pipeline._conn,  # type: ignore[attr-defined]
-        groq_api_key=groq_api_key,
-        groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+        extraction_llm_api_key=extraction_llm.api_key,
+        extraction_llm_model=extraction_llm.model,
+        extraction_llm_provider=extraction_llm.provider,
+        extraction_llm_base_url=extraction_llm.base_url,
         brave_api_key=brave_api_key,
         pipeline=pipeline,
         start_scheduler=False,
@@ -1215,7 +1245,8 @@ def cmd_chat_ingest(args: argparse.Namespace) -> None:
     neo4j_user = os.environ.get("NEO4J_USER", "neo4j")
     password = os.environ.get("NEO4J_PASSWORD", "")
     google_api_key = os.environ.get("GEMINI_API_KEY", "")
-    groq_api_key = os.environ.get("GROQ_API_KEY", "")
+    from codememory.core.extraction_llm import resolve_extraction_llm_config  # noqa: PLC0415
+    extraction_llm = resolve_extraction_llm_config()
 
     from codememory.core.connection import ConnectionManager  # noqa: PLC0415
     from codememory.core.embedding import EmbeddingService  # noqa: PLC0415
@@ -1227,7 +1258,12 @@ def cmd_chat_ingest(args: argparse.Namespace) -> None:
     conn.setup_database()
 
     embedder = EmbeddingService(provider="gemini", api_key=google_api_key)
-    extractor = EntityExtractionService(api_key=groq_api_key)
+    extractor = EntityExtractionService(
+        api_key=extraction_llm.api_key or "",
+        model=extraction_llm.model,
+        provider=extraction_llm.provider,
+        base_url=extraction_llm.base_url,
+    )
     pipeline = ConversationIngestionPipeline(conn, embedder, extractor)
 
     # Determine input source

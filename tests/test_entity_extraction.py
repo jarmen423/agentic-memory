@@ -1,4 +1,4 @@
-"""Unit tests for EntityExtractionService and build_embed_text — all Groq calls mocked."""
+"""Unit tests for EntityExtractionService and build_embed_text."""
 
 import json
 import unittest
@@ -14,7 +14,7 @@ class TestEntityExtractionServiceInit:
 
     def test_default_allowed_types(self) -> None:
         """EntityExtractionService uses default allowed types when none provided."""
-        with patch("codememory.core.entity_extraction.Groq"):
+        with patch("codememory.core.entity_extraction.build_extraction_openai_client"):
             service = EntityExtractionService(api_key="test-key")
             assert service.allowed_types == [
                 "project",
@@ -26,9 +26,9 @@ class TestEntityExtractionServiceInit:
 
     def test_custom_allowed_types(self) -> None:
         """EntityExtractionService stores custom allowed_types and passes them in prompt."""
-        with patch("codememory.core.entity_extraction.Groq") as mock_groq_cls:
+        with patch("codememory.core.entity_extraction.build_extraction_openai_client") as mock_client_factory:
             mock_client = MagicMock()
-            mock_groq_cls.return_value = mock_client
+            mock_client_factory.return_value = mock_client
 
             # Set up mock response with a custom type
             mock_response_content = json.dumps({"entities": [{"name": "CustomThing", "type": "custom"}]})
@@ -53,10 +53,10 @@ class TestEntityExtractionServiceExtract:
     def _make_service_with_mock(
         self, response_content: str
     ) -> tuple[EntityExtractionService, MagicMock]:
-        """Helper: create service with mocked Groq returning given JSON content."""
-        with patch("codememory.core.entity_extraction.Groq") as mock_groq_cls:
+        """Helper: create service with a mocked JSON-capable LLM client."""
+        with patch("codememory.core.entity_extraction.build_extraction_openai_client") as mock_client_factory:
             mock_client = MagicMock()
-            mock_groq_cls.return_value = mock_client
+            mock_client_factory.return_value = mock_client
             mock_client.chat.completions.create.return_value.choices = [
                 MagicMock(message=MagicMock(content=response_content))
             ]
@@ -65,13 +65,13 @@ class TestEntityExtractionServiceExtract:
             return service, mock_client
 
     def test_extract_returns_entity_list(self) -> None:
-        """extract() returns list of {name, type} dicts from Groq response."""
+        """extract() returns list of {name, type} dicts from the provider response."""
         response_json = json.dumps(
             {"entities": [{"name": "Python", "type": "technology"}]}
         )
-        with patch("codememory.core.entity_extraction.Groq") as mock_groq_cls:
+        with patch("codememory.core.entity_extraction.build_extraction_openai_client") as mock_client_factory:
             mock_client = MagicMock()
-            mock_groq_cls.return_value = mock_client
+            mock_client_factory.return_value = mock_client
             mock_client.chat.completions.create.return_value.choices = [
                 MagicMock(message=MagicMock(content=response_json))
             ]
@@ -90,9 +90,9 @@ class TestEntityExtractionServiceExtract:
                 ]
             }
         )
-        with patch("codememory.core.entity_extraction.Groq") as mock_groq_cls:
+        with patch("codememory.core.entity_extraction.build_extraction_openai_client") as mock_client_factory:
             mock_client = MagicMock()
-            mock_groq_cls.return_value = mock_client
+            mock_client_factory.return_value = mock_client
             mock_client.chat.completions.create.return_value.choices = [
                 MagicMock(message=MagicMock(content=response_json))
             ]
@@ -106,9 +106,9 @@ class TestEntityExtractionServiceExtract:
         """extract() truncates document_text to 8000 chars before sending to LLM."""
         long_text = "a" * 10000  # 10000 chars, should be truncated to 8000
         response_json = json.dumps({"entities": []})
-        with patch("codememory.core.entity_extraction.Groq") as mock_groq_cls:
+        with patch("codememory.core.entity_extraction.build_extraction_openai_client") as mock_client_factory:
             mock_client = MagicMock()
-            mock_groq_cls.return_value = mock_client
+            mock_client_factory.return_value = mock_client
             mock_client.chat.completions.create.return_value.choices = [
                 MagicMock(message=MagicMock(content=response_json))
             ]
@@ -122,11 +122,11 @@ class TestEntityExtractionServiceExtract:
         assert user_message_content == "a" * 8000
 
     def test_extract_handles_empty_response(self) -> None:
-        """extract() returns [] when Groq returns {'entities': []}."""
+        """extract() returns [] when the provider returns {'entities': []}."""
         response_json = json.dumps({"entities": []})
-        with patch("codememory.core.entity_extraction.Groq") as mock_groq_cls:
+        with patch("codememory.core.entity_extraction.build_extraction_openai_client") as mock_client_factory:
             mock_client = MagicMock()
-            mock_groq_cls.return_value = mock_client
+            mock_client_factory.return_value = mock_client
             mock_client.chat.completions.create.return_value.choices = [
                 MagicMock(message=MagicMock(content=response_json))
             ]
@@ -140,9 +140,9 @@ class TestEntityExtractionServiceExtract:
         # LLM returns "results" instead of "entities" — Pitfall 4
         entities_list = [{"name": "OpenAI", "type": "technology"}]
         response_json = json.dumps({"results": entities_list})
-        with patch("codememory.core.entity_extraction.Groq") as mock_groq_cls:
+        with patch("codememory.core.entity_extraction.build_extraction_openai_client") as mock_client_factory:
             mock_client = MagicMock()
-            mock_groq_cls.return_value = mock_client
+            mock_client_factory.return_value = mock_client
             mock_client.chat.completions.create.return_value.choices = [
                 MagicMock(message=MagicMock(content=response_json))
             ]
@@ -152,11 +152,11 @@ class TestEntityExtractionServiceExtract:
         assert result == [{"name": "OpenAI", "type": "technology"}]
 
     def test_extract_uses_json_object_mode(self) -> None:
-        """extract() passes response_format={'type': 'json_object'} to Groq."""
+        """extract() passes response_format={'type': 'json_object'} to the provider."""
         response_json = json.dumps({"entities": []})
-        with patch("codememory.core.entity_extraction.Groq") as mock_groq_cls:
+        with patch("codememory.core.entity_extraction.build_extraction_openai_client") as mock_client_factory:
             mock_client = MagicMock()
-            mock_groq_cls.return_value = mock_client
+            mock_client_factory.return_value = mock_client
             mock_client.chat.completions.create.return_value.choices = [
                 MagicMock(message=MagicMock(content=response_json))
             ]
@@ -168,11 +168,11 @@ class TestEntityExtractionServiceExtract:
         assert kwargs.get("response_format") == {"type": "json_object"}
 
     def test_extract_uses_temperature_zero(self) -> None:
-        """extract() passes temperature=0.0 to Groq for deterministic output."""
+        """extract() passes temperature=0.0 to the provider for deterministic output."""
         response_json = json.dumps({"entities": []})
-        with patch("codememory.core.entity_extraction.Groq") as mock_groq_cls:
+        with patch("codememory.core.entity_extraction.build_extraction_openai_client") as mock_client_factory:
             mock_client = MagicMock()
-            mock_groq_cls.return_value = mock_client
+            mock_client_factory.return_value = mock_client
             mock_client.chat.completions.create.return_value.choices = [
                 MagicMock(message=MagicMock(content=response_json))
             ]

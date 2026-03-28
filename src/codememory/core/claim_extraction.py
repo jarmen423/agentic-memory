@@ -4,7 +4,10 @@ import json
 import logging
 from typing import Any
 
-from groq import Groq
+from codememory.core.extraction_llm import (
+    build_extraction_openai_client,
+    resolve_extraction_llm_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,24 +40,53 @@ If no claims found, return {{"claims": []}}."""
 
 
 class ClaimExtractionService:
-    """LLM-based claim extraction using Groq JSON mode."""
+    """LLM-based claim extraction using an OpenAI-compatible JSON mode client."""
 
     def __init__(
         self,
         api_key: str,
         model: str = "llama-3.3-70b-versatile",
+        provider: str = "groq",
+        base_url: str | None = None,
         predicates: list[str] | None = None,
     ) -> None:
         """Initialize the claim extraction service.
 
         Args:
-            api_key: Groq API key.
-            model: Groq model name for claim extraction.
+            api_key: Provider API key.
+            model: Provider model name for claim extraction.
+            provider: Provider name.
+            base_url: Optional OpenAI-compatible base URL override.
             predicates: Optional closed predicate catalog.
         """
-        self._client = Groq(api_key=api_key)
-        self.model = model
+        resolved = resolve_extraction_llm_config(
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+        )
+        self._client = build_extraction_openai_client(resolved)
+        self.api_key = resolved.api_key or api_key
+        self.provider = resolved.provider
+        self.model = resolved.model
+        self.base_url = resolved.base_url
         self.predicates = predicates or DEFAULT_PREDICATES.copy()
+
+    @classmethod
+    def from_env(
+        cls,
+        *,
+        predicates: list[str] | None = None,
+    ) -> "ClaimExtractionService":
+        """Build a claim extractor from env-driven extraction LLM settings."""
+        resolved = resolve_extraction_llm_config()
+        return cls(
+            api_key=resolved.api_key or "",
+            model=resolved.model,
+            provider=resolved.provider,
+            base_url=resolved.base_url,
+            predicates=predicates,
+        )
 
     def extract(self, document_text: str) -> list[dict[str, Any]]:
         """Extract structured claims from a document.
@@ -67,7 +99,7 @@ class ClaimExtractionService:
             valid_from, valid_to, and confidence keys.
 
         Raises:
-            RuntimeError: If the Groq request fails or returns invalid JSON.
+            RuntimeError: If the extraction request fails or returns invalid JSON.
         """
         prompt = CLAIM_EXTRACTION_PROMPT.format(
             predicates=", ".join(self.predicates)

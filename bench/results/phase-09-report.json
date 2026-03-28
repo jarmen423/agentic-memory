@@ -1,0 +1,45 @@
+{
+  "aggregates": {
+    "mean_baseline_latency_ms": 0.30503300000009403,
+    "p95_baseline_latency_ms": 0.5395429999998669,
+    "mean_temporal_latency_ms": 281.08830850000004,
+    "p95_temporal_latency_ms": 538.3611890000002,
+    "avg_token_reduction_pct": 0,
+    "fallback_rate_pct": 100,
+    "temporal_consistency_rate_pct": 0
+  },
+  "rows": [
+    {
+      "query_id": "q-001",
+      "domain": "conversation",
+      "baseline_latency_ms": 0.5395429999998669,
+      "temporal_latency_ms": 538.3611890000002,
+      "temporal_seed_discovery_ms": 0.107618999999886,
+      "temporal_bridge_ms": 0,
+      "temporal_hydration_ms": 0.00047199999971780926,
+      "baseline_token_estimate": 40,
+      "temporal_token_estimate": 40,
+      "token_reduction_pct": 0,
+      "baseline_result_count": 2,
+      "temporal_result_count": 0,
+      "fallback_used": true,
+      "temporal_consistent": false
+    },
+    {
+      "query_id": "q-002",
+      "domain": "research",
+      "baseline_latency_ms": 0.07052300000032119,
+      "temporal_latency_ms": 23.815427999999883,
+      "temporal_seed_discovery_ms": 0.0164969999996174,
+      "temporal_bridge_ms": 0,
+      "temporal_hydration_ms": 0.0006849999999758438,
+      "baseline_token_estimate": 44,
+      "temporal_token_estimate": 44,
+      "token_reduction_pct": 0,
+      "baseline_result_count": 2,
+      "temporal_result_count": 0,
+      "fallback_used": true,
+      "temporal_consistent": false
+    }
+  ]
+}

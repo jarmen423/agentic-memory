@@ -88,7 +88,7 @@ def test_health(client):
 
 
 def test_ingest_no_auth(client):
-    """POST /ingest/research without Authorization header returns 403."""
+    """POST /ingest/research without Authorization header returns 401."""
     payload = {
         "type": "report",
         "content": "Test content",
@@ -97,7 +97,7 @@ def test_ingest_no_auth(client):
         "source_agent": "claude",
     }
     resp = client.post("/ingest/research", json=payload)
-    assert resp.status_code == 403
+    assert resp.status_code == 401
 
 
 def test_ingest_bad_token(client):
@@ -128,6 +128,25 @@ def test_ingest_research_ok(client, auth_headers):
     }
     resp = client.post("/ingest/research", json=payload, headers=auth_headers)
     assert resp.status_code == 202
+
+
+def test_ingest_conversation_invalid_source_key_returns_422(client, auth_headers):
+    """POST /ingest/conversation rejects unknown source_key values."""
+    pipeline = dependencies.get_conversation_pipeline()
+    pipeline.ingest.side_effect = ValueError(
+        "Invalid source_key 'manual_test'. Must be one of: ['chat_cli', 'chat_ext', 'chat_mcp', 'chat_proxy']"
+    )
+    payload = {
+        "role": "user",
+        "content": "Test content",
+        "project_id": "proj-1",
+        "session_id": "sess-1",
+        "turn_index": 0,
+        "source_key": "manual_test",
+    }
+    resp = client.post("/ingest/conversation", json=payload, headers=auth_headers)
+    assert resp.status_code == 422
+    assert "source_key" in resp.json()["detail"]
 
 
 def test_ingest_delegates(client, auth_headers):
@@ -164,9 +183,9 @@ def test_search_research_ok(client, auth_headers):
 
 
 def test_search_no_auth(client):
-    """GET /search/research without auth returns 403."""
+    """GET /search/research without auth returns 401."""
     resp = client.get("/search/research?q=test")
-    assert resp.status_code == 403
+    assert resp.status_code == 401
 
 
 def test_selectors_shape(client):

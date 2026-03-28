@@ -103,6 +103,12 @@ class TestConversationPipelineSubclassContract:
             pipeline, _ = _make_pipeline()
             pipeline.ingest(_turn_source(role=role, tool_name="test" if role == "tool" else None))
 
+    def test_ingest_unknown_source_key_raises_value_error(self):
+        """ingest() with an unknown source_key fails fast instead of using fallback labels."""
+        pipeline, _ = _make_pipeline()
+        with pytest.raises(ValueError, match="source_key"):
+            pipeline.ingest(_turn_source(source_key="manual_test"))
+
 
 # ---------------------------------------------------------------------------
 # Embeddable turn flow (user and assistant)

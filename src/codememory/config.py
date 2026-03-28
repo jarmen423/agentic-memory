@@ -69,6 +69,7 @@ DEFAULT_CONFIG = {
     "extraction_llm": {
         "provider": "groq",
         "model": "llama-3.3-70b-versatile",
+        "base_url": "",
         "api_key": "",  # Empty means fall back to GROQ_API_KEY env var
     },
     "entity_types": [
@@ -225,7 +226,36 @@ class Config:
         """
         config = self.load()
         extraction = dict(config["extraction_llm"])
+        extraction["provider"] = os.getenv(
+            "EXTRACTION_LLM_PROVIDER",
+            extraction.get("provider") or "groq",
+        )
+        extraction["model"] = os.getenv(
+            "EXTRACTION_LLM_MODEL",
+            extraction.get("model")
+            or (
+                os.getenv("GROQ_MODEL")
+                if extraction["provider"] == "groq"
+                else ""
+            ),
+        )
+        extraction["base_url"] = os.getenv(
+            "EXTRACTION_LLM_BASE_URL",
+            extraction.get("base_url") or "",
+        )
         if not extraction.get("api_key"):
+            extraction["api_key"] = os.getenv("EXTRACTION_LLM_API_KEY", "")
+        if extraction.get("api_key"):
+            return extraction
+
+        provider = extraction["provider"]
+        if provider == "gemini":
+            extraction["api_key"] = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY", "")
+        elif provider == "cerebras":
+            extraction["api_key"] = os.getenv("CEREBRAS_API_KEY", "")
+        elif provider == "openai":
+            extraction["api_key"] = os.getenv("OPENAI_API_KEY", "")
+        else:
             extraction["api_key"] = os.getenv("GROQ_API_KEY", "")
         return extraction
 

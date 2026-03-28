@@ -57,7 +57,7 @@ def _mock_connection(session: Mock) -> Mock:
 def _build_scheduler(monkeypatch):
     mock_jobstore = Mock()
     mock_background_scheduler = Mock()
-    mock_groq_client = Mock()
+    mock_extraction_client = Mock()
 
     monkeypatch.setattr(
         scheduler_module,
@@ -71,8 +71,8 @@ def _build_scheduler(monkeypatch):
     )
     monkeypatch.setattr(
         scheduler_module,
-        "Groq",
-        Mock(return_value=mock_groq_client),
+        "build_extraction_openai_client",
+        Mock(return_value=mock_extraction_client),
     )
 
     session = Mock()
@@ -82,12 +82,12 @@ def _build_scheduler(monkeypatch):
 
     scheduler = scheduler_module.ResearchScheduler(
         connection_manager=conn,
-        groq_api_key="groq-key",
-        groq_model="llama-3.3-70b-versatile",
+        extraction_llm_api_key="groq-key",
+        extraction_llm_model="llama-3.3-70b-versatile",
         brave_api_key="brave-key",
         pipeline=pipeline,
     )
-    return scheduler, session, pipeline, mock_background_scheduler, mock_groq_client, conn
+    return scheduler, session, pipeline, mock_background_scheduler, mock_extraction_client, conn
 
 
 def test_create_schedule_persists_node_and_registers_job(monkeypatch):
@@ -115,12 +115,12 @@ def test_create_schedule_persists_node_and_registers_job(monkeypatch):
     assert add_job_kwargs["kwargs"] == {"schedule_id": schedule_id}
 
 
-def test_fill_variables_uses_groq_json_payload(monkeypatch):
-    scheduler, session, _, _, groq_client, _ = _build_scheduler(monkeypatch)
+def test_fill_variables_uses_extraction_llm_json_payload(monkeypatch):
+    scheduler, session, _, _, extraction_client, _ = _build_scheduler(monkeypatch)
     session.run.return_value = _data_result(
         [{"topic": "GraphRAG", "researched_at": "2026-03-20T00:00:00+00:00"}]
     )
-    groq_client.chat.completions.create.return_value = Mock(
+    extraction_client.chat.completions.create.return_value = Mock(
         choices=[Mock(message=Mock(content='{"topic":"AI agents","angle":"memory systems"}'))]
     )
 
@@ -131,7 +131,7 @@ def test_fill_variables_uses_groq_json_payload(monkeypatch):
     )
 
     assert rendered == "Research AI agents on memory systems"
-    groq_client.chat.completions.create.assert_called_once()
+    extraction_client.chat.completions.create.assert_called_once()
 
 
 def test_run_research_session_ingests_brave_results(monkeypatch):

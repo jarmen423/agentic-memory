@@ -19,9 +19,13 @@ import httpx
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from groq import Groq
+from openai import OpenAI
 
 from codememory.core.connection import ConnectionManager
+from codememory.core.extraction_llm import (
+    build_extraction_openai_client,
+    resolve_extraction_llm_config,
+)
 from codememory.ingestion.graph import CircuitBreaker
 
 logger = logging.getLogger(__name__)
@@ -65,10 +69,11 @@ def _resolve_brave_api_key(explicit_key: str | None = None) -> str | None:
 def _build_pipeline_from_env(connection_manager: ConnectionManager | None = None) -> Any:
     """Create a ResearchIngestionPipeline from environment variables."""
     google_api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-    groq_api_key = os.getenv("GROQ_API_KEY")
-    if not google_api_key or not groq_api_key:
+    extraction_llm = resolve_extraction_llm_config()
+    if not google_api_key or not extraction_llm.api_key:
         raise RuntimeError(
-            "GOOGLE_API_KEY/GEMINI_API_KEY and GROQ_API_KEY are required for the research scheduler."
+            "GOOGLE_API_KEY/GEMINI_API_KEY and extraction LLM API credentials are "
+            "required for the research scheduler."
         )
 
     from codememory.core.embedding import EmbeddingService  # noqa: PLC0415
@@ -77,7 +82,12 @@ def _build_pipeline_from_env(connection_manager: ConnectionManager | None = None
 
     conn = connection_manager or _build_connection_from_env()
     embedder = EmbeddingService(provider="gemini", api_key=google_api_key)
-    extractor = EntityExtractionService(api_key=groq_api_key)
+    extractor = EntityExtractionService(
+        api_key=extraction_llm.api_key,
+        model=extraction_llm.model,
+        provider=extraction_llm.provider,
+        base_url=extraction_llm.base_url,
+    )
     return ResearchIngestionPipeline(conn, embedder, extractor)
 
 
@@ -97,14 +107,24 @@ def build_scheduler_from_env(
     groq_api_key: str | None = None,
     brave_api_key: str | None = None,
     groq_model: str | None = None,
+    extraction_llm_provider: str | None = None,
+    extraction_llm_base_url: str | None = None,
 ) -> "ResearchScheduler":
     """Create a scheduler instance from environment-backed dependencies."""
     conn = connection_manager or _build_connection_from_env()
     resolved_pipeline = pipeline or _build_pipeline_from_env(conn)
+    extraction_llm = resolve_extraction_llm_config(
+        provider=extraction_llm_provider,
+        model=groq_model,
+        api_key=groq_api_key,
+        base_url=extraction_llm_base_url,
+    )
     return ResearchScheduler(
         connection_manager=conn,
-        groq_api_key=groq_api_key or os.getenv("GROQ_API_KEY"),
-        groq_model=groq_model or os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+        extraction_llm_api_key=extraction_llm.api_key,
+        extraction_llm_model=extraction_llm.model,
+        extraction_llm_provider=extraction_llm.provider,
+        extraction_llm_base_url=extraction_llm.base_url,
         brave_api_key=_resolve_brave_api_key(brave_api_key),
         pipeline=resolved_pipeline,
         start_scheduler=start_scheduler,
@@ -126,10 +146,12 @@ class ResearchScheduler:
     def __init__(
         self,
         connection_manager: ConnectionManager,
-        groq_api_key: str | None,
-        groq_model: str,
+        extraction_llm_api_key: str | None,
+        extraction_llm_model: str,
         brave_api_key: str | None,
         pipeline: Any,
+        extraction_llm_provider: str = "groq",
+        extraction_llm_base_url: str | None = None,
         *,
         start_scheduler: bool = True,
     ) -> None:
@@ -137,18 +159,31 @@ class ResearchScheduler:
 
         Args:
             connection_manager: Neo4j connection manager for schedule reads/writes.
-            groq_api_key: Groq API key for variable filling.
-            groq_model: Groq model name used for variable filling.
+            extraction_llm_api_key: Provider API key for variable filling.
+            extraction_llm_model: Provider model name used for variable filling.
+            extraction_llm_provider: Provider used for variable filling.
+            extraction_llm_base_url: Optional OpenAI-compatible base URL override.
             brave_api_key: Brave Search API key.
             pipeline: ResearchIngestionPipeline used to ingest search results.
             start_scheduler: When True, starts the APScheduler background worker.
         """
         self._conn = connection_manager
         self._pipeline = pipeline
-        self._groq_model = groq_model
-        self._groq_api_key = groq_api_key
+        self._extraction_llm_model = extraction_llm_model
+        self._extraction_llm_api_key = extraction_llm_api_key
+        self._extraction_llm_provider = extraction_llm_provider
+        self._extraction_llm_base_url = extraction_llm_base_url
         self._brave_api_key = brave_api_key
-        self._client = Groq(api_key=groq_api_key) if groq_api_key else None
+        self._client: OpenAI | None = None
+        if extraction_llm_api_key:
+            self._client = build_extraction_openai_client(
+                resolve_extraction_llm_config(
+                    provider=extraction_llm_provider,
+                    model=extraction_llm_model,
+                    api_key=extraction_llm_api_key,
+                    base_url=extraction_llm_base_url,
+                )
+            )
         self._scheduler: BackgroundScheduler | None = None
         self._brave_breaker = CircuitBreaker(
             failure_threshold=BRAVE_FAILURE_THRESHOLD,
@@ -400,7 +435,9 @@ class ResearchScheduler:
             ).data()
 
         if self._client is None:
-            logger.warning("Groq client not configured; falling back to empty variable fill.")
+            logger.warning(
+                "Extraction LLM client not configured; falling back to empty variable fill."
+            )
             return {name: "" for name in variable_names}
 
         prompt = (
@@ -414,7 +451,7 @@ class ResearchScheduler:
         )
         try:
             response = self._client.chat.completions.create(
-                model=self._groq_model,
+                model=self._extraction_llm_model,
                 messages=[
                     {"role": "system", "content": "You generate research schedule variables."},
                     {"role": "user", "content": prompt},

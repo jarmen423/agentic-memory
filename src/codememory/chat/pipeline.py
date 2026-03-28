@@ -29,6 +29,7 @@ register_source("chat_cli", ["Memory", "Conversation", "Turn"])
 
 VALID_ROLES = frozenset({"user", "assistant", "system", "tool"})
 EMBEDDABLE_ROLES = frozenset({"user", "assistant"})
+VALID_SOURCE_KEYS = frozenset({"chat_mcp", "chat_proxy", "chat_ext", "chat_cli"})
 
 
 class ConversationIngestionPipeline(BaseIngestionPipeline):
@@ -97,6 +98,12 @@ class ConversationIngestionPipeline(BaseIngestionPipeline):
         if role not in VALID_ROLES:
             raise ValueError(
                 f"Invalid role {role!r}. Must be one of: {sorted(VALID_ROLES)}"
+            )
+        source_key = source.get("source_key", "chat_mcp")
+        if source_key not in VALID_SOURCE_KEYS:
+            raise ValueError(
+                f"Invalid source_key {source_key!r}. Must be one of: "
+                f"{sorted(VALID_SOURCE_KEYS)}"
             )
 
         return self._ingest_turn(source)

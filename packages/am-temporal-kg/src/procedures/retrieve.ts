@@ -22,6 +22,8 @@ const nodeKey = (value: bigint): string => value.toString();
 
 const clampAlpha = (value: number): number => Math.max(0.05, Math.min(0.95, value));
 
+const txDb = (tx: any): any => tx.db ?? tx;
+
 const collectNeighborhood = (
   tx: any,
   projectId: string,
@@ -29,12 +31,13 @@ const collectNeighborhood = (
   maxHops: number,
   maxNodes: number,
 ): Set<bigint> => {
+  const db = txDb(tx);
   const visited = new Set<bigint>(seedNodeIds);
   let frontier = new Set<bigint>(seedNodeIds);
 
   for (let hop = 0; hop < Math.max(1, maxHops); hop += 1) {
     const next = new Set<bigint>();
-    for (const edge of tx.edge.iter()) {
+    for (const edge of db.edge.iter()) {
       if (edge.projectId !== projectId) {
         continue;
       }
@@ -62,8 +65,9 @@ const collectNeighborhood = (
 };
 
 const buildEvidenceMap = (tx: any): Map<string, bigint[]> => {
+  const db = txDb(tx);
   const byEdgeId = new Map<string, bigint[]>();
-  for (const link of tx.edge_evidence.iter()) {
+  for (const link of db.edge_evidence.iter()) {
     const key = link.edgeId.toString();
     const existing = byEdgeId.get(key) ?? [];
     existing.push(link.evidenceId);
@@ -81,10 +85,11 @@ const buildAdjacency = (
   minRelevance: number,
   evidenceByEdgeId: Map<string, bigint[]>,
 ): Map<string, ScoredEdge[]> => {
+  const db = txDb(tx);
   const halfLifeMicros = halfLifeHoursToMicros(halfLifeHours);
   const adjacency = new Map<string, ScoredEdge[]>();
 
-  for (const edge of tx.edge.iter()) {
+  for (const edge of db.edge.iter()) {
     if (
       edge.projectId !== projectId ||
       !nodeIds.has(edge.subjId) ||
@@ -230,9 +235,13 @@ export const temporal_ppr_retrieve = spacetimedb.procedure(
           continue;
         }
         for (const edge of edges) {
+          const connectedRank = Math.max(
+            ranks.get(sourceKey) ?? 0,
+            ranks.get(nodeKey(edge.objId)) ?? 0,
+          );
           rankedEdges.push({
             ...edge,
-            score: (ranks.get(sourceKey) ?? 0) * (edge.transitionWeight / totalWeight),
+            score: connectedRank * (edge.transitionWeight / totalWeight),
           });
         }
       }

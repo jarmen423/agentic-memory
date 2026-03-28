@@ -1,4 +1,4 @@
-"""Entity extraction service using Groq JSON mode.
+"""Entity extraction service using provider-configurable JSON mode.
 
 Provides EntityExtractionService for extracting named entities from document text,
 and build_embed_text for prepending entity context to chunk text before embedding.
@@ -8,7 +8,10 @@ import json
 import logging
 from typing import Any
 
-from groq import Groq
+from codememory.core.extraction_llm import (
+    build_extraction_openai_client,
+    resolve_extraction_llm_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,15 +24,17 @@ Do not invent entities. If no entities found, return {{"entities": []}}."""
 
 
 class EntityExtractionService:
-    """LLM-based entity extraction using Groq JSON mode.
+    """LLM-based entity extraction using an OpenAI-compatible JSON mode client.
 
     Makes one extraction call per document (not per chunk). Uses
     response_format={"type": "json_object"} and temperature=0.0 for
     deterministic structured output.
 
     Args:
-        api_key: Groq API key.
-        model: Groq model name to use for extraction.
+        api_key: Provider API key.
+        model: Model name to use for extraction.
+        provider: Extraction provider name.
+        base_url: Optional OpenAI-compatible base URL override.
         allowed_types: Entity types to extract. Defaults to core taxonomy.
     """
 
@@ -37,18 +42,31 @@ class EntityExtractionService:
         self,
         api_key: str,
         model: str = "llama-3.3-70b-versatile",
+        provider: str = "groq",
+        base_url: str | None = None,
         allowed_types: list[str] | None = None,
     ) -> None:
         """Initialize the entity extraction service.
 
         Args:
-            api_key: Groq API key.
-            model: Groq model name. Defaults to 'llama-3.3-70b-versatile'.
+            api_key: Provider API key.
+            model: Provider model name. Defaults to 'llama-3.3-70b-versatile'.
+            provider: Provider name. Defaults to 'groq'.
+            base_url: Optional OpenAI-compatible base URL override.
             allowed_types: List of entity type strings to constrain extraction.
                 Defaults to ['project', 'person', 'business', 'technology', 'concept'].
         """
-        self._client = Groq(api_key=api_key)
-        self.model = model
+        resolved = resolve_extraction_llm_config(
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+        )
+        self._client = build_extraction_openai_client(resolved)
+        self.api_key = resolved.api_key or api_key
+        self.provider = resolved.provider
+        self.model = resolved.model
+        self.base_url = resolved.base_url
         self.allowed_types = allowed_types or [
             "project",
             "person",
@@ -57,10 +75,26 @@ class EntityExtractionService:
             "concept",
         ]
 
+    @classmethod
+    def from_env(
+        cls,
+        *,
+        allowed_types: list[str] | None = None,
+    ) -> "EntityExtractionService":
+        """Build an extractor from the env-driven extraction LLM configuration."""
+        resolved = resolve_extraction_llm_config()
+        return cls(
+            api_key=resolved.api_key or "",
+            model=resolved.model,
+            provider=resolved.provider,
+            base_url=resolved.base_url,
+            allowed_types=allowed_types,
+        )
+
     def extract(self, document_text: str) -> list[dict[str, str]]:
         """Extract named entities from a document.
 
-        Makes one LLM call using Groq JSON mode. Truncates input to 8000 chars
+        Makes one LLM call using JSON mode. Truncates input to 8000 chars
         as a budget guard. Filters entities whose type is not in allowed_types.
         Falls back to first list value if JSON key is not "entities" (Pitfall 4).
 

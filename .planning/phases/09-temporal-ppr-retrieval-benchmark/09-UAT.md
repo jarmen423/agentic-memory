@@ -3,7 +3,7 @@ status: testing
 phase: 09-temporal-ppr-retrieval-benchmark
 source: 09-01-SUMMARY.md, 09-02-SUMMARY.md, 09-03-SUMMARY.md
 started: 2026-03-26T23:59:00Z
-updated: 2026-03-27T06:10:00Z
+updated: 2026-03-28T18:40:00Z
 ---
 
 ## Current Test
@@ -34,9 +34,8 @@ reported: "Report generation succeeded and wrote both phase-09-report.md and pha
 
 ### 4. Temporal-First Conversation Retrieval
 expected: With `am-server` running against a populated local SpacetimeDB module, `GET /search/conversations` still returns `{\"results\": [...]}` while honoring an `as_of` query parameter and using the temporal path when seeds exist
-result: blocked
-blocked_by: prior-phase
-reason: "After Neo4j came up, the live route returned `{\"results\":[]}` for `proj-smoke`. The benchmark smoke fixture populated SpacetimeDB, but there are no corresponding conversation turns in Neo4j for hydration, so this did not validate live temporal-ranked conversation retrieval."
+result: pass
+reported: "After ingesting a conversation turn for `proj-smoke` with a valid registered `source_key` (`chat_mcp`), `GET /search/conversations?q=phase%208&project_id=proj-smoke` returned the expected `{\"results\":[...]}` payload with the matching turn. During this verification a guard was added so unknown conversation `source_key` values now fail fast instead of silently writing nodes without the `:Turn` label."
 
 ### 5. Deterministic Fallback When Temporal Path Is Unavailable
 expected: With the temporal bridge disabled or misconfigured, conversation and web retrieval still return baseline results instead of failing or changing their top-level response shape
@@ -45,10 +44,10 @@ result: pending
 ## Summary
 
 total: 5
-passed: 3
+passed: 4
 issues: 0
 pending: 1
 skipped: 0
-blocked: 1
+blocked: 0
 
 ## Gaps

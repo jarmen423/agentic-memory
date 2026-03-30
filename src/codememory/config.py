@@ -36,6 +36,7 @@ DEFAULT_CONFIG = {
         ],
         "ignore_files": [],
         "extensions": [".py", ".js", ".ts", ".tsx", ".jsx"],
+        "include_paths": [],
     },
     "git": {
         "enabled": False,

@@ -697,6 +697,31 @@ File extensions to index.
 
 ---
 
+#### `indexing.include_paths`
+
+**Type:** array of strings
+**Default:** `[]`
+
+Explicit relative file paths or glob patterns to index even when their extension is not
+listed in `indexing.extensions`.
+
+This is intended for selective ingestion of high-signal non-code documents such as
+`AGENTS.md`, runbooks, or a few operational markdown files without enabling all `.md`
+files repository-wide.
+
+**Examples:**
+```json
+{
+  "include_paths": ["systemd/AGENTS.md", "docs/runbooks/*.md"]
+}
+```
+
+Markdown files included through `include_paths` are chunked by heading sections for
+better retrieval. Other explicitly included non-code files are indexed as a single
+document chunk attached to their `File` node.
+
+---
+
 ### Environment Variables
 
 **Priority:** Environment variables override config file values.

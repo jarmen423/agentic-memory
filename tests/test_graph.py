@@ -101,6 +101,41 @@ const lazy = import("./lazy-module");
         assert "frontend/src/services/heygen_service.tsx" in candidates
         assert "frontend/src/services/heygen_service/index.ts" in candidates
 
+    def test_matches_include_path_glob(self, builder):
+        """Explicit include_paths allow selective non-code files."""
+        builder.include_paths = {"systemd/AGENTS.md", "docs/runbooks/*.md"}
+        assert builder._matches_include_path("systemd/AGENTS.md") is True
+        assert builder._matches_include_path("docs/runbooks/ops.md") is True
+        assert builder._matches_include_path("README.md") is False
+
+    def test_should_prune_file_keeps_explicit_include(self, builder, tmp_path):
+        """Unsupported extensions are preserved when explicitly allowlisted."""
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        target = repo_root / "systemd"
+        target.mkdir()
+        (target / "AGENTS.md").write_text("hello", encoding="utf-8")
+
+        builder.include_paths = {"systemd/AGENTS.md"}
+
+        should_prune = builder._should_prune_file(
+            "systemd/AGENTS.md",
+            repo_root,
+            {".py"},
+        )
+        assert should_prune is False
+
+    def test_split_markdown_document_by_heading(self, builder):
+        """Markdown include-paths should chunk by heading instead of whole-file blob."""
+        chunks = builder._split_markdown_document(
+            "# Title\nIntro\n\n## Section A\nAlpha\n\n## Section B\nBeta"
+        )
+        assert chunks == [
+            ("Title", "# Title\nIntro"),
+            ("Section A", "## Section A\nAlpha"),
+            ("Section B", "## Section B\nBeta"),
+        ]
+
 
 class TestCypherQueries:
     """Test Cypher query generation and execution."""

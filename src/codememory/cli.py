@@ -285,6 +285,7 @@ def cmd_init(args):
             ignore_dirs = set(indexing_cfg.get("ignore_dirs", []))
             ignore_files = set(indexing_cfg.get("ignore_files", []))
             extensions = set(indexing_cfg.get("extensions", []))
+            include_paths = set(indexing_cfg.get("include_paths", []))
             graphignore_patterns = set(config.get_graphignore_patterns())
 
             print("\n🔍 Testing Neo4j connection...")
@@ -297,6 +298,7 @@ def cmd_init(args):
                 ignore_dirs=ignore_dirs,
                 ignore_files=ignore_files,
                 ignore_patterns=graphignore_patterns,
+                include_paths=include_paths,
             )
 
             # Test connection
@@ -315,6 +317,7 @@ def cmd_init(args):
                 ignore_dirs=ignore_dirs,
                 ignore_files=ignore_files,
                 ignore_patterns=graphignore_patterns,
+                include_paths=include_paths,
             )
 
             metrics = builder.run_pipeline(repo_root, supported_extensions=extensions)
@@ -436,6 +439,7 @@ def cmd_index(args):
     ignore_dirs = set(indexing_cfg.get("ignore_dirs", []))
     ignore_files = set(indexing_cfg.get("ignore_files", []))
     extensions = set(indexing_cfg.get("extensions", []))
+    include_paths = set(indexing_cfg.get("include_paths", []))
     graphignore_patterns = set(config.get_graphignore_patterns())
 
     builder = KnowledgeGraphBuilder(
@@ -447,6 +451,7 @@ def cmd_index(args):
         ignore_dirs=ignore_dirs,
         ignore_files=ignore_files,
         ignore_patterns=graphignore_patterns,
+        include_paths=include_paths,
     )
 
     try:
@@ -491,6 +496,7 @@ def cmd_watch(args):
         ignore_dirs=set(indexing_cfg.get("ignore_dirs", [])),
         ignore_files=set(indexing_cfg.get("ignore_files", [])),
         ignore_patterns=graphignore_patterns,
+        include_paths=set(indexing_cfg.get("include_paths", [])),
         supported_extensions=set(indexing_cfg.get("extensions", [])),
         initial_scan=not args.no_scan,
     )

@@ -52,9 +52,18 @@ class CodeChangeHandler(FileSystemEventHandler):
             dir_parts = path.parts[:-1]
             rel_path = path
         rel_path_str = str(rel_path).replace("\\", "/")
+        if self.builder._matches_include_path(rel_path_str):
+            return False
         if self.builder._should_ignore_path(rel_path_str):
             return True
         return any(self.builder._should_ignore_dir(part) for part in dir_parts)
+
+    def _should_process_path(self, path: Path) -> bool:
+        try:
+            rel_path = str(path.relative_to(self.repo_root)).replace("\\", "/")
+        except ValueError:
+            rel_path = str(path).replace("\\", "/")
+        return self.builder._should_index_path(rel_path, self.supported_extensions)
 
     def on_modified(self, event):
         """Handle file modification events."""
@@ -64,7 +73,7 @@ class CodeChangeHandler(FileSystemEventHandler):
         path = Path(event.src_path)
 
         # Check file extension
-        if path.suffix not in self.supported_extensions:
+        if not self._should_process_path(path):
             return
         if self._is_ignored_path(path):
             return
@@ -97,7 +106,7 @@ class CodeChangeHandler(FileSystemEventHandler):
             return
 
         path = Path(event.src_path)
-        if path.suffix not in self.supported_extensions:
+        if not self._should_process_path(path):
             return
         if self._is_ignored_path(path):
             return
@@ -118,7 +127,7 @@ class CodeChangeHandler(FileSystemEventHandler):
             return
 
         path = Path(event.src_path)
-        if path.suffix not in self.supported_extensions:
+        if not self._should_process_path(path):
             return
         if self._is_ignored_path(path):
             return
@@ -158,6 +167,11 @@ class CodeChangeHandler(FileSystemEventHandler):
                 DETACH DELETE chunk
             """, path=rel_path)
 
+            session.run("""
+                MATCH (chunk)-[:DESCRIBES]->(f:File {path: $path})
+                DETACH DELETE chunk
+            """, path=rel_path)
+
             # Delete functions and classes defined in this file
             session.run("""
                 MATCH (f:File {path: $path})-[:DEFINES]->(entity)
@@ -182,6 +196,23 @@ class CodeChangeHandler(FileSystemEventHandler):
         parser = self.builder.parsers.get(extension)
 
         if not parser:
+            if not self.builder._matches_include_path(rel_path):
+                return
+            new_ohash = self.builder._calculate_ohash(full_path)
+            with self.builder.driver.session() as session:
+                session.run("""
+                    MERGE (f:File {path: $path})
+                    SET f.name = $name,
+                        f.ohash = $ohash,
+                        f.last_updated = datetime()
+                """, path=rel_path, name=full_path.name, ohash=new_ohash)
+                self.builder._create_document_chunk(
+                    session,
+                    rel_path=rel_path,
+                    file_name=full_path.name,
+                    text=code_content,
+                    extension=extension,
+                )
             return
 
         # Calculate new hash
@@ -330,6 +361,7 @@ def start_continuous_watch(
     ignore_dirs: Optional[Set[str]] = None,
     ignore_files: Optional[Set[str]] = None,
     ignore_patterns: Optional[Set[str]] = None,
+    include_paths: Optional[Set[str]] = None,
     supported_extensions: Optional[Set[str]] = None,
     initial_scan: bool = True,
 ):
@@ -345,6 +377,7 @@ def start_continuous_watch(
         ignore_dirs: Directory names/patterns to ignore
         ignore_files: File names/patterns to ignore
         ignore_patterns: .graphignore-style patterns to ignore
+        include_paths: Relative file paths/globs to index even when extension is unsupported
         supported_extensions: File extensions to process
         initial_scan: Whether to run full pipeline before watching (default: True)
     """
@@ -358,6 +391,7 @@ def start_continuous_watch(
         ignore_dirs=ignore_dirs,
         ignore_files=ignore_files,
         ignore_patterns=ignore_patterns,
+        include_paths=include_paths,
     )
 
     # Run initial setup

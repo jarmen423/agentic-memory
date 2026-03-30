@@ -201,10 +201,16 @@ Per-repository configuration is stored in `.codememory/config.json`:
   },
   "indexing": {
     "ignore_dirs": ["node_modules", "__pycache__", ".git"],
-    "extensions": [".py", ".js", ".ts", ".tsx", ".jsx"]
+    "extensions": [".py", ".js", ".ts", ".tsx", ".jsx"],
+    "include_paths": ["systemd/AGENTS.md", "docs/runbooks/*.md"]
   }
 }
 ```
+
+`include_paths` is an explicit allowlist for files that should be indexed even when their
+extension is not in `indexing.extensions`. This is useful for selectively indexing a few
+high-value docs such as `AGENTS.md`, runbooks, or systemd unit companions without turning
+on all Markdown files.
 
 **Note:** `.codememory/` is gitignored by default to prevent committing API keys.
 

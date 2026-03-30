@@ -133,6 +133,7 @@ class KnowledgeGraphBuilder:
         ignore_dirs: Optional[Set[str]] = None,
         ignore_files: Optional[Set[str]] = None,
         ignore_patterns: Optional[Set[str]] = None,
+        include_paths: Optional[Set[str]] = None,
     ):
         """
         Initialize the KnowledgeGraphBuilder.
@@ -146,6 +147,8 @@ class KnowledgeGraphBuilder:
             ignore_dirs: Set of directory names to ignore during indexing
             ignore_files: Set of file patterns to ignore during indexing
             ignore_patterns: Set of .graphignore-style path/file patterns to skip
+            include_paths: Set of explicit relative file paths/globs to index even when their
+                extension is not in supported_extensions
         """
         # Configure connection pool for better performance
         self.driver = neo4j.GraphDatabase.driver(
@@ -185,6 +188,7 @@ class KnowledgeGraphBuilder:
         }
         self.ignore_files = ignore_files or set()
         self.ignore_patterns = ignore_patterns or set()
+        self.include_paths = include_paths or set()
 
     def _should_ignore_dir(self, dir_name: str) -> bool:
         """Return True when a directory should be excluded from scanning."""
@@ -216,6 +220,30 @@ class KnowledgeGraphBuilder:
                     return True
         return False
 
+    def _matches_include_path(self, rel_path: str) -> bool:
+        """Return True when a relative path matches an explicit include path/glob."""
+        if not self.include_paths:
+            return False
+
+        normalized = rel_path.replace("\\", "/")
+        basename = Path(normalized).name
+        for pattern in self.include_paths:
+            p = pattern.strip().replace("\\", "/")
+            if not p:
+                continue
+            if "/" in p:
+                if fnmatch.fnmatch(normalized, p):
+                    return True
+            else:
+                if fnmatch.fnmatch(basename, p):
+                    return True
+        return False
+
+    def _should_index_path(self, rel_path: str, supported_extensions: Set[str]) -> bool:
+        """Return True when a file should be indexed under current rules."""
+        rel_obj = Path(rel_path.replace("\\", "/"))
+        return rel_obj.suffix in supported_extensions or self._matches_include_path(rel_path)
+
     def _should_prune_file(
         self, rel_path: str, repo_path: Path, supported_extensions: Set[str]
     ) -> bool:
@@ -223,6 +251,8 @@ class KnowledgeGraphBuilder:
         normalized = rel_path.replace("\\", "/")
         rel_obj = Path(normalized)
 
+        if self._matches_include_path(normalized):
+            return not (repo_path / rel_obj).exists()
         if rel_obj.name in self.ignore_files:
             return True
         if rel_obj.suffix not in supported_extensions:
@@ -238,6 +268,13 @@ class KnowledgeGraphBuilder:
         """Delete one File node and all derived entities/chunks."""
         session.run(
             """
+            MATCH (chunk:Chunk)-[:DESCRIBES]->(f:File {path: $path})
+            DETACH DELETE chunk
+            """,
+            path=rel_path,
+        )
+        session.run(
+            """
             MATCH (f:File {path: $path})-[:DEFINES]->(entity)
             OPTIONAL MATCH (chunk:Chunk)-[:DESCRIBES]->(entity)
             DETACH DELETE chunk, entity
@@ -245,6 +282,107 @@ class KnowledgeGraphBuilder:
             path=rel_path,
         )
         session.run("MATCH (f:File {path: $path}) DETACH DELETE f", path=rel_path)
+
+    def _create_document_chunk(
+        self,
+        session: neo4j.Session,
+        *,
+        rel_path: str,
+        file_name: str,
+        text: str,
+        extension: str,
+    ) -> None:
+        """Create semantic chunks attached directly to a File node."""
+        session.run(
+            """
+            MATCH (chunk:Chunk)-[:DESCRIBES]->(f:File {path: $path})
+            DETACH DELETE chunk
+            """,
+            path=rel_path,
+        )
+
+        if extension == ".md":
+            chunks = self._split_markdown_document(text)
+        else:
+            chunks = [("Document", text.strip())] if text.strip() else []
+
+        if not chunks:
+            return
+
+        session.run(
+            """
+            MATCH (f:File {path: $path})
+            SET f.name = $name
+            """,
+            path=rel_path,
+            name=file_name,
+        )
+
+        for label, chunk_text in chunks:
+            enriched_text = f"Context: File {rel_path} > {label}\n\n{chunk_text}"
+            embedding = self.get_embedding(enriched_text)
+            session.run(
+                """
+                MATCH (f:File {path: $path})
+                CREATE (ch:Chunk {id: randomUUID()})
+                SET ch.text = $text,
+                    ch.embedding = $embedding,
+                    ch.created_at = datetime()
+                MERGE (ch)-[:DESCRIBES]->(f)
+                """,
+                path=rel_path,
+                text=chunk_text,
+                embedding=embedding,
+            )
+
+    def _split_markdown_document(
+        self,
+        text: str,
+        *,
+        max_chars: int = 5000,
+    ) -> List[Tuple[str, str]]:
+        """Split markdown into heading-aware chunks suitable for retrieval."""
+        stripped = text.strip()
+        if not stripped:
+            return []
+
+        sections: List[Tuple[str, str]] = []
+        current_heading = "Document"
+        current_lines: List[str] = []
+
+        def flush() -> None:
+            body = "\n".join(current_lines).strip()
+            if not body:
+                return
+            if len(body) <= max_chars:
+                sections.append((current_heading, body))
+                return
+            paragraphs = [p.strip() for p in re.split(r"\n\s*\n", body) if p.strip()]
+            bucket = ""
+            part = 1
+            for paragraph in paragraphs:
+                candidate = paragraph if not bucket else f"{bucket}\n\n{paragraph}"
+                if bucket and len(candidate) > max_chars:
+                    sections.append((f"{current_heading} (part {part})", bucket))
+                    bucket = paragraph
+                    part += 1
+                else:
+                    bucket = candidate
+            if bucket:
+                label = current_heading if part == 1 else f"{current_heading} (part {part})"
+                sections.append((label, bucket))
+
+        for line in stripped.splitlines():
+            heading_match = re.match(r"^(#{1,6})\s+(.+?)\s*$", line)
+            if heading_match:
+                flush()
+                current_heading = heading_match.group(2).strip()
+                current_lines = [line]
+            else:
+                current_lines.append(line)
+
+        flush()
+        return sections
 
     def _init_parsers(self) -> Dict[str, Parser]:
         """Initializes Tree-sitter parsers for Python and JS/TS."""
@@ -397,11 +535,11 @@ class KnowledgeGraphBuilder:
                     if file_name in self.ignore_files:
                         continue
                     file_path = Path(root) / file_name
-                    if file_path.suffix not in supported_extensions:
-                        continue
 
                     rel_path = str(file_path.relative_to(repo_path))
-                    if self._should_ignore_path(rel_path):
+                    if not self._should_index_path(rel_path, supported_extensions):
+                        continue
+                    if self._should_ignore_path(rel_path) and not self._matches_include_path(rel_path):
                         continue
                     current_ohash = self._calculate_ohash(file_path)
 
@@ -477,6 +615,15 @@ class KnowledgeGraphBuilder:
                 extension = full_path.suffix
                 parser = self.parsers.get(extension)
                 if not parser:
+                    if self._matches_include_path(rel_path):
+                        with self.driver.session() as chunk_session:
+                            self._create_document_chunk(
+                                chunk_session,
+                                rel_path=rel_path,
+                                file_name=full_path.name,
+                                text=code_content,
+                                extension=extension,
+                            )
                     continue
 
                 tree = parser.parse(bytes(code_content, "utf8"))

@@ -50,6 +50,7 @@ def _mock_config(
         "ignore_dirs": [],
         "ignore_files": [],
         "extensions": [".py"],
+        "include_paths": [],
     }
     config.get_git_config.return_value = git_config or {
         "enabled": False,
@@ -196,6 +197,46 @@ def test_index_loads_openai_key_from_repo_dotenv(monkeypatch, tmp_path):
         ignore_dirs=set(),
         ignore_files=set(),
         ignore_patterns=set(),
+        include_paths=set(),
+    )
+
+
+def test_index_passes_include_paths_to_builder(monkeypatch, tmp_path):
+    """Index command passes explicit include_paths from config to the builder."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    mock_cfg = _mock_config(
+        exists=True,
+        indexing={
+            "ignore_dirs": [],
+            "ignore_files": [],
+            "extensions": [".py"],
+            "include_paths": ["systemd/AGENTS.md", "docs/runbooks/*.md"],
+        },
+    )
+    mock_builder = Mock()
+    mock_builder.run_pipeline.return_value = {
+        "embedding_calls": 1,
+        "cost_usd": 0.0,
+    }
+
+    monkeypatch.setattr(cli, "find_repo_root", Mock(return_value=repo_root))
+    monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
+    monkeypatch.setattr(cli, "KnowledgeGraphBuilder", Mock(return_value=mock_builder))
+
+    cli.cmd_index(argparse.Namespace(json=False, quiet=True))
+
+    cli.KnowledgeGraphBuilder.assert_called_once_with(
+        uri="bolt://localhost:7687",
+        user="neo4j",
+        password="password",
+        openai_key="test-openai-key",
+        repo_root=repo_root,
+        ignore_dirs=set(),
+        ignore_files=set(),
+        ignore_patterns=set(),
+        include_paths={"systemd/AGENTS.md", "docs/runbooks/*.md"},
     )
 
 

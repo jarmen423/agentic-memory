@@ -171,6 +171,7 @@ def test_index_loads_openai_key_from_repo_dotenv(monkeypatch, tmp_path):
         "ignore_dirs": [],
         "ignore_files": [],
         "extensions": [".py"],
+        "include_paths": [],
     }
     mock_cfg.get_graphignore_patterns.return_value = []
 
@@ -511,6 +512,7 @@ def test_watch_loads_openai_key_from_repo_dotenv(monkeypatch, tmp_path):
         ignore_dirs=set(),
         ignore_files=set(),
         ignore_patterns=set(),
+        include_paths=set(),
         supported_extensions={".py"},
         initial_scan=True,
     )

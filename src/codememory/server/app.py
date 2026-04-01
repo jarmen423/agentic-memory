@@ -19,7 +19,10 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 import neo4j
 from codememory.core.extraction_llm import resolve_extraction_llm_config
+from codememory.core.request_context import get_request_id
+from codememory.core.retry import retry_transient
 from codememory.ingestion.graph import KnowledgeGraphBuilder
+from codememory.server.unified_search import search_all_memory_sync
 from codememory.temporal.seeds import (
     collect_seed_entities,
     extract_query_seed_entities,
@@ -752,27 +755,28 @@ def _get_research_pipeline():
     if _research_pipeline is not None:
         return _research_pipeline
 
-    google_api_key = os.getenv("GOOGLE_API_KEY")
     extraction_llm = resolve_extraction_llm_config()
     neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
     neo4j_user = os.getenv("NEO4J_USER") or os.getenv("NEO4J_USERNAME", "neo4j")
     neo4j_password = os.getenv("NEO4J_PASSWORD", "password")
 
-    if not google_api_key:
-        logger.error("GOOGLE_API_KEY not set — research pipeline unavailable")
-        return None
     if not extraction_llm.api_key:
         logger.error("Extraction LLM API key not set — research pipeline unavailable")
         return None
 
     from codememory.core.connection import ConnectionManager
-    from codememory.core.embedding import EmbeddingService
     from codememory.core.entity_extraction import EntityExtractionService
+    from codememory.core.runtime_embedding import build_embedding_service
     from codememory.temporal.bridge import get_temporal_bridge
     from codememory.web.pipeline import ResearchIngestionPipeline
 
+    try:
+        embedder = build_embedding_service("web")
+    except ValueError as exc:
+        logger.error("Embedding runtime unavailable — %s", exc)
+        return None
+
     conn = ConnectionManager(neo4j_uri, neo4j_user, neo4j_password)
-    embedder = EmbeddingService(provider="gemini", api_key=google_api_key)
     extractor = EntityExtractionService(
         api_key=extraction_llm.api_key,
         model=extraction_llm.model,
@@ -832,7 +836,7 @@ def memory_ingest_research(
     pipeline = _get_research_pipeline()
     if pipeline is None:
         return (
-            "Error: Research pipeline not available. Check GOOGLE_API_KEY and "
+            "Error: Research pipeline not available. Check the configured embedding provider and "
             "the configured extraction LLM API key environment variables."
         )
 
@@ -876,6 +880,41 @@ def _format_baseline_research_results(results: list[dict[str, Any]]) -> str:
         if confidence:
             output += f"   Confidence: {confidence}\n"
         output += f"   ```\n{text}...\n   ```\n\n"
+
+    return output.strip()
+
+
+def _format_unified_search_results(payload: dict[str, Any]) -> str:
+    """Format normalized unified search hits for MCP output."""
+    results = payload.get("results") or []
+    errors = payload.get("errors") or []
+    if not results:
+        if errors:
+            details = ", ".join(f"{err['module']}: {err['message']}" for err in errors)
+            return f"No relevant memory found.\n\nWarnings: {details}"
+        return "No relevant memory found."
+
+    output = f"Found {len(results)} unified memory result(s):\n\n"
+    for index, hit in enumerate(results, 1):
+        module = hit.get("module", "unknown")
+        title = hit.get("title") or hit.get("source_id") or "Untitled"
+        score = float(hit.get("score", 0.0) or 0.0)
+        source_kind = hit.get("source_kind", "unknown")
+        temporal_tag = " temporal" if hit.get("temporal_applied") else ""
+        excerpt = str(hit.get("excerpt") or "")[:300]
+        output += (
+            f"{index}. [{module}{temporal_tag}] {title} "
+            f"[{source_kind}] [Score: {score:.2f}]\n"
+        )
+        if excerpt:
+            output += f"   ```\n{excerpt}...\n   ```\n\n"
+        else:
+            output += "\n"
+
+    if errors:
+        output += "Warnings:\n"
+        for error in errors:
+            output += f"- {error['module']}: {error['message']}\n"
 
     return output.strip()
 
@@ -948,7 +987,7 @@ def search_web_memory(query: str, limit: int = 5, as_of: str | None = None) -> s
     pipeline = _get_research_pipeline()
     if pipeline is None:
         return (
-            "Error: Research pipeline not available. Check GOOGLE_API_KEY and "
+            "Error: Research pipeline not available. Check the configured embedding provider and "
             "the configured extraction LLM API key environment variables."
         )
 
@@ -997,11 +1036,13 @@ def search_web_memory(query: str, limit: int = 5, as_of: str | None = None) -> s
 
             if seeds:
                 try:
-                    temporal_payload = bridge.retrieve(
-                        project_id=project_id,
-                        seed_entities=seeds,
-                        as_of_us=parse_as_of_to_micros(as_of),
-                        max_edges=max(safe_limit * 2, safe_limit),
+                    temporal_payload = retry_transient(
+                        lambda: bridge.retrieve(
+                            project_id=project_id,
+                            seed_entities=seeds,
+                            as_of_us=parse_as_of_to_micros(as_of),
+                            max_edges=max(safe_limit * 2, safe_limit),
+                        )
                     )
                     temporal_results = temporal_payload.get("results") or []
                     if temporal_results:
@@ -1009,22 +1050,75 @@ def search_web_memory(query: str, limit: int = 5, as_of: str | None = None) -> s
                             _format_temporal_research_results(temporal_results)
                         )
                     logger.info(
-                        "search_web_memory falling back to baseline: empty temporal result"
+                        "web_search_fallback",
+                        extra={
+                            "event": "temporal_fallback",
+                            "request_id": get_request_id(),
+                                "memory_module": "web",
+                            "provider": getattr(pipeline._embedder, "provider", None),
+                            "fallback": "empty_temporal_result",
+                            "error_type": None,
+                        },
                     )
                 except Exception as exc:
                     logger.warning(
-                        "search_web_memory falling back to baseline after temporal failure: %s",
-                        exc,
+                        "web_search_fallback",
+                        extra={
+                            "event": "temporal_fallback",
+                            "request_id": get_request_id(),
+                                "memory_module": "web",
+                            "provider": getattr(pipeline._embedder, "provider", None),
+                            "fallback": "temporal_retrieve_failed",
+                            "error_type": type(exc).__name__,
+                        },
                     )
             else:
-                logger.info("search_web_memory falling back to baseline: no temporal seeds")
-        else:
-            logger.info("search_web_memory falling back to baseline: temporal bridge unavailable")
+                logger.info(
+                    "web_search_fallback",
+                    extra={
+                        "event": "temporal_fallback",
+                        "request_id": get_request_id(),
+                            "memory_module": "web",
+                        "provider": getattr(pipeline._embedder, "provider", None),
+                        "fallback": "temporal_bridge_unavailable",
+                        "error_type": None,
+                    },
+                )
 
         return validate_tool_output(_format_baseline_research_results(baseline_results))
     except Exception as e:
         logger.error("Research search failed: %s", e)
         return f"Error: Research search failed: {str(e)}"
+
+
+@mcp.tool()
+@rate_limit
+@log_tool_call
+def search_all_memory(
+    query: str,
+    limit: int = 10,
+    project_id: str | None = None,
+    as_of: str | None = None,
+    modules: str | None = None,
+) -> str:
+    """Search code, research, and conversation memory in one unified ranked response."""
+    current_graph = get_graph()
+    research_pipeline = _get_research_pipeline()
+    requested_modules = None
+    if modules:
+        requested_modules = [part.strip() for part in modules.split(",") if part.strip()]
+
+    payload = search_all_memory_sync(
+        query=query,
+        limit=limit,
+        project_id=project_id,
+        as_of=as_of,
+        modules=requested_modules,
+        graph=current_graph,
+        research_pipeline=research_pipeline,
+        conversation_pipeline=_get_mcp_conversation_pipeline(),
+    ).to_dict()
+    return validate_tool_output(_format_unified_search_results(payload))
 
 
 @mcp.tool()
@@ -1093,6 +1187,7 @@ def brave_search(query: str, count: int = 10) -> str:
 # register_conversation_tools() decorates its inner functions with @mcp.tool()
 # so registration happens at import time of app.py.
 from codememory.server.tools import (  # noqa: E402,PLC0415
+    _get_mcp_conversation_pipeline,
     register_conversation_tools,
     register_schedule_tools,
 )

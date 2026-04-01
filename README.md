@@ -137,6 +137,20 @@ Phase 8 adds a shadow-mode temporal maintenance layer alongside the existing Neo
 
 This layer is additive in the current branch. Existing retrieval paths remain unchanged until the later retrieval cutover phase.
 
+## Full-Stack Local Flow
+
+Phase 10 adds a unified search surface across code, research, and conversation memory:
+
+- MCP: `search_all_memory(...)`
+- REST: `GET /search/all`
+
+Use these docs for the current local operator flow:
+
+- [docs/SETUP_FULL_STACK.md](docs/SETUP_FULL_STACK.md)
+- [docs/MCP_TOOL_REFERENCE.md](docs/MCP_TOOL_REFERENCE.md)
+- [docs/PROVIDER_CONFIGURATION.md](docs/PROVIDER_CONFIGURATION.md)
+- [docs/SPACETIMEDB_OPERATIONS.md](docs/SPACETIMEDB_OPERATIONS.md)
+
 ---
 
 ## 🔌 MCP Tools Available to AI Agents

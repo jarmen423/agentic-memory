@@ -39,6 +39,7 @@ class EmbeddingService:
         self,
         provider: str,
         api_key: str,
+        model: str | None = None,
         base_url: str | None = None,
         output_dimensions: int | None = None,
     ) -> None:
@@ -47,6 +48,7 @@ class EmbeddingService:
         Args:
             provider: One of 'openai', 'gemini', 'nemotron'.
             api_key: API key for the selected provider.
+            model: Optional model override for the selected provider.
             base_url: Optional base URL override (for Nemotron custom endpoints).
             output_dimensions: Optional dimension override. Defaults to provider standard.
 
@@ -60,7 +62,7 @@ class EmbeddingService:
             )
 
         self.provider = provider
-        self.model: str = self.PROVIDERS[provider]["model"]
+        self.model: str = model or self.PROVIDERS[provider]["model"]
         self.dimensions: int = output_dimensions or self.PROVIDERS[provider]["dimensions"]
 
         if provider == "gemini":

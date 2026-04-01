@@ -116,6 +116,39 @@ class TestMCPServerTools:
         # In a real test, we'd inspect the mcp object's tools
         pass
 
+    def test_search_all_memory_formats_unified_results(self, monkeypatch):
+        """search_all_memory formats normalized service output for MCP callers."""
+        from codememory.server import app as app_module
+
+        monkeypatch.setattr(
+            app_module,
+            "search_all_memory_sync",
+            lambda **kwargs: Mock(
+                to_dict=lambda: {
+                    "results": [
+                        {
+                            "module": "web",
+                            "source_kind": "research_finding",
+                            "source_id": "finding:1",
+                            "title": "Research Hit",
+                            "excerpt": "research excerpt",
+                            "score": 0.9,
+                            "temporal_applied": True,
+                        }
+                    ],
+                    "errors": [],
+                }
+            ),
+        )
+        monkeypatch.setattr(app_module, "get_graph", lambda: Mock())
+        monkeypatch.setattr(app_module, "_get_research_pipeline", lambda: Mock())
+        monkeypatch.setattr(app_module, "_get_mcp_conversation_pipeline", lambda: Mock())
+
+        result = app_module.search_all_memory("neo4j", limit=5, project_id="proj1")
+
+        assert "Research Hit" in result
+        assert "[web temporal]" in result
+
 
 class TestIdentifyImpact:
     """Test the identify_impact tool."""

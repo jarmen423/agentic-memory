@@ -1,9 +1,9 @@
 ---
-status: testing
+status: complete
 phase: 09-temporal-ppr-retrieval-benchmark
 source: 09-01-SUMMARY.md, 09-02-SUMMARY.md, 09-03-SUMMARY.md
 started: 2026-03-26T23:59:00Z
-updated: 2026-03-28T18:40:00Z
+updated: 2026-04-01T14:35:00Z
 ---
 
 ## Current Test
@@ -13,7 +13,7 @@ name: Deterministic Fallback When Temporal Path Is Unavailable
 expected: |
   With the temporal bridge disabled or misconfigured, conversation and web retrieval
   still return baseline results instead of failing or changing their top-level response shape.
-awaiting: user response
+awaiting: none
 
 ## Tests
 
@@ -39,14 +39,15 @@ reported: "After ingesting a conversation turn for `proj-smoke` with a valid reg
 
 ### 5. Deterministic Fallback When Temporal Path Is Unavailable
 expected: With the temporal bridge disabled or misconfigured, conversation and web retrieval still return baseline results instead of failing or changing their top-level response shape
-result: pending
+result: pass
+reported: "Added explicit bridge-unavailable coverage alongside existing temporal-failure tests. `tests/test_web_tools.py::test_search_web_memory_falls_back_when_temporal_bridge_unavailable` and `tests/test_am_server.py::test_search_conversations_bridge_unavailable_falls_back` both passed, alongside the existing failure-path fallback tests."
 
 ## Summary
 
 total: 5
-passed: 4
+passed: 5
 issues: 0
-pending: 1
+pending: 0
 skipped: 0
 blocked: 0
 

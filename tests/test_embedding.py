@@ -57,6 +57,16 @@ class TestEmbeddingServiceInit:
                 base_url="https://custom.endpoint/v1",
             )
 
+    def test_custom_model_override_is_preserved(self) -> None:
+        """EmbeddingService accepts an explicit model override."""
+        with patch("codememory.core.embedding.OpenAI"):
+            service = EmbeddingService(
+                provider="openai",
+                api_key="test-key",
+                model="text-embedding-3-small",
+            )
+            assert service.model == "text-embedding-3-small"
+
 
 class TestEmbedMethod:
     """Tests for EmbeddingService.embed() method."""

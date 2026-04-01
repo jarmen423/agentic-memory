@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextvars import copy_context
 
 from fastapi import APIRouter, Depends, Query
 
@@ -25,7 +26,8 @@ async def ingest_research(body: ResearchIngestRequest) -> dict:
     """
     pipeline = get_pipeline()
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, pipeline.ingest, body.model_dump())
+    ctx = copy_context()
+    result = await loop.run_in_executor(None, lambda: ctx.run(pipeline.ingest, body.model_dump()))
     return {"status": "ok", "result": result}
 
 
@@ -44,6 +46,7 @@ async def search_research(
     try:
         conn = pipeline._conn  # type: ignore[attr-defined]
         loop = asyncio.get_event_loop()
+        ctx = copy_context()
 
         def _query() -> list:
             with conn.session() as session:
@@ -65,7 +68,7 @@ async def search_research(
                 result = session.run(text_cypher, q=q, limit=limit)
                 return [dict(record) for record in result]
 
-        results = await loop.run_in_executor(None, _query)
+        results = await loop.run_in_executor(None, lambda: ctx.run(_query))
     except Exception:
         results = []
 

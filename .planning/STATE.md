@@ -2,30 +2,30 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: — Full Multi-Module Memory System with Temporal GraphRAG
-current_phase: 9
+current_phase: 10
 status: active
-last_updated: "2026-03-28T19:20:00Z"
+last_updated: "2026-04-01T18:30:00Z"
 progress:
   total_phases: 10
-  completed_phases: 8
+  completed_phases: 9
   total_plans: 17
-  completed_plans: 14
+  completed_plans: 17
 ---
 
 # Agentic Memory — Project State
 
 **Last Updated:** 2026-03-28
-**Current Phase:** 9
-**Phase Status:** Executed; verification in progress
-**Last Session Stopped At:** Phase 9 runtime work is implemented and locally verified through the benchmark harness plus live conversation ingest/search. Phase 10 discuss/research/planning is now drafted, but Phase 10 execution remains gated on the remaining Phase 9 fallback verification step.
+**Current Phase:** 10
+**Phase Status:** Execution in progress
+**Last Session Stopped At:** Phase 10 now has the unified search core (`10-01`), config-driven embedding runtime and request-correlation hardening (`10-02`), plus committed integration/docs/UAT artifacts for `10-03`. Remaining closeout is live manual verification from the new runbooks.
 
 ---
 
 ## Active Phase
 
-**Phase 9: Temporal PPR Retrieval + Benchmark**
+**Phase 10: Cross-Module Integration & Hardening**
 
-**Next Action:** Finish Phase 9 verification by confirming deterministic fallback behavior when the temporal bridge is unavailable, then begin Phase 10 execution with `10-01-PLAN.md`.
+**Next Action:** Run the manual Phase 10 full-stack checks from `docs/SETUP_FULL_STACK.md` and update `10-UAT.md` from `pending` to `pass` where verified.
 
 ---
 
@@ -50,8 +50,8 @@ progress:
 | 6 | am-ext (Browser Extension) | Complete |
 | 7 | Temporal Schema + Claim Extraction + Research Scheduling | Complete |
 | 8 | SpacetimeDB Maintenance Layer | Complete |
-| 9 | Temporal PPR Retrieval + Benchmark | In Verification |
-| 10 | Cross-Module Integration & Hardening | Planned |
+| 9 | Temporal PPR Retrieval + Benchmark | Complete |
+| 10 | Cross-Module Integration & Hardening | In Progress |
 
 ---
 

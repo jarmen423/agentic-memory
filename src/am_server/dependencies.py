@@ -7,9 +7,9 @@ from functools import lru_cache
 
 from codememory.chat.pipeline import ConversationIngestionPipeline
 from codememory.core.connection import ConnectionManager
-from codememory.core.embedding import EmbeddingService
 from codememory.core.entity_extraction import EntityExtractionService
 from codememory.core.extraction_llm import resolve_extraction_llm_config
+from codememory.core.runtime_embedding import build_embedding_service
 from codememory.temporal.bridge import get_temporal_bridge
 from codememory.web.pipeline import ResearchIngestionPipeline
 
@@ -25,10 +25,7 @@ def get_pipeline() -> ResearchIngestionPipeline:
         user=os.environ["NEO4J_USER"],
         password=os.environ["NEO4J_PASSWORD"],
     )
-    embedder = EmbeddingService(
-        provider="gemini",
-        api_key=os.environ["GEMINI_API_KEY"],
-    )
+    embedder = build_embedding_service("web")
     extraction_llm = resolve_extraction_llm_config()
     extractor = EntityExtractionService(
         api_key=extraction_llm.api_key or "",
@@ -55,10 +52,7 @@ def get_conversation_pipeline() -> ConversationIngestionPipeline:
         user=os.environ["NEO4J_USER"],
         password=os.environ["NEO4J_PASSWORD"],
     )
-    embedder = EmbeddingService(
-        provider="gemini",
-        api_key=os.environ["GEMINI_API_KEY"],
-    )
+    embedder = build_embedding_service("chat")
     extraction_llm = resolve_extraction_llm_config()
     extractor = EntityExtractionService(
         api_key=extraction_llm.api_key or "",

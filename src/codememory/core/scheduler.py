@@ -68,20 +68,19 @@ def _resolve_brave_api_key(explicit_key: str | None = None) -> str | None:
 
 def _build_pipeline_from_env(connection_manager: ConnectionManager | None = None) -> Any:
     """Create a ResearchIngestionPipeline from environment variables."""
-    google_api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
     extraction_llm = resolve_extraction_llm_config()
-    if not google_api_key or not extraction_llm.api_key:
+    if not extraction_llm.api_key:
         raise RuntimeError(
-            "GOOGLE_API_KEY/GEMINI_API_KEY and extraction LLM API credentials are "
+            "Embedding provider credentials and extraction LLM API credentials are "
             "required for the research scheduler."
         )
 
-    from codememory.core.embedding import EmbeddingService  # noqa: PLC0415
     from codememory.core.entity_extraction import EntityExtractionService  # noqa: PLC0415
+    from codememory.core.runtime_embedding import build_embedding_service  # noqa: PLC0415
     from codememory.web.pipeline import ResearchIngestionPipeline  # noqa: PLC0415
 
     conn = connection_manager or _build_connection_from_env()
-    embedder = EmbeddingService(provider="gemini", api_key=google_api_key)
+    embedder = build_embedding_service("web")
     extractor = EntityExtractionService(
         api_key=extraction_llm.api_key,
         model=extraction_llm.model,

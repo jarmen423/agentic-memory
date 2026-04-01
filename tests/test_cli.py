@@ -811,7 +811,7 @@ def test_web_ingest_calls_pipeline(monkeypatch, capsys):
 
     with patch("codememory.web.crawler.crawl_url", fake_crawl_url), \
          patch("codememory.core.connection.ConnectionManager", Mock(return_value=mock_conn)), \
-         patch("codememory.core.embedding.EmbeddingService", Mock(return_value=mock_embedder)), \
+         patch("codememory.core.runtime_embedding.build_embedding_service", Mock(return_value=mock_embedder)), \
          patch("codememory.core.entity_extraction.EntityExtractionService", Mock(return_value=mock_extractor)), \
          patch("codememory.web.pipeline.ResearchIngestionPipeline", Mock(return_value=mock_pipeline)):
 
@@ -846,7 +846,7 @@ def test_web_ingest_pdf_format_detection(monkeypatch, capsys):
 
     with patch("codememory.web.crawler.crawl_url", crawl_url_spy), \
          patch("codememory.core.connection.ConnectionManager", Mock(return_value=mock_conn)), \
-         patch("codememory.core.embedding.EmbeddingService", Mock(return_value=mock_embedder)), \
+         patch("codememory.core.runtime_embedding.build_embedding_service", Mock(return_value=mock_embedder)), \
          patch("codememory.core.entity_extraction.EntityExtractionService", Mock(return_value=mock_extractor)), \
          patch("codememory.web.pipeline.ResearchIngestionPipeline", Mock(return_value=mock_pipeline)), \
          patch("os.path.isfile", return_value=True):
@@ -884,7 +884,7 @@ def test_web_ingest_pdf_url_detection(monkeypatch, capsys):
     mock_httpx_resp.content = b"%PDF fake content"
 
     with patch("codememory.core.connection.ConnectionManager", Mock(return_value=mock_conn)), \
-         patch("codememory.core.embedding.EmbeddingService", Mock(return_value=mock_embedder)), \
+         patch("codememory.core.runtime_embedding.build_embedding_service", Mock(return_value=mock_embedder)), \
          patch("codememory.core.entity_extraction.EntityExtractionService", Mock(return_value=mock_extractor)), \
          patch("codememory.web.pipeline.ResearchIngestionPipeline", Mock(return_value=mock_pipeline)), \
          patch("httpx.get", Mock(return_value=mock_httpx_resp)), \
@@ -896,9 +896,10 @@ def test_web_ingest_pdf_url_detection(monkeypatch, capsys):
     assert captured_source["format"] == "pdf"
 
 
-def test_web_ingest_missing_google_key_exits_1(monkeypatch, capsys):
-    """web-ingest exits with code 1 when GOOGLE_API_KEY is not set."""
+def test_web_ingest_missing_embedding_key_exits_1(monkeypatch, capsys):
+    """web-ingest exits with code 1 when no embedding-provider key can be resolved."""
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
 
     with pytest.raises(SystemExit) as exc:
@@ -988,6 +989,30 @@ def test_web_run_research_calls_scheduler_for_ad_hoc_run(capsys):
     mock_scheduler.close.assert_called_once()
     out = capsys.readouterr().out
     assert '"status": "ok"' in out
+
+
+def test_resolve_scheduler_dependencies_uses_web_embedding_runtime(monkeypatch):
+    """Scheduler dependency builder resolves the web embedder via shared runtime config."""
+    from unittest.mock import Mock, patch
+
+    monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "test-brave-key")
+
+    mock_conn = Mock()
+    mock_embedder = Mock()
+    mock_extractor = Mock()
+    mock_pipeline = Mock()
+
+    with patch("codememory.core.connection.ConnectionManager", Mock(return_value=mock_conn)), \
+         patch("codememory.core.runtime_embedding.build_embedding_service", Mock(return_value=mock_embedder)) as build_embedder, \
+         patch("codememory.core.entity_extraction.EntityExtractionService", Mock(return_value=mock_extractor)), \
+         patch("codememory.web.pipeline.ResearchIngestionPipeline", Mock(return_value=mock_pipeline)):
+        pipeline, extraction_llm, brave_api_key = cli._resolve_scheduler_dependencies()
+
+    assert pipeline is mock_pipeline
+    assert extraction_llm.api_key == "test-groq-key"
+    assert brave_api_key == "test-brave-key"
+    build_embedder.assert_called_once_with("web")
 
 
 def test_migrate_temporal_runs_all_backfill_statements(capsys):

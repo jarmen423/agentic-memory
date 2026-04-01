@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextvars import copy_context
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -29,7 +30,8 @@ async def ingest_conversation(body: ConversationIngestRequest) -> dict:
     pipeline = get_conversation_pipeline()
     loop = asyncio.get_event_loop()
     try:
-        result = await loop.run_in_executor(None, pipeline.ingest, body.model_dump())
+        ctx = copy_context()
+        result = await loop.run_in_executor(None, lambda: ctx.run(pipeline.ingest, body.model_dump()))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"status": "ok", "result": result}
@@ -52,6 +54,7 @@ async def search_conversations(
     pipeline = get_conversation_pipeline()
     try:
         loop = asyncio.get_event_loop()
+        ctx = copy_context()
 
         def _query() -> list:
             return search_conversation_turns_sync(
@@ -64,7 +67,7 @@ async def search_conversations(
                 log_prefix="/search/conversations",
             )
 
-        results = await loop.run_in_executor(None, _query)
+        results = await loop.run_in_executor(None, lambda: ctx.run(_query))
     except Exception:
         logger.exception("search_conversations failed")
         results = []

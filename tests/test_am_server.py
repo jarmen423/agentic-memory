@@ -87,6 +87,13 @@ def test_health(client):
     assert resp.json() == {"status": "ok"}
 
 
+def test_health_includes_request_id_header(client):
+    """FastAPI middleware adds a stable request correlation header."""
+    resp = client.get("/health")
+    assert resp.status_code == 200
+    assert resp.headers["X-Request-ID"]
+
+
 def test_ingest_no_auth(client):
     """POST /ingest/research without Authorization header returns 401."""
     payload = {
@@ -171,6 +178,62 @@ def test_ingest_delegates(client, auth_headers):
     assert passed["content"] == "Important finding"
     assert passed["type"] == "finding"
     assert passed["source_agent"] == "perplexity"
+
+
+def test_get_pipeline_uses_web_embedding_runtime(monkeypatch):
+    """Research pipeline factory resolves embedder via the shared web runtime."""
+    monkeypatch.setenv("NEO4J_URI", "bolt://localhost:7687")
+    monkeypatch.setenv("NEO4J_USER", "neo4j")
+    monkeypatch.setenv("NEO4J_PASSWORD", "test")
+    monkeypatch.setenv("GROQ_API_KEY", "fake-groq")
+
+    sentinel_embedder = object()
+    captured = {}
+
+    monkeypatch.setattr("am_server.dependencies.build_embedding_service", lambda module_name: (
+        captured.setdefault("module_name", module_name), sentinel_embedder
+    )[1])
+    monkeypatch.setattr(
+        "am_server.dependencies.ResearchIngestionPipeline",
+        lambda conn, embedder, extractor, temporal_bridge=None: {
+            "embedder": embedder,
+            "temporal_bridge": temporal_bridge,
+        },
+    )
+
+    dependencies.get_pipeline.cache_clear()
+    pipeline = dependencies.get_pipeline()
+
+    assert captured["module_name"] == "web"
+    assert pipeline["embedder"] is sentinel_embedder
+
+
+def test_get_conversation_pipeline_uses_chat_embedding_runtime(monkeypatch):
+    """Conversation pipeline factory resolves embedder via the shared chat runtime."""
+    monkeypatch.setenv("NEO4J_URI", "bolt://localhost:7687")
+    monkeypatch.setenv("NEO4J_USER", "neo4j")
+    monkeypatch.setenv("NEO4J_PASSWORD", "test")
+    monkeypatch.setenv("GROQ_API_KEY", "fake-groq")
+
+    sentinel_embedder = object()
+    captured = {}
+
+    monkeypatch.setattr("am_server.dependencies.build_embedding_service", lambda module_name: (
+        captured.setdefault("module_name", module_name), sentinel_embedder
+    )[1])
+    monkeypatch.setattr(
+        "am_server.dependencies.ConversationIngestionPipeline",
+        lambda conn, embedder, extractor, temporal_bridge=None: {
+            "embedder": embedder,
+            "temporal_bridge": temporal_bridge,
+        },
+    )
+
+    dependencies.get_conversation_pipeline.cache_clear()
+    pipeline = dependencies.get_conversation_pipeline()
+
+    assert captured["module_name"] == "chat"
+    assert pipeline["embedder"] is sentinel_embedder
 
 
 def test_search_research_ok(client, auth_headers):
@@ -347,3 +410,124 @@ def test_search_conversations_temporal_failure_falls_back(client, auth_headers):
     assert resp.status_code == 200
     body = resp.json()
     assert body["results"][0]["content"] == "baseline result"
+
+
+def test_search_conversations_temporal_failure_logs_structured_fallback(
+    client, auth_headers, caplog
+):
+    """Conversation fallback logs emit consistent structured fields."""
+    pipeline = dependencies.get_conversation_pipeline()
+    pipeline._temporal_bridge.is_available.return_value = True
+    pipeline._temporal_bridge.retrieve.side_effect = RuntimeError("bridge down")
+
+    session = MagicMock()
+    session.run.side_effect = [
+        _iter_result(
+            [
+                {
+                    "session_id": "sess-1",
+                    "turn_index": 0,
+                    "role": "user",
+                    "content": "baseline result",
+                    "source_agent": "claude",
+                    "timestamp": "2026-03-01T00:00:00+00:00",
+                    "ingested_at": "2026-03-01T00:00:00+00:00",
+                    "entities": ["Neo4j"],
+                    "entity_types": ["technology"],
+                    "score": 0.9,
+                }
+            ]
+        )
+    ]
+    session_ctx = MagicMock()
+    session_ctx.__enter__.return_value = session
+    session_ctx.__exit__.return_value = False
+    pipeline._conn.session.return_value = session_ctx
+
+    with caplog.at_level("WARNING"):
+        resp = client.get("/search/conversations?q=neo4j&project_id=proj1", headers=auth_headers)
+
+    assert resp.status_code == 200
+    record = next(r for r in caplog.records if r.message == "conversation_search_fallback")
+    assert record.event == "temporal_fallback"
+    assert record.memory_module == "conversation"
+    assert record.fallback == "temporal_retrieve_failed"
+    assert record.error_type == "RuntimeError"
+    assert record.request_id
+
+
+def test_search_conversations_bridge_unavailable_falls_back(client, auth_headers):
+    """Bridge-unavailable state falls back to the baseline vector result shape."""
+    pipeline = dependencies.get_conversation_pipeline()
+    pipeline._temporal_bridge.is_available.return_value = False
+
+    session = MagicMock()
+    session.run.side_effect = [
+        _iter_result(
+            [
+                {
+                    "session_id": "sess-1",
+                    "turn_index": 0,
+                    "role": "user",
+                    "content": "baseline unavailable result",
+                    "source_agent": "claude",
+                    "timestamp": "2026-03-01T00:00:00+00:00",
+                    "ingested_at": "2026-03-01T00:00:00+00:00",
+                    "entities": ["Neo4j"],
+                    "entity_types": ["technology"],
+                    "score": 0.9,
+                }
+            ]
+        )
+    ]
+    session_ctx = MagicMock()
+    session_ctx.__enter__.return_value = session
+    session_ctx.__exit__.return_value = False
+    pipeline._conn.session.return_value = session_ctx
+
+    resp = client.get(
+        "/search/conversations?q=neo4j&project_id=proj1",
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["results"][0]["content"] == "baseline unavailable result"
+    pipeline._temporal_bridge.retrieve.assert_not_called()
+
+
+def test_search_all_endpoint_returns_unified_results(client, auth_headers, monkeypatch):
+    """GET /search/all returns normalized unified search results."""
+    monkeypatch.setattr(
+        "am_server.routes.search.get_graph",
+        lambda: MagicMock(),
+    )
+    monkeypatch.setattr(
+        "am_server.routes.search.search_all_memory_sync",
+        lambda **kwargs: MagicMock(
+            to_dict=lambda: {
+                "results": [
+                    {
+                        "module": "web",
+                        "source_kind": "research_finding",
+                        "source_id": "finding:1",
+                        "title": "Research Hit",
+                        "excerpt": "research excerpt",
+                        "score": 0.9,
+                        "baseline_score": None,
+                        "temporal_score": 0.9,
+                        "temporal_applied": True,
+                        "metadata": {},
+                    }
+                ],
+                "errors": [],
+            }
+        ),
+    )
+
+    resp = client.get("/search/all?q=neo4j&project_id=proj1", headers=auth_headers)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["results"][0]["module"] == "web"
+    assert body["results"][0]["temporal_applied"] is True

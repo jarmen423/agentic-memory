@@ -218,6 +218,18 @@ class Config:
         """
         return self.load()["modules"][module_name]
 
+    def get_embedding_provider_config(self, provider_name: str) -> Dict[str, Any]:
+        """Get provider-level embedding config such as API keys and base URLs."""
+        provider = provider_name.strip().lower()
+        config = self.load()
+        if provider == "openai":
+            return dict(config.get("openai", {}))
+        if provider == "gemini":
+            return dict(config.get("gemini", {}))
+        if provider == "nemotron":
+            return dict(config.get("nemotron", {}))
+        return {}
+
     def get_extraction_llm_config(self) -> Dict[str, Any]:
         """Get entity extraction LLM config with env var fallback for api_key.
 

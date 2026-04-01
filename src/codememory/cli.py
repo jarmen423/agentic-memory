@@ -979,12 +979,10 @@ def cmd_web_ingest(args: argparse.Namespace) -> None:
         print("web-ingest: URL argument required.")
         sys.exit(1)
 
-    google_api_key = os.getenv("GOOGLE_API_KEY")
     from codememory.core.extraction_llm import resolve_extraction_llm_config  # noqa: PLC0415
+    from codememory.core.runtime_embedding import build_embedding_service  # noqa: PLC0415
+
     extraction_llm = resolve_extraction_llm_config()
-    if not google_api_key:
-        print("web-ingest: GOOGLE_API_KEY environment variable required.")
-        sys.exit(1)
     if not extraction_llm.api_key:
         print("web-ingest: extraction LLM API key environment variable required.")
         sys.exit(1)
@@ -997,7 +995,6 @@ def cmd_web_ingest(args: argparse.Namespace) -> None:
         from codememory.web.crawler import crawl_url
         from codememory.web.pipeline import ResearchIngestionPipeline
         from codememory.core.connection import ConnectionManager
-        from codememory.core.embedding import EmbeddingService
         from codememory.core.entity_extraction import EntityExtractionService
 
         # Detect format: PDF files (local or URL ending in .pdf) skip crawling
@@ -1031,7 +1028,7 @@ def cmd_web_ingest(args: argparse.Namespace) -> None:
             print(f"web-ingest: Got {len(content_text)} chars of markdown.")
 
         conn = ConnectionManager(neo4j_uri, neo4j_user, password)
-        embedder = EmbeddingService(provider="gemini", api_key=google_api_key)
+        embedder = build_embedding_service("web")
         extractor = EntityExtractionService(
             api_key=extraction_llm.api_key,
             model=extraction_llm.model,
@@ -1072,13 +1069,11 @@ def cmd_web_search(args: argparse.Namespace) -> None:
 
 def _resolve_scheduler_dependencies() -> tuple[Any, Any, str]:
     """Build the shared dependencies required by research scheduler commands."""
-    google_api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
     from codememory.core.extraction_llm import resolve_extraction_llm_config  # noqa: PLC0415
+    from codememory.core.runtime_embedding import build_embedding_service  # noqa: PLC0415
+
     extraction_llm = resolve_extraction_llm_config()
     brave_api_key = os.getenv("BRAVE_SEARCH_API_KEY") or os.getenv("BRAVE_API_KEY")
-    if not google_api_key:
-        print("web-schedule: GOOGLE_API_KEY or GEMINI_API_KEY environment variable required.")
-        sys.exit(1)
     if not extraction_llm.api_key:
         print("web-schedule: extraction LLM API key environment variable required.")
         sys.exit(1)
@@ -1091,12 +1086,15 @@ def _resolve_scheduler_dependencies() -> tuple[Any, Any, str]:
     password = os.getenv("NEO4J_PASSWORD", "password")
 
     from codememory.core.connection import ConnectionManager  # noqa: PLC0415
-    from codememory.core.embedding import EmbeddingService  # noqa: PLC0415
     from codememory.core.entity_extraction import EntityExtractionService  # noqa: PLC0415
     from codememory.web.pipeline import ResearchIngestionPipeline  # noqa: PLC0415
 
     conn = ConnectionManager(neo4j_uri, neo4j_user, password)
-    embedder = EmbeddingService(provider="gemini", api_key=google_api_key)
+    try:
+        embedder = build_embedding_service("web")
+    except ValueError as exc:
+        print(f"web-schedule: {exc}")
+        sys.exit(1)
     extractor = EntityExtractionService(
         api_key=extraction_llm.api_key,
         model=extraction_llm.model,
@@ -1244,12 +1242,12 @@ def cmd_chat_ingest(args: argparse.Namespace) -> None:
     neo4j_uri = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
     neo4j_user = os.environ.get("NEO4J_USER", "neo4j")
     password = os.environ.get("NEO4J_PASSWORD", "")
-    google_api_key = os.environ.get("GEMINI_API_KEY", "")
     from codememory.core.extraction_llm import resolve_extraction_llm_config  # noqa: PLC0415
+    from codememory.core.runtime_embedding import build_embedding_service  # noqa: PLC0415
+
     extraction_llm = resolve_extraction_llm_config()
 
     from codememory.core.connection import ConnectionManager  # noqa: PLC0415
-    from codememory.core.embedding import EmbeddingService  # noqa: PLC0415
     from codememory.core.entity_extraction import EntityExtractionService  # noqa: PLC0415
     from codememory.chat.pipeline import ConversationIngestionPipeline  # noqa: PLC0415
 
@@ -1257,7 +1255,7 @@ def cmd_chat_ingest(args: argparse.Namespace) -> None:
     conn = ConnectionManager(neo4j_uri, neo4j_user, password)
     conn.setup_database()
 
-    embedder = EmbeddingService(provider="gemini", api_key=google_api_key)
+    embedder = build_embedding_service("chat")
     extractor = EntityExtractionService(
         api_key=extraction_llm.api_key or "",
         model=extraction_llm.model,
@@ -1393,10 +1391,8 @@ def cmd_chat_search(args: argparse.Namespace) -> None:
     neo4j_uri = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
     neo4j_user = os.environ.get("NEO4J_USER", "neo4j")
     password = os.environ.get("NEO4J_PASSWORD", "")
-    google_api_key = os.environ.get("GEMINI_API_KEY", "")
-
     from codememory.core.connection import ConnectionManager  # noqa: PLC0415
-    from codememory.core.embedding import EmbeddingService  # noqa: PLC0415
+    from codememory.core.runtime_embedding import build_embedding_service  # noqa: PLC0415
 
     query = args.query
     project_id = getattr(args, "project_id", None)
@@ -1405,7 +1401,7 @@ def cmd_chat_search(args: argparse.Namespace) -> None:
     output_json = getattr(args, "json", False)
 
     conn = ConnectionManager(neo4j_uri, neo4j_user, password)
-    embedder = EmbeddingService(provider="gemini", api_key=google_api_key)
+    embedder = build_embedding_service("chat")
 
     try:
         query_embedding = embedder.embed(query)

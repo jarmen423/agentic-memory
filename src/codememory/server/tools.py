@@ -11,6 +11,9 @@ from codememory.core.connection import ConnectionManager
 from codememory.core.embedding import EmbeddingService
 from codememory.core.entity_extraction import EntityExtractionService
 from codememory.core.extraction_llm import resolve_extraction_llm_config
+from codememory.core.request_context import get_request_id
+from codememory.core.retry import retry_transient
+from codememory.core.runtime_embedding import build_embedding_service
 from codememory.core.scheduler import ResearchScheduler
 from codememory.temporal.bridge import get_temporal_bridge
 from codememory.temporal.seeds import (
@@ -241,7 +244,17 @@ def search_conversation_turns_sync(
             limit=limit,
         )
     except Exception as exc:
-        logger.warning("%s falling back to text search after vector failure: %s", log_prefix, exc)
+        logger.warning(
+            "conversation_search_fallback",
+            extra={
+                "event": "temporal_fallback",
+                "request_id": get_request_id(),
+                "memory_module": "conversation",
+                "provider": getattr(embedder, "provider", None),
+                "fallback": "text_search_after_vector_failure",
+                "error_type": type(exc).__name__,
+            },
+        )
         return _filter_rows_as_of(
             _text_conversation_search(
                 conn,
@@ -257,7 +270,17 @@ def search_conversation_turns_sync(
     if project_id is None:
         return filtered_baseline
     if bridge is None or not bridge.is_available():
-        logger.info("%s falling back to baseline conversation search: temporal bridge unavailable", log_prefix)
+        logger.info(
+            "conversation_search_fallback",
+            extra={
+                "event": "temporal_fallback",
+                "request_id": get_request_id(),
+                "memory_module": "conversation",
+                "provider": getattr(embedder, "provider", None),
+                "fallback": "temporal_bridge_unavailable",
+                "error_type": None,
+            },
+        )
         return filtered_baseline
 
     seeds = collect_seed_entities(filtered_baseline, limit=5)
@@ -269,18 +292,40 @@ def search_conversation_turns_sync(
             seeds = []
 
     if not seeds:
-        logger.info("%s falling back to baseline conversation search: no temporal seeds", log_prefix)
+        logger.info(
+            "conversation_search_fallback",
+            extra={
+                "event": "temporal_fallback",
+                "request_id": get_request_id(),
+                "memory_module": "conversation",
+                "provider": getattr(embedder, "provider", None),
+                "fallback": "no_temporal_seeds",
+                "error_type": None,
+            },
+        )
         return filtered_baseline
 
     try:
-        temporal_payload = bridge.retrieve(
-            project_id=project_id,
-            seed_entities=seeds,
-            as_of_us=parse_as_of_to_micros(as_of),
-            max_edges=max(limit * 2, limit),
+        temporal_payload = retry_transient(
+            lambda: bridge.retrieve(
+                project_id=project_id,
+                seed_entities=seeds,
+                as_of_us=parse_as_of_to_micros(as_of),
+                max_edges=max(limit * 2, limit),
+            )
         )
     except Exception as exc:
-        logger.warning("%s falling back to baseline conversation search: %s", log_prefix, exc)
+        logger.warning(
+            "conversation_search_fallback",
+            extra={
+                "event": "temporal_fallback",
+                "request_id": get_request_id(),
+                "memory_module": "conversation",
+                "provider": getattr(embedder, "provider", None),
+                "fallback": "temporal_retrieve_failed",
+                "error_type": type(exc).__name__,
+            },
+        )
         return filtered_baseline
 
     temporal_hits = _hydrate_temporal_conversation_results(
@@ -293,7 +338,17 @@ def search_conversation_turns_sync(
     if temporal_hits:
         return temporal_hits
 
-    logger.info("%s falling back to baseline conversation search: empty temporal result", log_prefix)
+    logger.info(
+        "conversation_search_fallback",
+        extra={
+            "event": "temporal_fallback",
+            "request_id": get_request_id(),
+            "memory_module": "conversation",
+            "provider": getattr(embedder, "provider", None),
+            "fallback": "empty_temporal_result",
+            "error_type": None,
+        },
+    )
     return filtered_baseline
 
 
@@ -309,7 +364,7 @@ def _get_mcp_conversation_pipeline() -> ConversationIngestionPipeline:
         user=os.getenv("NEO4J_USER") or os.getenv("NEO4J_USERNAME", "neo4j"),
         password=os.getenv("NEO4J_PASSWORD", "password"),
     )
-    embedder = EmbeddingService(provider="gemini", api_key=os.environ["GEMINI_API_KEY"])
+    embedder = build_embedding_service("chat")
     extractor = EntityExtractionService.from_env()
     return ConversationIngestionPipeline(
         conn,
@@ -322,11 +377,14 @@ def _get_mcp_conversation_pipeline() -> ConversationIngestionPipeline:
 @lru_cache(maxsize=1)
 def _get_mcp_research_pipeline() -> ResearchIngestionPipeline | None:
     """Cached ResearchIngestionPipeline for MCP tool registration."""
-    google_api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
     extraction_llm = resolve_extraction_llm_config()
-    if not google_api_key or not extraction_llm.api_key:
+    try:
+        embedder = build_embedding_service("web")
+    except ValueError:
+        embedder = None
+    if embedder is None or not extraction_llm.api_key:
         logger.warning(
-            "Research MCP pipeline unavailable: missing Google or extraction LLM API key."
+            "Research MCP pipeline unavailable: missing embedding or extraction LLM API key."
         )
         return None
 
@@ -335,7 +393,6 @@ def _get_mcp_research_pipeline() -> ResearchIngestionPipeline | None:
         user=os.getenv("NEO4J_USER") or os.getenv("NEO4J_USERNAME", "neo4j"),
         password=os.getenv("NEO4J_PASSWORD", "password"),
     )
-    embedder = EmbeddingService(provider="gemini", api_key=google_api_key)
     extractor = EntityExtractionService(
         api_key=extraction_llm.api_key,
         model=extraction_llm.model,

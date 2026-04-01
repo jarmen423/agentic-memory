@@ -269,6 +269,80 @@ class TestSearchWebMemory:
 
         assert "Error" in result
 
+    def test_search_web_memory_falls_back_when_temporal_bridge_unavailable(self, monkeypatch):
+        """Bridge-unavailable state keeps the baseline result shape and content."""
+        mock_pipeline = _make_mock_pipeline()
+        mock_pipeline._temporal_bridge.is_available.return_value = False
+
+        rows = [
+            {
+                "text": "Baseline web result",
+                "score": 0.91,
+                "source_agent": "claude",
+                "research_question": "What is fallback behavior?",
+                "confidence": "high",
+                "source_key": "deep_research_agent",
+                "project_id": "proj1",
+                "node_labels": ["Memory", "Research", "Finding"],
+            }
+        ]
+        mock_run = Mock()
+        mock_run.data.return_value = rows
+        mock_session = Mock()
+        mock_session.run.return_value = mock_run
+        session_ctx = MagicMock()
+        session_ctx.__enter__ = Mock(return_value=mock_session)
+        session_ctx.__exit__ = Mock(return_value=False)
+        mock_pipeline._conn.session.return_value = session_ctx
+
+        from codememory.server import app as app_module
+        monkeypatch.setattr(app_module, "_get_research_pipeline", lambda: mock_pipeline)
+
+        result = app_module.search_web_memory(query="fallback", limit=5)
+
+        assert "Baseline web result" in result
+        mock_pipeline._temporal_bridge.retrieve.assert_not_called()
+
+    def test_search_web_memory_logs_structured_fallback(self, monkeypatch, caplog):
+        """Web fallback logs emit consistent structured fields."""
+        mock_pipeline = _make_mock_pipeline()
+        mock_pipeline._temporal_bridge.is_available.return_value = True
+        mock_pipeline._temporal_bridge.retrieve.side_effect = RuntimeError("bridge down")
+
+        rows = [
+            {
+                "text": "Baseline web result",
+                "score": 0.91,
+                "source_agent": "claude",
+                "research_question": "What changed?",
+                "confidence": "high",
+                "source_key": "deep_research_agent",
+                "project_id": "proj1",
+                "node_labels": ["Memory", "Research", "Finding"],
+            }
+        ]
+        mock_run = Mock()
+        mock_run.data.return_value = rows
+        mock_session = Mock()
+        mock_session.run.return_value = mock_run
+        session_ctx = MagicMock()
+        session_ctx.__enter__ = Mock(return_value=mock_session)
+        session_ctx.__exit__ = Mock(return_value=False)
+        mock_pipeline._conn.session.return_value = session_ctx
+
+        from codememory.server import app as app_module
+        monkeypatch.setattr(app_module, "_get_research_pipeline", lambda: mock_pipeline)
+
+        with caplog.at_level("WARNING"):
+            result = app_module.search_web_memory(query="graph database", limit=5)
+
+        assert "Baseline web result" in result
+        record = next(r for r in caplog.records if r.message == "web_search_fallback")
+        assert record.event == "temporal_fallback"
+        assert record.memory_module == "web"
+        assert record.fallback == "temporal_retrieve_failed"
+        assert record.error_type == "RuntimeError"
+
     def test_search_web_memory_as_of_filters_future_results(self, monkeypatch):
         """search_web_memory applies the Phase 7 ingested_at cutoff when as_of is provided."""
         mock_pipeline = _make_mock_pipeline()

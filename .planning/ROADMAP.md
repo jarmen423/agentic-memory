@@ -2,8 +2,8 @@
 
 **Project:** Modular Knowledge Graph (Code + Web Research + Conversation Memory)
 **Created:** 2026-03-20
-**Last Updated:** 2026-03-28
-**Status:** Active — Phase 9 in verification; Phase 10 planned
+**Last Updated:** 2026-04-01
+**Status:** Active — Phase 9 complete; Phase 10 implementation landed, final manual verification pending
 
 ---
 
@@ -323,9 +323,9 @@ Plans:
 **Plans:** 3 plans drafted
 
 Plans:
-- [ ] 10-01-PLAN.md — Unified result contract + `search_all_memory` + MCP/REST exposure
-- [ ] 10-02-PLAN.md — Config-driven embedding runtime + Nemotron selection + logging/retry hardening
-- [ ] 10-03-PLAN.md — End-to-end integration tests + setup/provider/operations docs
+- [x] 10-01-PLAN.md — Unified result contract + `search_all_memory` + MCP/REST exposure
+- [x] 10-02-PLAN.md — Config-driven embedding runtime + Nemotron selection + logging/retry hardening
+- [x] 10-03-PLAN.md — End-to-end integration tests + setup/provider/operations docs
 
 **Deliverables:**
 - Unified MCP router: single server aggregates code + web + conversation results with temporal PPR ranking

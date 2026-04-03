@@ -28,8 +28,8 @@ codememory index
 codememory status --json
 
 # 2) Git graph setup + sync
-codememory git-init --repo /absolute/path/to/repo --mode local --full-history
-codememory git-sync --repo /absolute/path/to/repo --incremental
+codememory git-init --repo /absolute/path/to/repo
+codememory git-sync --repo /absolute/path/to/repo --full
 codememory git-status --repo /absolute/path/to/repo --json
 
 # 3) Optional MCP checks (domain routing)
@@ -62,7 +62,7 @@ Record exact values from command output.
 ### Performance
 
 - `codememory index` elapsed time:
-- `codememory git-sync --incremental` elapsed time:
+- `codememory git-sync` elapsed time:
 - Embedding calls:
 - Token usage:
 - Estimated cost:
@@ -71,7 +71,7 @@ Record exact values from command output.
 
 - [ ] PASS / FAIL: `git-init` succeeds with expected repo metadata.
 - [ ] PASS / FAIL: first `git-sync` ingests history and sets checkpoint.
-- [ ] PASS / FAIL: second `git-sync --incremental` with no new commits reports zero new commits.
+- [ ] PASS / FAIL: second `git-sync` with no new commits reports zero new commits.
 - [ ] PASS / FAIL: `git-status --json` returns stable envelope (`ok`, `error`, `data`, `metrics`).
 - [ ] PASS / FAIL: code graph queries still work with git graph enabled.
 - [ ] PASS / FAIL: `domain="code"` queries return expected code entities.

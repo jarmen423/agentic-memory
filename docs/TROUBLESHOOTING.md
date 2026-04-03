@@ -275,7 +275,9 @@ If missing, upgrade to a git graph-enabled release/build.
 
 **Solution:**
 ```bash
-codememory git-init --repo /absolute/path/to/repo --mode local --full-history
+codememory git-init --repo /absolute/path/to/repo
+# For the initial backfill:
+codememory git-sync --repo /absolute/path/to/repo --full
 # Confirm /absolute/path/to/repo contains a .git directory
 ```
 

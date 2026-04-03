@@ -102,3 +102,41 @@ class Toolkit:
             return report
         except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
             return f"Error getting commit context: {str(e)}"
+
+    def create_memory_entities(self, entities: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Create or update memory entities."""
+        return self.graph.create_memory_entities(entities)
+
+    def create_memory_relations(self, relations: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Create typed memory relations."""
+        return self.graph.create_memory_relations(relations)
+
+    def add_memory_observations(self, observations: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Append observations to memory entities."""
+        return self.graph.add_memory_observations(observations)
+
+    def delete_memory_entities(self, names: List[str]) -> Dict[str, Any]:
+        """Delete memory entities."""
+        return self.graph.delete_memory_entities(names)
+
+    def delete_memory_relations(self, relations: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Delete typed memory relations."""
+        return self.graph.delete_memory_relations(relations)
+
+    def delete_memory_observations(self, observations: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Delete observations from memory entities."""
+        return self.graph.delete_memory_observations(observations)
+
+    def search_memory_nodes(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """Search memory entities."""
+        return self.graph.search_memory_nodes(query, limit=limit)
+
+    def read_memory_graph(self) -> Dict[str, Any]:
+        """Read the current memory graph snapshot."""
+        return self.graph.read_memory_graph()
+
+    def backfill_memory_embeddings(
+        self, limit: int = 100, only_missing: bool = True
+    ) -> Dict[str, Any]:
+        """Backfill embeddings for existing memory entities."""
+        return self.graph.backfill_memory_embeddings(limit=limit, only_missing=only_missing)

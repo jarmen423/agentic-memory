@@ -75,8 +75,8 @@ codememory serve
 codememory search "where is the auth logic?"
 
 # Git graph (rollout build)
-codememory git-init --repo /absolute/path/to/repo --mode local --full-history
-codememory git-sync --repo /absolute/path/to/repo --incremental
+codememory git-init --repo /absolute/path/to/repo
+codememory git-sync --repo /absolute/path/to/repo --full
 codememory git-status --repo /absolute/path/to/repo --json
 ```
 
@@ -136,6 +136,14 @@ Full workflow and options: [docs/TOOL_USE_ANNOTATION.md](docs/TOOL_USE_ANNOTATIO
 | `get_file_dependencies(file_path, domain="code")` | Returns imports and dependents for a file |
 | `identify_impact(file_path, max_depth=3, domain="code")` | Blast radius analysis for changes |
 | `get_file_info(file_path, domain="code")` | File structure overview (classes, functions) |
+| `create_memory_entities(entities)` | Create or update agent-authored memory nodes in Neo4j |
+| `create_memory_relations(relations)` | Create typed relationships between memory nodes |
+| `add_memory_observations(observations)` | Append observation strings to existing memory nodes |
+| `delete_memory_entities(entity_names)` | Delete memory nodes by name |
+| `delete_memory_relations(relations)` | Delete typed relationships between memory nodes |
+| `delete_memory_observations(observations)` | Remove observation strings from memory nodes |
+| `search_memory_nodes(query, limit=5)` | Search memory nodes by name, type, and observations |
+| `read_memory_graph()` | Read a summary of the current memory graph |
 | `get_git_file_history(file_path, limit=20, domain="git")` | File-level commit history and ownership signals (git rollout) |
 | `get_commit_context(sha, include_diff_stats=true)` | Commit metadata and change statistics (git rollout) |
 | `find_recent_risky_changes(path_or_symbol, window_days, domain="hybrid")` | Recent high-risk changes using hybrid signals (git rollout) |

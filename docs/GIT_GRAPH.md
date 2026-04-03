@@ -52,17 +52,12 @@ Use explicit domain routing in MCP tool calls:
 Initialize git graph metadata and checkpoint state for a repository.
 
 ```bash
-codememory git-init \
-  --repo /absolute/path/to/repo \
-  --mode local \
-  --full-history
+codememory git-init --repo /absolute/path/to/repo
 ```
 
 Common options:
 - `--repo PATH`
-- `--mode local|local+github`
-- `--full-history`
-- `--since <rev>`
+- `--json`
 
 Expected output (human-readable):
 
@@ -78,14 +73,17 @@ Checkpoint: <HEAD_SHA>
 Sync commits from git history into the git graph.
 
 ```bash
-codememory git-sync --repo /absolute/path/to/repo --incremental
+# Initial full backfill
+codememory git-sync --repo /absolute/path/to/repo --full
+
+# Later incremental updates
+codememory git-sync --repo /absolute/path/to/repo
 ```
 
 Common options:
 - `--repo PATH`
-- `--incremental`
 - `--full`
-- `--from-ref <ref>`
+- `--json`
 
 Expected output (human-readable):
 
@@ -153,8 +151,8 @@ Expected JSON envelope:
 Quick validation sequence:
 
 ```bash
-codememory git-init --repo /absolute/path/to/repo --mode local --full-history
-codememory git-sync --repo /absolute/path/to/repo --incremental
+codememory git-init --repo /absolute/path/to/repo
+codememory git-sync --repo /absolute/path/to/repo --full
 codememory git-status --repo /absolute/path/to/repo --json
 ```
 

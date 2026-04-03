@@ -101,6 +101,103 @@ const lazy = import("./lazy-module");
         assert "frontend/src/services/heygen_service.tsx" in candidates
         assert "frontend/src/services/heygen_service/index.ts" in candidates
 
+    def test_setup_memory_schema(self, builder, mock_driver):
+        """Test memory schema setup issues expected DDL queries."""
+        driver, session = mock_driver
+
+        builder.setup_memory_schema()
+
+        queries = [call.args[0] for call in session.run.call_args_list]
+        assert any("memory_name_unique" in query for query in queries)
+        assert any("memory_search" in query for query in queries)
+
+    def test_create_memory_entities_runs_merge(self, builder, mock_driver):
+        """Test memory entity creation runs a MERGE query per entity."""
+        driver, session = mock_driver
+
+        with patch.object(builder, "get_embedding", return_value=[0.1] * builder.VECTOR_DIMENSIONS):
+            builder.create_memory_entities(
+                [{"name": "auth-flow", "entityType": "concept", "observations": ["Used in login"]}]
+            )
+
+        queries = [call.args[0] for call in session.run.call_args_list]
+        assert any("MERGE (m:Memory {name: $name})" in query for query in queries)
+        assert any("SET m:`concept`" in query for query in queries)
+
+    def test_search_memory_nodes_formats_rows(self, builder, mock_driver):
+        """Test memory search returns row dicts from Neo4j results."""
+        driver, session = mock_driver
+        session.run.side_effect = [
+            Mock(),
+            Mock(),
+            Mock(),
+            [
+                {
+                    "name": "auth-flow",
+                    "entity_type": "concept",
+                    "observations": ["Uses refresh token"],
+                    "metadata_json": "{}",
+                    "score": 0.9,
+                    "sources": ["vector", "fulltext"],
+                    "outgoing_relations": [{"target": "login-page", "relation_type": "IMPLEMENTS"}],
+                }
+            ],
+        ]
+
+        with patch.object(builder, "get_embedding", return_value=[0.1] * builder.VECTOR_DIMENSIONS):
+            results = builder.search_memory_nodes("auth", limit=5)
+
+        assert len(results) == 1
+        assert results[0]["name"] == "auth-flow"
+
+    def test_read_memory_graph_returns_counts(self, builder, mock_driver):
+        """Test memory graph snapshot combines node list and relation count."""
+        driver, session = mock_driver
+        session.run.side_effect = [
+            Mock(),
+            Mock(),
+            Mock(),
+            [
+                {
+                    "name": "auth-flow",
+                    "entity_type": "concept",
+                    "observations": ["Uses refresh token"],
+                    "outgoing_relations": [],
+                }
+            ],
+            Mock(single=Mock(return_value={"count": 0})),
+        ]
+
+        snapshot = builder.read_memory_graph()
+
+        assert snapshot["entity_count"] == 1
+        assert snapshot["relation_count"] == 0
+        assert snapshot["entities"][0]["name"] == "auth-flow"
+
+    def test_backfill_memory_embeddings_updates_missing_nodes(self, builder, mock_driver):
+        """Test memory embedding backfill writes embeddings and reports remainder."""
+        driver, session = mock_driver
+        session.run.side_effect = [
+            Mock(),
+            Mock(),
+            Mock(),
+            [
+                {
+                    "name": "auth-flow",
+                    "entity_type": "project",
+                    "observations": ["Used in login"],
+                }
+            ],
+            Mock(),
+            Mock(single=Mock(return_value={"remaining": 0})),
+        ]
+
+        with patch.object(builder, "get_embedding", return_value=[0.1] * builder.VECTOR_DIMENSIONS):
+            result = builder.backfill_memory_embeddings(limit=10, only_missing=True)
+
+        assert result["count"] == 1
+        assert result["remaining_without_embeddings"] == 0
+
 
 class TestCypherQueries:
     """Test Cypher query generation and execution."""

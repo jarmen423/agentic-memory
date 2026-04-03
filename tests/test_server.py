@@ -350,3 +350,154 @@ class TestGitMCPTools:
 
             assert "invalid commit sha" in result.lower()
             mock_graph.get_commit_context.assert_not_called()
+
+
+class TestMemoryMCPTools:
+    """Test memory-specific MCP tools."""
+
+    def test_create_memory_entities_success(self):
+        mock_graph = Mock()
+        mock_graph.create_memory_entities.return_value = {
+            "count": 1,
+            "entity_names": ["auth-flow"],
+        }
+
+        with patch("codememory.server.app.graph", mock_graph):
+            from codememory.server.app import create_memory_entities
+
+            result = create_memory_entities(
+                [{"name": "auth-flow", "entityType": "concept", "observations": ["Used in login"]}]
+            )
+
+            assert "memory entities stored" in result.lower()
+            assert "auth-flow" in result
+            mock_graph.create_memory_entities.assert_called_once()
+
+    def test_create_memory_entities_validation_error(self):
+        mock_graph = Mock()
+        mock_graph.create_memory_entities.side_effect = ValueError(
+            "Each entity requires a non-empty 'name'."
+        )
+
+        with patch("codememory.server.app.graph", mock_graph):
+            from codememory.server.app import create_memory_entities
+
+            result = create_memory_entities([{}])
+
+            assert "invalid memory entity payload" in result.lower()
+
+    def test_create_memory_relations_success(self):
+        mock_graph = Mock()
+        mock_graph.create_memory_relations.return_value = {
+            "count": 1,
+            "relations": [
+                {"source": "auth-flow", "target": "login-page", "relation_type": "IMPLEMENTS"}
+            ],
+        }
+
+        with patch("codememory.server.app.graph", mock_graph):
+            from codememory.server.app import create_memory_relations
+
+            result = create_memory_relations(
+                [{"from": "auth-flow", "to": "login-page", "relationType": "IMPLEMENTS"}]
+            )
+
+            assert "memory relations stored" in result.lower()
+            assert "IMPLEMENTS" in result
+
+    def test_add_memory_observations_success(self):
+        mock_graph = Mock()
+        mock_graph.add_memory_observations.return_value = {
+            "count": 1,
+            "entities": [{"name": "auth-flow", "added_count": 2}],
+        }
+
+        with patch("codememory.server.app.graph", mock_graph):
+            from codememory.server.app import add_memory_observations
+
+            result = add_memory_observations(
+                [{"entityName": "auth-flow", "contents": ["Uses refresh token", "Owned by api team"]}]
+            )
+
+            assert "memory observations added" in result.lower()
+            assert "added 2 observation" in result.lower()
+
+    def test_search_memory_nodes_success(self):
+        mock_graph = Mock()
+        mock_graph.search_memory_nodes.return_value = [
+            {
+                "name": "auth-flow",
+                "entity_type": "concept",
+                "score": 0.91,
+                "observations": ["Uses refresh token"],
+                "outgoing_relations": [{"target": "login-page", "relation_type": "IMPLEMENTS"}],
+            }
+        ]
+
+        with patch("codememory.server.app.graph", mock_graph):
+            from codememory.server.app import search_memory_nodes
+
+            result = search_memory_nodes("auth")
+
+            assert "relevant memory node" in result.lower()
+            assert "auth-flow" in result
+            assert "IMPLEMENTS" in result
+
+    def test_read_memory_graph_success(self):
+        mock_graph = Mock()
+        mock_graph.read_memory_graph.return_value = {
+            "entity_count": 1,
+            "relation_count": 1,
+            "entities": [
+                {
+                    "name": "auth-flow",
+                    "entity_type": "concept",
+                    "observations": ["Uses refresh token"],
+                    "outgoing_relations": [{"target": "login-page", "relation_type": "IMPLEMENTS"}],
+                }
+            ],
+        }
+
+        with patch("codememory.server.app.graph", mock_graph):
+            from codememory.server.app import read_memory_graph
+
+            result = read_memory_graph()
+
+            assert "memory graph" in result.lower()
+            assert "entities: 1" in result.lower()
+            assert "relations: 1" in result.lower()
+
+    def test_delete_memory_entities_success(self):
+        mock_graph = Mock()
+        mock_graph.delete_memory_entities.return_value = {
+            "count": 1,
+            "deleted_names": ["auth-flow"],
+            "missing_names": ["missing-node"],
+        }
+
+        with patch("codememory.server.app.graph", mock_graph):
+            from codememory.server.app import delete_memory_entities
+
+            result = delete_memory_entities(["auth-flow", "missing-node"])
+
+            assert "memory entities deleted" in result.lower()
+            assert "missing-node" in result
+
+    def test_backfill_memory_embeddings_success(self):
+        mock_graph = Mock()
+        mock_graph.backfill_memory_embeddings.return_value = {
+            "count": 2,
+            "entity_names": ["auth-flow", "realtime_api"],
+            "remaining_without_embeddings": 0,
+        }
+
+        with patch("codememory.server.app.graph", mock_graph):
+            from codememory.server.app import backfill_memory_embeddings
+
+            result = backfill_memory_embeddings(limit=25, only_missing=True)
+
+            assert "memory embeddings backfilled" in result.lower()
+            assert "remaining without embeddings: 0" in result.lower()
+            mock_graph.backfill_memory_embeddings.assert_called_once_with(
+                limit=25, only_missing=True
+            )

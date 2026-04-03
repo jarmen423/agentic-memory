@@ -776,7 +776,7 @@ Before refactoring:
 codememory search "function_name"
 codememory impact path/to/file.py
 # Optional git graph sync (git-enabled builds)
-codememory git-sync --repo /absolute/path/to/repo --incremental
+codememory git-sync --repo /absolute/path/to/repo
 ```
 
 ### 5. Keep Index Updated

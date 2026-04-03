@@ -253,7 +253,7 @@ $ codememory serve
 
 **Server behavior:**
 - Runs until interrupted (Ctrl+C)
-- Exposes 4 MCP tools (see [MCP Tools](#mcp-tools))
+- Exposes MCP tools for code graph queries, git graph queries, and agent-authored memory writes (see [MCP Tools](#mcp-tools))
 - Uses local config or environment variables
 - Graceful shutdown on SIGTERM/SIGINT
 

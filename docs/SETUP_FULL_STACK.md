@@ -8,6 +8,7 @@ This runbook starts the full local stack used by the current Phase 10 implementa
 4. `am-sync-neo4j` when you want Neo4j shadow sync from SpacetimeDB
 5. `am-server`
 6. REST or MCP search verification
+7. Product control-plane smoke tests for packaging and dogfooding
 
 ## Prerequisites
 
@@ -15,6 +16,10 @@ This runbook starts the full local stack used by the current Phase 10 implementa
 - SpacetimeDB CLI installed
 - Python environment available at `.venv-agentic-memory`
 - Node dependencies installed with `npm install`
+- Python package installed in editable mode (run once after cloning or after adding new modules):
+  ```powershell
+  .\.venv-agentic-memory\Scripts\pip.exe install -e .
+  ```
 - A populated `.env` file for Neo4j, auth, and provider credentials
 
 ## 1. Start Neo4j
@@ -122,6 +127,23 @@ Conversation search:
 ```powershell
 curl.exe -H "Authorization: Bearer dev-key" "http://127.0.0.1:8000/search/conversations?q=phase%208&project_id=proj-smoke"
 ```
+
+## 7. Verify the product control plane
+
+Use these endpoints and commands when validating the packaging layer and
+repeatable install loops:
+
+```powershell
+curl.exe -H "Authorization: Bearer dev-key" "http://127.0.0.1:8000/product/status"
+```
+
+```powershell
+.\.venv-agentic-memory\Scripts\python.exe -m codememory.cli product-status --json
+.\.venv-agentic-memory\Scripts\python.exe -m codememory.cli product-event-record --event install_completed --actor dogfood --json
+```
+
+For the full dogfooding checklist and release gate, see:
+[docs/PRODUCT_DOGFOODING.md](PRODUCT_DOGFOODING.md)
 
 ## Minimal smoke sequence after a reboot
 

@@ -144,12 +144,20 @@ Phase 10 adds a unified search surface across code, research, and conversation m
 - MCP: `search_all_memory(...)`
 - REST: `GET /search/all`
 
+The next packaging layer adds a local product control plane for install and dogfood
+loops:
+
+- CLI: `codememory product-status`, `codememory product-repo-add`, `codememory product-integration-set`
+- REST: `GET /product/status`, `POST /product/repos`, `POST /product/integrations`
+- Workflow: [docs/PRODUCT_DOGFOODING.md](docs/PRODUCT_DOGFOODING.md)
+
 Use these docs for the current local operator flow:
 
 - [docs/SETUP_FULL_STACK.md](docs/SETUP_FULL_STACK.md)
 - [docs/MCP_TOOL_REFERENCE.md](docs/MCP_TOOL_REFERENCE.md)
 - [docs/PROVIDER_CONFIGURATION.md](docs/PROVIDER_CONFIGURATION.md)
 - [docs/SPACETIMEDB_OPERATIONS.md](docs/SPACETIMEDB_OPERATIONS.md)
+- [docs/PRODUCT_DOGFOODING.md](docs/PRODUCT_DOGFOODING.md)
 
 ---
 

@@ -154,10 +154,11 @@ loops:
 - Workflow: [docs/PRODUCT_DOGFOODING.md](docs/PRODUCT_DOGFOODING.md)
 
 The first desktop-facing shell is a lightweight local FastAPI app in `desktop_shell/`. It
-proxies the product status endpoint and gives a browser-based control plane without
+proxies the `am-server` product API and gives a browser-based control plane without
 committing to a native desktop framework yet.
 
-- Run: `python -m desktop_shell --backend-url http://127.0.0.1:8000`
+- Run `python -m am_server.server`
+- Then run `python -m desktop_shell --backend-url http://127.0.0.1:8765`
 
 Use these docs for the current local operator flow:
 

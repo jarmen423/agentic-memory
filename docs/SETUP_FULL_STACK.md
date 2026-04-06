@@ -106,26 +106,26 @@ From the repo root:
 
 Expected base URL:
 
-- `http://127.0.0.1:8000`
+- `http://127.0.0.1:8765`
 
 ## 6. Verify the app surface
 
 Health:
 
 ```powershell
-curl.exe "http://127.0.0.1:8000/health"
+curl.exe "http://127.0.0.1:8765/health"
 ```
 
 Unified search:
 
 ```powershell
-curl.exe -H "Authorization: Bearer dev-key" "http://127.0.0.1:8000/search/all?q=phase%208&project_id=proj-smoke"
+curl.exe -H "Authorization: Bearer dev-key" "http://127.0.0.1:8765/search/all?q=phase%208&project_id=proj-smoke"
 ```
 
 Conversation search:
 
 ```powershell
-curl.exe -H "Authorization: Bearer dev-key" "http://127.0.0.1:8000/search/conversations?q=phase%208&project_id=proj-smoke"
+curl.exe -H "Authorization: Bearer dev-key" "http://127.0.0.1:8765/search/conversations?q=phase%208&project_id=proj-smoke"
 ```
 
 ## 7. Verify the product control plane
@@ -134,7 +134,7 @@ Use these endpoints and commands when validating the packaging layer and
 repeatable install loops:
 
 ```powershell
-curl.exe -H "Authorization: Bearer dev-key" "http://127.0.0.1:8000/product/status"
+curl.exe -H "Authorization: Bearer dev-key" "http://127.0.0.1:8765/product/status"
 ```
 
 ```powershell
@@ -145,7 +145,7 @@ agentic-memory product-event-record --event install_completed --actor dogfood --
 If you want to validate the browser-based desktop shell, start it against the same backend:
 
 ```powershell
-python -m desktop_shell --backend-url http://127.0.0.1:8000
+python -m desktop_shell --backend-url http://127.0.0.1:8765
 ```
 
 For the full dogfooding checklist and release gate, see:

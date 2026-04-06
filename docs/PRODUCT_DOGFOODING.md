@@ -36,7 +36,8 @@ The target is not just "the repo works." The target is:
   - `agentic-memory product-event-record`
   - `POST /product/events`
 - Desktop shell:
-  - `python -m desktop_shell --backend-url http://127.0.0.1:8000`
+  - `python -m am_server.server`
+  - `python -m desktop_shell --backend-url http://127.0.0.1:8765`
 
 ## Required Journeys
 

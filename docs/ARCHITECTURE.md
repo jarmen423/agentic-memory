@@ -241,7 +241,7 @@ The ingestion pipeline processes code in 4 sequential passes to build the comple
 
 ### Pass 0: Pre-flight (Database Setup)
 
-**File:** `src/codememory/ingestion/graph.py:setup_database()`
+**File:** `src/agentic_memory/ingestion/graph.py:setup_database()`
 
 **Purpose:** Create constraints and indexes before ingestion.
 
@@ -272,7 +272,7 @@ OPTIONS {
 
 ### Pass 1: Structure Scan & Change Detection
 
-**File:** `src/codememory/ingestion/graph.py:pass_1_structure_scan()`
+**File:** `src/agentic_memory/ingestion/graph.py:pass_1_structure_scan()`
 
 **Purpose:** Discover files and detect changes using MD5 hashes.
 
@@ -308,7 +308,7 @@ for file in files:
 
 ### Pass 2: Entity Definition & Chunking
 
-**File:** `src/codememory/ingestion/graph.py:pass_2_entity_definition()`
+**File:** `src/agentic_memory/ingestion/graph.py:pass_2_entity_definition()`
 
 **Purpose:** Extract functions/classes and create semantic chunks.
 
@@ -371,7 +371,7 @@ def authenticate(username, password):
 
 ### Pass 3: Import Resolution
 
-**File:** `src/codememory/ingestion/graph.py:pass_3_imports()`
+**File:** `src/agentic_memory/ingestion/graph.py:pass_3_imports()`
 
 **Purpose:** Build dependency graph by analyzing import statements.
 
@@ -420,7 +420,7 @@ MERGE (source)-[:IMPORTS]->(target)
 
 ### Pass 4: Call Graph Construction
 
-**File:** `src/codememory/ingestion/graph.py:pass_4_call_graph()`
+**File:** `src/agentic_memory/ingestion/graph.py:pass_4_call_graph()`
 
 **Purpose:** Build function call graph for dependency analysis.
 
@@ -766,12 +766,12 @@ DETACH DELETE f
 
 **Commands:**
 ```python
-codememory init      # Interactive setup
-codememory status    # Show statistics
-codememory index     # One-time ingestion
-codememory watch     # Continuous monitoring
-codememory serve     # MCP server
-codememory search    # Test semantic search
+agentic-memory init      # Interactive setup
+agentic-memory status    # Show statistics
+agentic-memory index     # One-time ingestion
+agentic-memory watch     # Continuous monitoring
+agentic-memory serve     # MCP server
+agentic-memory search    # Test semantic search
 ```
 
 ---
@@ -983,7 +983,7 @@ sequenceDiagram
     participant MCPServer
     participant Agent
 
-    User->>CLI: codememory watch
+    User->>CLI: agentic-memory watch
     CLI->>Watcher: start_continuous_watch()
     Watcher->>GraphBuilder: setup_database()
     GraphBuilder->>Neo4j: CREATE CONSTRAINTS

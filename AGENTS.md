@@ -41,8 +41,8 @@ The system is decoupled into three independent components:
 ### Component A: The Observer (Ingestion Service)
 
 - **Role:** The "Writer." It watches the file system and keeps the graph in sync.
-- **Key Command:** `codememory watch`
-- **Implementation:** `src/codememory/ingestion/watcher.py`
+- **Key Command:** `agentic-memory watch`
+- **Implementation:** `src/agentic_memory/ingestion/watcher.py`
 
 ### Component B: The Brain (Neo4j Database)
 
@@ -56,7 +56,7 @@ The system is decoupled into three independent components:
 - **Key Tools:**
   1. `search_codebase(query: str)`: Hybrid search (Vector + Keyword).
   2. `get_file_dependencies(path: str)`: Returns what this file imports and what calls it.
-- **Implementation:** `src/codememory/server/`
+- **Implementation:** `src/agentic_memory/server/`
 
 ---
 
@@ -88,7 +88,7 @@ The system is decoupled into three independent components:
 
 ```
 agentic-memory/
-├── src/codememory/                 # Main Python package
+├── src/agentic_memory/             # Main Python package
 │   ├── __init__.py
 │   ├── cli.py                      # Entry point (argparse)
 │   ├── ingestion/                  # Refactored ingestion logic
@@ -100,8 +100,12 @@ agentic-memory/
 │   │   ├── __init__.py
 │   │   ├── app.py                  # FastMCP server setup
 │   │   └── tools.py                # Agent tools implementation
+│   ├── product/                    # Local product control-plane state
+│   │   └── state.py
 │   └── docker/
 │       └── docker-compose.yml      # Full stack deployment
+├── desktop_shell/                  # Lightweight local desktop control plane
+│   └── ...
 │
 ├── 4_pass_ingestion_with_prep_hybridgraphRAG.py  # Legacy: Day 0 indexer
 ├── 5_continuous_ingestion.py                     # Legacy: Continuous daemon
@@ -140,7 +144,7 @@ cp .env.example .env  # Edit with your credentials
 
 ```bash
 # Start full stack (Neo4j + Ingestor + MCP Server)
-docker-compose -f src/codememory/docker/docker-compose.yml up
+docker-compose -f src/agentic_memory/docker/docker-compose.yml up
 
 # Requires OPENAI_API_KEY environment variable set
 ```
@@ -151,17 +155,17 @@ docker-compose -f src/codememory/docker/docker-compose.yml up
 
 ### CLI Commands
 
-The package provides the `codememory` CLI command:
+The package provides the `agentic-memory` CLI command. `codememory` remains a compatibility alias:
 
 ```bash
 # Watch the current initialized repository
-codememory watch
+agentic-memory watch
 
 # Start the MCP server
-codememory serve --port 8000
+agentic-memory serve --port 8000
 
 # Show help
-codememory --help
+agentic-memory --help
 ```
 
 ### Tool-Use Annotation (Personal Research)
@@ -169,8 +173,8 @@ codememory --help
 You can manually label MCP tool-use bursts as `prompted` or `unprompted`:
 
 ```bash
-codememory --prompted "check our auth"
-codememory --unprompted "check our auth"
+agentic-memory --prompted "check our auth"
+agentic-memory --unprompted "check our auth"
 ```
 
 See full behavior and options: `docs/TOOL_USE_ANNOTATION.md`.
@@ -195,7 +199,7 @@ REPO_PATH=/absolute/path/to/repo
 
 ## Code Organization
 
-### Ingestion Module (`src/codememory/ingestion/`)
+### Ingestion Module (`src/agentic_memory/ingestion/`)
 
 **`watcher.py`**
 - `CodeChangeHandler` - Watchdog event handler for file changes
@@ -210,7 +214,7 @@ REPO_PATH=/absolute/path/to/repo
   - `semantic_search()` - Hybrid vector + graph search
   - `get_embedding()` - OpenAI embedding generation
 
-### Server Module (`src/codememory/server/`)
+### Server Module (`src/agentic_memory/server/`)
 
 **`app.py`**
 - FastMCP server initialization
@@ -221,6 +225,12 @@ REPO_PATH=/absolute/path/to/repo
 - `Toolkit` - Business logic separated from server
   - `semantic_search()` - Formats results for LLM consumption
   - `get_file_dependencies()` - Import/caller analysis
+
+### Desktop Shell (`desktop_shell/`)
+
+- Lightweight local FastAPI shell for the product control plane
+- Proxies `GET /product/status` and gives the first consumer-facing status view
+- Intended as the first desktop surface before a fuller native shell
 
 ---
 
@@ -341,14 +351,15 @@ No automated unit test suite is currently configured.
 ```bash
 pip install -e .
 cd /path/to/repo
-codememory watch
-codememory serve  # In another terminal
+agentic-memory watch
+agentic-memory serve  # In another terminal
+python -m desktop_shell --backend-url http://127.0.0.1:8000
 ```
 
 ### Option 2: Docker Compose
 
 ```bash
-cd src/codememory/docker
+cd src/agentic_memory/docker
 docker-compose up -d
 ```
 

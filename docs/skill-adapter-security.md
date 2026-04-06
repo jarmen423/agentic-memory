@@ -16,8 +16,8 @@ This document defines secret-handling rules for the skill-adapter workflow.
 ```json
 {
   "mcpServers": {
-    "codememory": {
-      "command": "codememory",
+    "agentic-memory": {
+      "command": "agentic-memory",
       "args": ["serve", "--repo", "/abs/path/repo"],
       "env": {
         "OPENAI_API_KEY": "sk-live-plaintext",
@@ -33,8 +33,8 @@ This document defines secret-handling rules for the skill-adapter workflow.
 ```json
 {
   "mcpServers": {
-    "codememory": {
-      "command": "codememory",
+    "agentic-memory": {
+      "command": "agentic-memory",
       "args": [
         "serve",
         "--repo", "/abs/path/repo",
@@ -64,7 +64,7 @@ chmod 600 /abs/path/repo/.env
 Then run:
 
 ```bash
-codememory serve --repo /abs/path/repo --env-file /abs/path/repo/.env --port 8000
+agentic-memory serve --repo /abs/path/repo --env-file /abs/path/repo/.env --port 8000
 ```
 
 ### Pattern B: Shell Environment
@@ -74,7 +74,7 @@ export OPENAI_API_KEY='sk-...'
 export NEO4J_URI='bolt://localhost:7687'
 export NEO4J_USER='neo4j'
 export NEO4J_PASSWORD='...'
-codememory serve --repo /abs/path/repo --port 8000
+agentic-memory serve --repo /abs/path/repo --port 8000
 ```
 
 Use for ephemeral sessions. Clear when done:
@@ -88,15 +88,15 @@ unset OPENAI_API_KEY NEO4J_URI NEO4J_USER NEO4J_PASSWORD
 Store once:
 
 ```bash
-security add-generic-password -a "$USER" -s codememory-openai -w '<openai-key>'
-security add-generic-password -a "$USER" -s codememory-neo4j-password -w '<neo4j-password>'
+security add-generic-password -a "$USER" -s agentic-memory-openai -w '<openai-key>'
+security add-generic-password -a "$USER" -s agentic-memory-neo4j-password -w '<neo4j-password>'
 ```
 
 Load per session:
 
 ```bash
-export OPENAI_API_KEY="$(security find-generic-password -a "$USER" -s codememory-openai -w)"
-export NEO4J_PASSWORD="$(security find-generic-password -a "$USER" -s codememory-neo4j-password -w)"
+export OPENAI_API_KEY="$(security find-generic-password -a "$USER" -s agentic-memory-openai -w)"
+export NEO4J_PASSWORD="$(security find-generic-password -a "$USER" -s agentic-memory-neo4j-password -w)"
 ```
 
 ## Redaction Guidance

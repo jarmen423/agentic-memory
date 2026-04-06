@@ -138,8 +138,14 @@ curl.exe -H "Authorization: Bearer dev-key" "http://127.0.0.1:8000/product/statu
 ```
 
 ```powershell
-.\.venv-agentic-memory\Scripts\python.exe -m codememory.cli product-status --json
-.\.venv-agentic-memory\Scripts\python.exe -m codememory.cli product-event-record --event install_completed --actor dogfood --json
+agentic-memory product-status --json
+agentic-memory product-event-record --event install_completed --actor dogfood --json
+```
+
+If you want to validate the browser-based desktop shell, start it against the same backend:
+
+```powershell
+python -m desktop_shell --backend-url http://127.0.0.1:8000
 ```
 
 For the full dogfooding checklist and release gate, see:

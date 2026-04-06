@@ -57,7 +57,7 @@ Evaluation references:
 ### Prerequisites
 
 1. **Agentic Memory installed:** See [INSTALLATION.md](INSTALLATION.md)
-2. **Repository initialized:** Run `codememory init` in your project
+2. **Repository initialized:** Run `agentic-memory init` in your project
 3. **Neo4j running:** The server requires a live connection
 
 ### Start the Server
@@ -67,10 +67,10 @@ Evaluation references:
 cd /path/to/your/project
 
 # Start MCP server (default port 8000)
-codememory serve
+agentic-memory serve
 
 # Custom port
-codememory serve --port 3000
+agentic-memory serve --port 3000
 ```
 
 **Expected Output:**
@@ -92,7 +92,7 @@ export NEO4J_USER="neo4j"
 export NEO4J_PASSWORD="password"
 export OPENAI_API_KEY="sk-..."
 
-codememory serve
+agentic-memory serve
 ```
 
 ---
@@ -115,7 +115,7 @@ open ~/Library/Application\ Support/Claude
 {
   "mcpServers": {
     "agentic-memory": {
-      "command": "codememory",
+      "command": "agentic-memory",
       "args": ["serve", "--repo", "/absolute/path/to/your/project"],
       "env": {
         "NEO4J_URI": "bolt://localhost:7687",
@@ -142,7 +142,7 @@ notepad "%APPDATA%\Claude\claude_desktop_config.json"
 {
   "mcpServers": {
     "agentic-memory": {
-      "command": "codememory",
+      "command": "agentic-memory",
       "args": ["serve", "--repo", "/absolute/path/to/your/project"],
       "env": {
         "NEO4J_URI": "bolt://localhost:7687",
@@ -163,11 +163,11 @@ notepad "%APPDATA%\Claude\claude_desktop_config.json"
 
 2. **Edit config** (same as macOS above)
 
-**Version note:** `--repo` requires the release that adds explicit repo targeting to `codememory serve`.
+**Version note:** `--repo` requires the release that adds explicit repo targeting to `agentic-memory serve`.
 If your installed version does not support `--repo`, use `cwd` if your client supports it,
 or a wrapper script that runs:
 ```bash
-cd /absolute/path/to/your/project && codememory serve
+cd /absolute/path/to/your/project && agentic-memory serve
 ```
 
 #### Verify Claude Desktop Integration
@@ -203,19 +203,19 @@ Cursor is a code-focused AI editor with built-in MCP support.
 {
   "mcpServers": {
     "agentic-memory": {
-      "command": "codememory",
+      "command": "agentic-memory",
       "args": ["serve", "--repo", "/absolute/path/to/your/project", "--port", "8000"]
     }
   }
 }
 ```
 
-**Fallback for older versions:** if `--repo` is unavailable in your installed `codememory`, use:
+**Fallback for older versions:** if `--repo` is unavailable in your installed `agentic-memory`, use:
 ```json
 {
   "mcpServers": {
     "agentic-memory": {
-      "command": "codememory",
+      "command": "agentic-memory",
       "args": ["serve", "--port", "8000"],
       "cwd": "/absolute/path/to/your/project"
     }
@@ -268,7 +268,7 @@ Windsurf is another AI-powered IDE with MCP support.
 {
   "servers": {
     "agentic-memory": {
-      "command": "codememory",
+      "command": "agentic-memory",
       "args": ["serve", "--repo", "/absolute/path/to/your/project"],
       "env": {
         "NEO4J_URI": "bolt://localhost:7687"
@@ -338,7 +338,7 @@ from mcp import Client
 
 # Connect to server
 client = Client()
-await client.connect("stdio", command="codememory", args=["serve"])
+await client.connect("stdio", command="agentic-memory", args=["serve"])
 
 # Call tools
 result = await client.call_tool("search_codebase", {
@@ -513,7 +513,7 @@ If your build does not support `domain` yet:
 
 1. **Verify server is running:**
 ```bash
-codememory serve
+agentic-memory serve
 
 # Should see:
 # 🚀 Starting Agentic Memory MCP server on port 8000
@@ -526,7 +526,7 @@ lsof -i :8000  # Linux/macOS
 netstat -an | findstr 8000  # Windows
 
 # Use different port if needed
-codememory serve --port 3000
+agentic-memory serve --port 3000
 ```
 
 3. **Test with HTTP client:**
@@ -549,7 +549,7 @@ curl http://localhost:8000/tools/search_codebase \
 
 1. **Check if repository is indexed:**
 ```bash
-codememory status
+agentic-memory status
 
 # Look for:
 # Files:     0  ← This means nothing is indexed!
@@ -557,7 +557,7 @@ codememory status
 
 2. **Run initial indexing:**
 ```bash
-codememory index
+agentic-memory index
 ```
 
 3. **Verify file path format:**
@@ -605,7 +605,7 @@ cat .codememory/config.json
 ```bash
 # Stop server (Ctrl+C)
 # Start again
-codememory serve
+agentic-memory serve
 ```
 
 ---
@@ -639,7 +639,7 @@ MATCH (ch:Chunk) RETURN count(ch) as total_chunks;
 
 3. **Re-index if needed:**
 ```bash
-codememory index --force
+agentic-memory index --force
 ```
 
 ---
@@ -669,11 +669,11 @@ cat ~/Library/Application\ Support/Claude/claude_desktop_config.json | jq .
 # Should not have syntax errors
 ```
 
-3. **Check `codememory` is in PATH:**
+3. **Check `agentic-memory` is in PATH:**
 ```bash
-which codememory
+which agentic-memory
 
-# Should return: /usr/local/bin/codememory (or similar)
+# Should return: /usr/local/bin/agentic-memory (or similar)
 ```
 
 4. **Restart Claude Desktop completely:**
@@ -706,7 +706,7 @@ ls -la .codememory/config.json
 {
   "mcpServers": {
     "agentic-memory": {
-      "command": "codememory",
+      "command": "agentic-memory",
       "args": ["serve", "--repo", "/absolute/path/to/your/project"]
     }
   }
@@ -718,7 +718,7 @@ ls -la .codememory/config.json
 {
   "mcpServers": {
     "agentic-memory": {
-      "command": "codememory",
+      "command": "agentic-memory",
       "args": ["serve"],
       "cwd": "/absolute/path/to/your/project"
     }
@@ -731,7 +731,7 @@ ls -la .codememory/config.json
 {
   "mcpServers": {
     "agentic-memory": {
-      "command": "codememory",
+      "command": "agentic-memory",
       "args": ["serve"],
       "env": {
         "NEO4J_URI": "bolt://localhost:7687",
@@ -750,7 +750,7 @@ ls -la .codememory/config.json
 
 ### 1. Run Server Continuously
 
-Keep `codememory serve` running in a dedicated terminal while working. This ensures:
+Keep `agentic-memory serve` running in a dedicated terminal while working. This ensures:
 - Instant tool responses
 - Real-time graph updates
 - No startup latency
@@ -773,20 +773,20 @@ Use multiple tools together:
 
 Before refactoring:
 ```bash
-codememory search "function_name"
-codememory impact path/to/file.py
+agentic-memory search "function_name"
+agentic-memory impact path/to/file.py
 # Optional git graph sync (git-enabled builds)
-codememory git-sync --repo /absolute/path/to/repo --incremental
+agentic-memory git-sync --repo /absolute/path/to/repo --incremental
 ```
 
 ### 5. Keep Index Updated
 
 After significant changes:
 ```bash
-codememory index
+agentic-memory index
 
 # Or use watch mode
-codememory watch
+agentic-memory watch
 ```
 
 ---
@@ -808,7 +808,7 @@ Create aliases for complex queries in your AI client settings:
 
 ### Rate Limiting
 
-To prevent abuse, configure rate limits in `codememory/config.json`:
+To prevent abuse, configure rate limits in `.codememory/config.json`:
 
 ```json
 {
@@ -827,7 +827,7 @@ Enable debug logging for troubleshooting:
 
 ```bash
 export LOG_LEVEL=DEBUG
-codememory serve
+agentic-memory serve
 ```
 
 Logs will show:

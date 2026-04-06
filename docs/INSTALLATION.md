@@ -54,25 +54,25 @@ python -m pip install --user pipx
 export PATH="$PATH:$HOME/.local/bin"
 
 # Install Agentic Memory
-pipx install codememory
+pipx install agentic-memory
 
 # Verify installation
-codememory --version
+agentic-memory --version
 ```
 
 **Advantages:**
 - Isolated from system Python
 - No dependency conflicts
-- Easy to uninstall: `pipx uninstall codememory`
+- Easy to uninstall: `pipx uninstall agentic-memory`
 
 ### Method 2: uv / uvx (Global Tooling)
 
 ```bash
 # Install globally as a Python tool
-uv tool install codememory
+uv tool install agentic-memory
 
 # Run without installing globally
-uvx codememory --help
+uvx agentic-memory --help
 ```
 
 **Advantages:**
@@ -83,10 +83,10 @@ uvx codememory --help
 
 ```bash
 # Install directly
-pip install codememory
+pip install agentic-memory
 
 # Or with user-only installation
-pip install --user codememory
+pip install --user agentic-memory
 ```
 
 **Note:** This may conflict with other packages requiring different versions of dependencies.
@@ -106,7 +106,7 @@ source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -e .
 
 # Verify installation
-codememory --help
+agentic-memory --help
 ```
 
 **Advantages:**
@@ -253,7 +253,7 @@ Run the init wizard in your project directory:
 
 ```bash
 cd /path/to/your/project
-codememory init
+agentic-memory init
 ```
 
 The wizard will guide you through:
@@ -332,7 +332,7 @@ The init wizard creates `.codememory/config.json`:
 
 ```bash
 cd /path/to/your/repository
-codememory init
+agentic-memory init
 ```
 
 Follow the interactive prompts:
@@ -345,7 +345,7 @@ Follow the interactive prompts:
 
 ```bash
 # Check status
-codememory status
+agentic-memory status
 
 # Expected output:
 # 📊 Agentic Memory Status
@@ -364,7 +364,7 @@ codememory status
 ### Step 3: Test Semantic Search
 
 ```bash
-codememory search "where is the auth logic?"
+agentic-memory search "where is the auth logic?"
 
 # Expected output:
 # Found 3 result(s):
@@ -381,7 +381,7 @@ codememory search "where is the auth logic?"
 ### Step 4: Start MCP Server (Optional)
 
 ```bash
-codememory serve
+agentic-memory serve
 
 # Output: 🧠 Starting MCP Interface on port 8000
 ```
@@ -396,13 +396,13 @@ See [MCP_INTEGRATION.md](MCP_INTEGRATION.md) for client configuration.
 
 **Symptom:**
 ```
-ModuleNotFoundError: No module named 'codememory'
+ModuleNotFoundError: No module named 'agentic_memory'
 ```
 
 **Solution:**
 ```bash
 # Reinstall the package
-pip install --force-reinstall codememory
+pip install --force-reinstall agentic-memory
 
 # Or if installing from source
 pip install -e .
@@ -500,7 +500,7 @@ dbms.memory.heap.max_size=4G
 2. **Index in batches:**
 ```bash
 # Use --watch for incremental indexing instead of full re-index
-codememory watch
+agentic-memory watch
 ```
 
 ### Issue: Parser Errors for Unsupported Languages
@@ -558,7 +558,7 @@ No parser found for .go files
 3. **Use incremental updates:**
 ```bash
 # Instead of full re-index
-codememory watch  # Only processes changed files
+agentic-memory watch  # Only processes changed files
 ```
 
 ### Issue: Docker Volume Permission Errors
@@ -587,7 +587,7 @@ Claude Desktop/Cursor can't connect to the MCP server.
 
 1. **Check server is running:**
 ```bash
-codememory serve
+agentic-memory serve
 
 # Should see: 🧠 Starting MCP Interface on port 8000
 ```
@@ -614,13 +614,13 @@ If none of these solutions work:
 docker-compose logs neo4j
 
 # Agentic Memory logs
-codememory --verbose
+agentic-memory --verbose
 ```
 
 2. **Enable debug logging:**
 ```bash
 export LOG_LEVEL=DEBUG
-codememory index
+agentic-memory index
 ```
 
 3. **Report issues:**
@@ -644,25 +644,25 @@ After successful installation:
 
 ```bash
 # Install
-pipx install codememory
+pipx install agentic-memory
 
 # Initialize
-codememory init
+agentic-memory init
 
 # Status
-codememory status
+agentic-memory status
 
 # Index
-codememory index
+agentic-memory index
 
 # Watch
-codememory watch
+agentic-memory watch
 
 # Search
-codememory search "query"
+agentic-memory search "query"
 
 # MCP Server
-codememory serve
+agentic-memory serve
 ```
 
 For CLI command details, see [API.md](API.md#cli-commands).

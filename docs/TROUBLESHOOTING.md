@@ -37,10 +37,10 @@ xcode-select --install
 # Use a virtual environment
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
-pip install codememory
+pip install agentic-memory
 ```
 
-### `codememory: command not found`
+### `agentic-memory: command not found`
 
 **Symptom:** Command not found after installation.
 
@@ -50,7 +50,7 @@ pip install codememory
 export PATH="$HOME/.local/bin:$PATH"
 
 # Or use pipx for isolated installation (recommended)
-pipx install codememory
+pipx install agentic-memory
 ```
 
 ---
@@ -96,7 +96,7 @@ curl http://localhost:7474
 
 # For Aura, copy password from Aura console
 # Update config:
-codememory init
+agentic-memory init
 ```
 
 ### "Vector index not found"
@@ -106,11 +106,11 @@ codememory init
 **Solution:**
 ```bash
 # Re-run indexing to recreate indexes
-codememory index
+agentic-memory index
 
 # Or manually in Neo4j Browser:
 CALL db.index.vector.drop('code_embeddings');
-# Then re-run: codememory index
+# Then re-run: agentic-memory index
 ```
 
 ---
@@ -127,16 +127,16 @@ CALL db.index.vector.drop('code_embeddings');
 export OPENAI_API_KEY="sk-..."
 
 # Option 2: Add to config
-codememory init
+agentic-memory init
 # Choose option 1 to enter API key
 
 # Verify:
-codememory search "test"
+agentic-memory search "test"
 ```
 
 ### "No files indexed"
 
-**Symptom:** `codememory status` shows 0 files.
+**Symptom:** `agentic-memory status` shows 0 files.
 
 **Solutions:**
 
@@ -157,7 +157,7 @@ cat .codememory/config.json | grep ignore_dirs
 
 3. **Re-run indexing:**
 ```bash
-codememory index
+agentic-memory index
 ```
 
 ### Indexing is very slow
@@ -179,7 +179,7 @@ codememory index
 
 3. **Use a smaller repository for testing:**
 ```bash
-codememory init
+agentic-memory init
 # Only point to a subdirectory during init
 ```
 
@@ -195,7 +195,7 @@ codememory init
 
 1. **Check server is running:**
 ```bash
-codememory serve
+agentic-memory serve
 # Should see: "🧠 Starting MCP Interface"
 ```
 
@@ -206,7 +206,7 @@ netstat -an | grep 8000  # Linux/macOS
 netstat -an | findstr 8000  # Windows
 
 # Use different port:
-codememory serve --port 8001
+agentic-memory serve --port 8001
 ```
 
 3. **Check MCP configuration:**
@@ -216,7 +216,7 @@ codememory serve --port 8001
    {
      "mcpServers": {
        "agentic-memory": {
-         "command": "codememory",
+         "command": "agentic-memory",
          "args": ["serve", "--repo", "/absolute/path/to/your/project"]
        }
      }
@@ -238,7 +238,7 @@ codememory serve --port 8001
 
 2. **Check server logs:**
 ```bash
-codememory serve
+agentic-memory serve
 # Look for: "✅ Connected to Neo4j"
 ```
 
@@ -246,7 +246,7 @@ codememory serve
 ```bash
 # Run from your repo directory
 cd /path/to/your/repo
-codememory serve
+agentic-memory serve
 
 # Should see: "📂 Using config from: .codememory/config.json"
 ```
@@ -263,7 +263,7 @@ codememory serve
 
 **Solution:**
 ```bash
-codememory --help
+agentic-memory --help
 # Verify git-init/git-sync/git-status appear under commands
 ```
 
@@ -275,7 +275,7 @@ If missing, upgrade to a git graph-enabled release/build.
 
 **Solution:**
 ```bash
-codememory git-init --repo /absolute/path/to/repo --mode local --full-history
+agentic-memory git-init --repo /absolute/path/to/repo --mode local --full-history
 # Confirm /absolute/path/to/repo contains a .git directory
 ```
 
@@ -301,7 +301,7 @@ New commits: 0
 **Solution:**
 ```bash
 git fetch --unshallow
-codememory git-sync --repo /absolute/path/to/repo --full
+agentic-memory git-sync --repo /absolute/path/to/repo --full
 ```
 
 ### Sync errors after force push / rewritten history
@@ -310,10 +310,10 @@ codememory git-sync --repo /absolute/path/to/repo --full
 
 **Solution:**
 ```bash
-codememory git-sync --repo /absolute/path/to/repo --full
+agentic-memory git-sync --repo /absolute/path/to/repo --full
 ```
 
-If your build exposes reconcile flags, use `codememory git-sync --help` and run the documented reconcile mode.
+If your build exposes reconcile flags, use `agentic-memory git-sync --help` and run the documented reconcile mode.
 
 ### GitHub enrichment fails, local ingestion should still proceed
 
@@ -357,11 +357,11 @@ as first-class options. Until then, keep `mcp_native` as default.
 
 **Solutions:**
 
-1. **Only index what changes:** Use `codememory watch` instead of full re-indexes.
+1. **Only index what changes:** Use `agentic-memory watch` instead of full re-indexes.
 
 2. **Check cost after indexing:**
 ```bash
-codememory index
+agentic-memory index
 # Look for: "💰 Estimated Cost: $X.XX USD"
 ```
 
@@ -369,7 +369,7 @@ codememory index
 
 ### Slow semantic search
 
-**Symptom:** `codememory search` takes more than a few seconds.
+**Symptom:** `agentic-memory search` takes more than a few seconds.
 
 **Solutions:**
 
@@ -382,7 +382,7 @@ codememory index
 
 2. **Reduce result limit:**
 ```bash
-codememory search "query" --limit 3
+agentic-memory search "query" --limit 3
 ```
 
 3. **Neo4j might need more RAM:**
@@ -403,12 +403,12 @@ If you're still stuck:
 1. **Check logs:**
 ```bash
 # Enable verbose logging
-codememory index 2>&1 | tee debug.log
+agentic-memory index 2>&1 | tee debug.log
 ```
 
 2. **Verify your setup:**
 ```bash
-codememory status
+agentic-memory status
 ```
 
 3. **Report issues:**
@@ -425,8 +425,8 @@ codememory status
 
 | Error | Cause | Solution |
 |-------|-------|----------|
-| `ModuleNotFoundError: No module named 'codememory'` | Not installed or in wrong venv | `pip install codememory` |
+| `ModuleNotFoundError: No module named 'agentic_memory'` | Not installed or in wrong venv | `pip install agentic-memory` |
 | `Neo4j timeout` | Neo4j not responding | Restart Neo4j: `docker-compose restart neo4j` |
 | `OpenAI rate limit` | Too many embedding requests | Wait 60s, re-run; costs should still be low |
-| `File not found in graph` | File not indexed yet | Run `codememory index` |
+| `File not found in graph` | File not indexed yet | Run `agentic-memory index` |
 | `Path not found` | Wrong working directory | Run from repo root where `.codememory/` exists |

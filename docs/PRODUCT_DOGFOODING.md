@@ -21,20 +21,22 @@ The target is not just "the repo works." The target is:
 ## Core Artifacts
 
 - Local product state:
-  - `codememory product-status --json`
+  - `agentic-memory product-status --json`
   - `GET /product/status`
 - Repo registration:
-  - `codememory product-repo-add`
+  - `agentic-memory product-repo-add`
   - `POST /product/repos`
 - Integration registration:
-  - `codememory product-integration-set`
+  - `agentic-memory product-integration-set`
   - `POST /product/integrations`
 - Runtime component health:
-  - `codememory product-component-set`
+  - `agentic-memory product-component-set`
   - `POST /product/components/{component}`
 - Dogfood event capture:
-  - `codememory product-event-record`
+  - `agentic-memory product-event-record`
   - `POST /product/events`
+- Desktop shell:
+  - `python -m desktop_shell --backend-url http://127.0.0.1:8000`
 
 ## Required Journeys
 
@@ -67,28 +69,28 @@ For every journey, record:
 
 ```bash
 # Inspect the local control-plane state
-codememory product-status --json
+agentic-memory product-status --json
 
 # Register a repo under test
-codememory product-repo-add C:\path\to\repo --label "Dogfood Repo" --json
+agentic-memory product-repo-add C:\path\to\repo --label "Dogfood Repo" --json
 
 # Mark an integration as configured
-codememory product-integration-set ^
+agentic-memory product-integration-set ^
   --surface mcp ^
   --target claude_desktop ^
   --status configured ^
-  --config-json "{\"command\":\"codememory\"}" ^
+  --config-json "{\"command\":\"agentic-memory\"}" ^
   --json
 
 # Mark runtime health
-codememory product-component-set ^
+agentic-memory product-component-set ^
   --component server ^
   --status healthy ^
   --details-json "{\"endpoint\":\"http://localhost:8000\"}" ^
   --json
 
 # Record friction or success
-codememory product-event-record ^
+agentic-memory product-event-record ^
   --event install_completed ^
   --status ok ^
   --actor dogfood ^
@@ -106,3 +108,4 @@ Do not call a packaging/UI release ready unless all of these pass:
 - at least one passive capture surface works
 - server downtime and config drift are recoverable
 - uninstall/reinstall leaves the system usable without manual cleanup
+- the browser-based `desktop_shell` view can load the local product status endpoint

@@ -8,7 +8,7 @@ Use this template when re-running validation in a user test repository (for exam
 - Operator:
 - Repository:
 - Branch/commit under test:
-- `codememory` version (`codememory --version`):
+- `agentic-memory` version (`agentic-memory --version`):
 - Neo4j version:
 - Python version:
 - Test mode: `local` or `local+github`
@@ -18,19 +18,19 @@ Use this template when re-running validation in a user test repository (for exam
 - [ ] Neo4j is running and credentials are valid.
 - [ ] Repository has a clean/known git state.
 - [ ] `.codememory/config.json` matches expected environment values.
-- [ ] `codememory --help` includes `git-init`, `git-sync`, `git-status` (if validating git graph CLI).
+- [ ] `agentic-memory --help` includes `git-init`, `git-sync`, `git-status` (if validating git graph CLI).
 
 ## Commands Executed
 
 ```bash
 # 1) Code graph baseline
-codememory index
-codememory status --json
+agentic-memory index
+agentic-memory status --json
 
 # 2) Git graph setup + sync
-codememory git-init --repo /absolute/path/to/repo --mode local --full-history
-codememory git-sync --repo /absolute/path/to/repo --incremental
-codememory git-status --repo /absolute/path/to/repo --json
+agentic-memory git-init --repo /absolute/path/to/repo --mode local --full-history
+agentic-memory git-sync --repo /absolute/path/to/repo --incremental
+agentic-memory git-status --repo /absolute/path/to/repo --json
 
 # 3) Optional MCP checks (domain routing)
 # search_codebase(query="...", domain="code")
@@ -61,8 +61,8 @@ Record exact values from command output.
 
 ### Performance
 
-- `codememory index` elapsed time:
-- `codememory git-sync --incremental` elapsed time:
+- `agentic-memory index` elapsed time:
+- `agentic-memory git-sync --incremental` elapsed time:
 - Embedding calls:
 - Token usage:
 - Estimated cost:

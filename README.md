@@ -32,17 +32,19 @@ pipx install agentic-memory
 
 # Or with uv tooling
 uv tool install agentic-memory
-uvx codememory --help
+uvx agentic-memory --help
 
 # Or use pip in a virtualenv
 pip install agentic-memory
 ```
 
+`codememory` remains available as a compatibility alias, but `agentic-memory` is the primary name.
+
 ### 2. Initialize in any repository
 
 ```bash
 cd /path/to/your/repo
-codememory init
+agentic-memory init
 ```
 
 The interactive wizard will guide you through:
@@ -60,24 +62,24 @@ That's it! Your repository is now indexed and ready for AI agents.
 
 ```bash
 # Show repository status and statistics
-codememory status
+agentic-memory status
 
 # One-time full index (e.g., after major changes)
-codememory index
+agentic-memory index
 
 # Watch for changes and continuously update
-codememory watch
+agentic-memory watch
 
 # Start MCP server for AI agents
-codememory serve
+agentic-memory serve
 
 # Test semantic search
-codememory search "where is the auth logic?"
+agentic-memory search "where is the auth logic?"
 
 # Git graph (rollout build)
-codememory git-init --repo /absolute/path/to/repo --mode local --full-history
-codememory git-sync --repo /absolute/path/to/repo --incremental
-codememory git-status --repo /absolute/path/to/repo --json
+agentic-memory git-init --repo /absolute/path/to/repo --mode local --full-history
+agentic-memory git-sync --repo /absolute/path/to/repo --incremental
+agentic-memory git-status --repo /absolute/path/to/repo --json
 ```
 
 Git graph command details and rollout notes: [docs/GIT_GRAPH.md](docs/GIT_GRAPH.md)
@@ -89,8 +91,8 @@ Git graph command details and rollout notes: [docs/GIT_GRAPH.md](docs/GIT_GRAPH.
 Agentic Memory now supports SQLite telemetry for MCP tool calls plus manual post-response labeling as `prompted` or `unprompted`.
 
 ```bash
-codememory --prompted "check our auth"
-codememory --unprompted "check our auth"
+agentic-memory --prompted "check our auth"
+agentic-memory --unprompted "check our auth"
 ```
 
 Full workflow and options: [docs/TOOL_USE_ANNOTATION.md](docs/TOOL_USE_ANNOTATION.md)
@@ -147,9 +149,15 @@ Phase 10 adds a unified search surface across code, research, and conversation m
 The next packaging layer adds a local product control plane for install and dogfood
 loops:
 
-- CLI: `codememory product-status`, `codememory product-repo-add`, `codememory product-integration-set`
-- REST: `GET /product/status`, `POST /product/repos`, `POST /product/integrations`
+- CLI: `agentic-memory product-status`, `agentic-memory product-repo-add`, `agentic-memory product-integration-set`, `agentic-memory product-component-set`, `agentic-memory product-event-record`
+- REST: `GET /product/status`, `POST /product/repos`, `POST /product/integrations`, `POST /product/components/{component}`, `POST /product/events`, `POST /product/onboarding`
 - Workflow: [docs/PRODUCT_DOGFOODING.md](docs/PRODUCT_DOGFOODING.md)
+
+The first desktop-facing shell is a lightweight local FastAPI app in `desktop_shell/`. It
+proxies the product status endpoint and gives a browser-based control plane without
+committing to a native desktop framework yet.
+
+- Run: `python -m desktop_shell --backend-url http://127.0.0.1:8000`
 
 Use these docs for the current local operator flow:
 
@@ -254,7 +262,7 @@ cd agentic-memory
 pip install -e .
 
 # Run the init wizard in any repo
-codememory init
+agentic-memory init
 ```
 
 ---
@@ -266,7 +274,7 @@ codememory init
 pip install -e .
 
 # Run type checking (when mypy is configured)
-mypy src/codememory
+mypy src/agentic_memory
 
 # Run tests (when added)
 pytest
@@ -293,7 +301,7 @@ pytest
 {
   "mcpServers": {
     "agentic-memory": {
-      "command": "codememory",
+      "command": "agentic-memory",
       "args": ["serve", "--repo", "/absolute/path/to/your/project"]
     }
   }
@@ -306,7 +314,7 @@ pytest
 {
   "mcpServers": {
     "agentic-memory": {
-      "command": "codememory",
+      "command": "agentic-memory",
       "args": ["serve", "--repo", "/absolute/path/to/your/project", "--port", "8000"]
     }
   }
@@ -319,7 +327,7 @@ Add to your MCP configuration file.
 
 > Note: `--repo` requires the upcoming release that adds explicit repo targeting for `serve`.
 > If your installed version does not support `--repo`, use your client's `cwd` setting
-> (if supported) or launch via a wrapper script that runs `cd /absolute/path/to/project && codememory serve`.
+> (if supported) or launch via a wrapper script that runs `cd /absolute/path/to/project && agentic-memory serve`.
 
 ---
 

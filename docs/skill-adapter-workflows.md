@@ -6,7 +6,7 @@ graph analysis steps (`deps`, `impact`).
 
 ## Prerequisites
 
-- `codememory` CLI installed and available on `PATH`
+- `agentic-memory` CLI installed and available on `PATH`
 - Repo initialized (`.codememory/config.json` exists) when running indexing/search
 - Neo4j reachable from the machine running commands
 - Optional for semantic search: `OPENAI_API_KEY`
@@ -46,7 +46,7 @@ HEALTH="./skills/agentic-memory-adapter/scripts/health_check.sh"
 
 ## Workflow 1: Index + Prune
 
-`codememory index` runs the ingestion pipeline and pass-1 pruning logic for
+`agentic-memory index` runs the ingestion pipeline and pass-1 pruning logic for
 excluded/stale files. Use this after large file moves/deletes or ignore-rule
 changes.
 
@@ -76,12 +76,12 @@ REPO="/abs/path/to/repo"
 
 ```bash
 REPO="/abs/path/to/repo"
-codememory serve --repo "$REPO" --env-file "$REPO/.env" --port 8000
+agentic-memory serve --repo "$REPO" --env-file "$REPO/.env" --port 8000
 ```
 
 3. In MCP client:
 - `search_codebase(query="auth token validation", limit=5)`
-- `get_file_dependencies(file_path="src/codememory/cli.py")`
+- `get_file_dependencies(file_path="src/agentic_memory/cli.py")`
 
 ## Workflow 3: Impact Before Refactor
 
@@ -91,11 +91,11 @@ Use this before changing shared files.
 
 ```bash
 REPO="/abs/path/to/repo"
-codememory serve --repo "$REPO" --env-file "$REPO/.env" --port 8000
+agentic-memory serve --repo "$REPO" --env-file "$REPO/.env" --port 8000
 ```
 
 2. In MCP client:
-- `identify_impact(file_path="src/codememory/ingestion/graph.py", max_depth=3)`
+- `identify_impact(file_path="src/agentic_memory/ingestion/graph.py", max_depth=3)`
 - Optional follow-up: `get_file_dependencies(...)` for top impacted files
 
 3. Decide refactor scope:

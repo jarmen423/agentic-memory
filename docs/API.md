@@ -14,13 +14,13 @@ Complete reference for Agentic Memory's CLI commands, MCP tools, configuration o
 
 ## CLI Commands
 
-### `codememory init`
+### `agentic-memory init`
 
 Initialize Agentic Memory in the current repository with an interactive wizard.
 
 **Usage:**
 ```bash
-codememory init
+agentic-memory init
 ```
 
 **What it does:**
@@ -51,7 +51,7 @@ Choose Neo4j setup [1-4] (default: 1):
 **Example:**
 ```bash
 $ cd /path/to/my/project
-$ codememory init
+$ agentic-memory init
 
 🚀 Initializing Agentic Memory in: /path/to/my/project
 
@@ -61,9 +61,9 @@ $ codememory init
 Config file: /path/to/my/project/.codememory/config.json
 
 Next steps:
-  • codememory status    - Show repository status
-  • codememory watch     - Start continuous monitoring
-  • codememory serve     - Start MCP server for AI agents
+  • agentic-memory status    - Show repository status
+  • agentic-memory watch     - Start continuous monitoring
+  • agentic-memory serve     - Start MCP server for AI agents
 ```
 
 **Exit codes:**
@@ -72,13 +72,13 @@ Next steps:
 
 ---
 
-### `codememory status`
+### `agentic-memory status`
 
 Display statistics about the indexed repository.
 
 **Usage:**
 ```bash
-codememory status
+agentic-memory status
 ```
 
 **Output:**
@@ -97,18 +97,18 @@ Config:     /path/to/project/.codememory/config.json
 ```
 
 **Error cases:**
-- Not initialized: Suggests running `codememory init`
+- Not initialized: Suggests running `agentic-memory init`
 - Neo4j unavailable: Shows connection error
 
 ---
 
-### `codememory index`
+### `agentic-memory index`
 
 Run a one-time full ingestion pipeline.
 
 **Usage:**
 ```bash
-codememory index [options]
+agentic-memory index [options]
 ```
 
 **Options:**
@@ -123,7 +123,7 @@ codememory index [options]
 
 **Example:**
 ```bash
-$ codememory index
+$ agentic-memory index
 
 ============================================================
 🚀 Starting Hybrid GraphRAG Ingestion
@@ -171,13 +171,13 @@ $ codememory index
 
 ---
 
-### `codememory watch`
+### `agentic-memory watch`
 
 Start continuous file monitoring and incremental updates.
 
 **Usage:**
 ```bash
-codememory watch [options]
+agentic-memory watch [options]
 ```
 
 **Options:**
@@ -191,7 +191,7 @@ codememory watch [options]
 
 **Example:**
 ```bash
-$ codememory watch
+$ agentic-memory watch
 
 👀 Starting Observer on: /path/to/project
 🛠️  Setting up Database Indexes...
@@ -230,13 +230,13 @@ $ codememory watch
 
 ---
 
-### `codememory serve`
+### `agentic-memory serve`
 
 Start the MCP server for AI agent integration.
 
 **Usage:**
 ```bash
-codememory serve [options]
+agentic-memory serve [options]
 ```
 
 **Options:**
@@ -244,7 +244,7 @@ codememory serve [options]
 
 **Example:**
 ```bash
-$ codememory serve
+$ agentic-memory serve
 
 📂 Using config from: /path/to/project/.codememory/config.json
 ✅ Connected to Neo4j at bolt://localhost:7687
@@ -278,13 +278,13 @@ curl http://localhost:8000/tools/search_codebase \
 
 ---
 
-### `codememory search`
+### `agentic-memory search`
 
 Test semantic search from the command line (for debugging/testing).
 
 **Usage:**
 ```bash
-codememory search <query> [options]
+agentic-memory search <query> [options]
 ```
 
 **Arguments:**
@@ -295,7 +295,7 @@ codememory search <query> [options]
 
 **Example:**
 ```bash
-$ codememory search "JWT token validation" --limit 3
+$ agentic-memory search "JWT token validation" --limit 3
 
 Found 3 result(s):
 
@@ -731,7 +731,7 @@ LOG_LEVEL=INFO
 
 Main class for graph operations.
 
-**Location:** `src/codememory/ingestion/graph.py`
+**Location:** `src/agentic_memory/ingestion/graph.py`
 
 #### Constructor
 
@@ -758,7 +758,7 @@ def __init__(
 
 **Example:**
 ```python
-from codememory.ingestion.graph import KnowledgeGraphBuilder
+from agentic_memory.ingestion.graph import KnowledgeGraphBuilder
 from pathlib import Path
 
 builder = KnowledgeGraphBuilder(
@@ -926,7 +926,7 @@ builder.close()
 
 Configuration management class.
 
-**Location:** `src/codememory/config.py`
+**Location:** `src/agentic_memory/config.py`
 
 #### Constructor
 
@@ -936,7 +936,7 @@ def __init__(self, repo_root: Path)
 
 **Example:**
 ```python
-from codememory.config import Config
+from agentic_memory.config import Config
 from pathlib import Path
 
 config = Config(Path("/path/to/repo"))
@@ -1031,7 +1031,7 @@ def get_indexing_config(self) -> Dict[str, Any]
 
 | Error | Message | Resolution |
 |-------|---------|------------|
-| Graph not initialized | "❌ Graph not initialized" | Run `codememory index` |
+| Graph not initialized | "❌ Graph not initialized" | Run `agentic-memory index` |
 | File not found | "❌ File not found in the graph" | Check file path, run indexing |
 | OpenAI key missing | "❌ OpenAI API key not configured" | Set `OPENAI_API_KEY` |
 | No results | "No relevant code found" | Try different query |
@@ -1043,7 +1043,7 @@ def get_indexing_config(self) -> Dict[str, Any]
 
 | Exception | When | How to handle |
 |-----------|------|---------------|
-| `RuntimeError` | Config file corrupted | Re-run `codememory init` |
+| `RuntimeError` | Config file corrupted | Re-run `agentic-memory init` |
 | `neo4j.ServiceUnavailable` | Neo4j not running | Start Neo4j |
 | `openai.AuthenticationError` | Invalid API key | Check `OPENAI_API_KEY` |
 | `openai.RateLimitError` | API rate limit | Wait and retry |

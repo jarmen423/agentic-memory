@@ -45,8 +45,8 @@ Disable telemetry capture:
 Basic usage:
 
 ```bash
-codememory --prompted "check our auth"
-codememory --unprompted "check our auth"
+agentic-memory --prompted "check our auth"
+agentic-memory --unprompted "check our auth"
 ```
 
 ### Matching Behavior
@@ -64,20 +64,20 @@ This enables your workflow of running the annotation command right after an agen
 
 ```bash
 # Label specific IDs directly
-codememory --unprompted "check our auth" --tool-call-id 101 --tool-call-id 102
+agentic-memory --unprompted "check our auth" --tool-call-id 101 --tool-call-id 102
 
 # Optional custom annotation ID
-codememory --unprompted "check our auth" --annotation-id auth-run-1
+agentic-memory --unprompted "check our auth" --annotation-id auth-run-1
 
 # Tune matching windows
-codememory --unprompted "check our auth" \
+agentic-memory --unprompted "check our auth" \
   --wait-seconds 60 \
   --idle-seconds 4 \
   --lookback-seconds 240 \
   --recent-seconds 120
 
 # Scope to one client stream
-codememory --unprompted "check our auth" --client opencode
+agentic-memory --unprompted "check our auth" --client opencode
 ```
 
 ## Multi-Client Recommendation

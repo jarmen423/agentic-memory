@@ -1,17 +1,37 @@
+# Python
 __pycache__/
 *.pyc
+*.pyo
 .venv/
 venv/
-.env
-.DS_Store
 .pytest_cache/
 pytest-cache-files-*/
 .coverage
 htmlcov/
+*.egg-info/
+
+# Node
+node_modules/
 dist/
 build/
-*.egg-info/
-node_modules/
-coverage/
 *.tsbuildinfo
+.cache/
+
+# SpacetimeDB generated bindings
+packages/am-temporal-kg/generated-bindings/
+
+# Environment
 .env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Wrangler
+.wrangler/
+
+# Logs
+*.log
+npm-debug.log*

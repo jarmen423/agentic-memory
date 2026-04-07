@@ -1,4 +1,5 @@
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import type {
   SyncConfig,
@@ -44,7 +45,7 @@ const toImportSpecifier = (value: string): string => {
   ) {
     return value;
   }
-  return path.resolve(value);
+  return pathToFileURL(path.resolve(value)).href;
 };
 
 const fireAndForget = (promiseLike: Promise<void> | void, label: string): void => {

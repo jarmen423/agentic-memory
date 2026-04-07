@@ -9,7 +9,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.scripts.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit",
     "bridge": "tsx scripts/query_temporal.ts",
-    "publish:local": "printf 'upgrade\\n' | spacetime publish --server local --yes --delete-data --module-path . agentic-memory-temporal",
+    "publish:local": "echo upgrade | spacetime publish --server local --yes --delete-data --module-path . agentic-memory-temporal",
     "generate:bindings": "spacetime generate agentic-memory-temporal --lang typescript --out-dir ./generated-bindings --module-path ."
   },
   "dependencies": {

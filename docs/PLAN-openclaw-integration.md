@@ -26,7 +26,7 @@
   - native `packages/am-openclaw/` runtime package with real memory/context wiring
 - `In progress`
   - live host validation inside a real OpenClaw install
-  - backend support for canonical memory reads instead of cache-backed snippet reads
+  - canonical read support for non-conversation memory hits
 - `Not started`
   - performance/failure benchmarking beyond targeted tests
 
@@ -114,7 +114,8 @@
   - `Done:` backend context resolution contract and shared-memory search contract
   - `Done:` desktop shell and CLI can configure memory-only vs context-engine mode
   - `Done:` the native OpenClaw runtime now calls `/openclaw/session/register`, `/openclaw/memory/search`, `/openclaw/context/resolve`, and `/ingest/conversation`
-  - `Partial:` `readFile()` is still cache-backed because the backend does not yet expose a dedicated OpenClaw memory-read endpoint
+  - `Done:` conversation-turn canonical reads now flow through `/openclaw/memory/read`
+  - `Partial:` non-conversation reads still fall back to cached search snippets
 
 ### 4. Product and onboarding
 
@@ -159,6 +160,7 @@
 - `Status`
   - `Done:` setup command config generation test coverage
   - `Done:` native plugin package build/typecheck passes
+  - `Done:` backend search and canonical conversation-read tests
   - `Partial:` runtime code exists and is wired to the backend, but host-installed end-to-end plugin tests are still missing
 
 ### 2. Cross-device hardening tests
@@ -218,7 +220,7 @@
 - Validate the runtime package inside a real OpenClaw host install:
   - `C:\Users\jfrie\Documents\DEVDRIVE\code\agentic-memory\packages\am-openclaw\src\index.ts`
 - Highest-value follow-up:
-  - add a backend read contract so the plugin can serve canonical `readFile()` results
+  - extend canonical read support beyond conversation turns
   - add host-level install and runtime tests instead of relying only on package build/typecheck
   - benchmark `memory only` vs `memory + context engine` latency and usefulness
 - Keep the default shipping posture:

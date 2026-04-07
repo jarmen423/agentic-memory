@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from am_server.auth import require_auth
 from am_server.dependencies import get_conversation_pipeline, get_pipeline, get_product_store
 from am_server.models import (
     OpenClawContextResolveRequest,
+    OpenClawMemoryReadRequest,
     OpenClawMemorySearchRequest,
     OpenClawSessionRegisterRequest,
 )
 from agentic_memory.server.app import get_graph
 from agentic_memory.server.unified_search import search_all_memory_sync
+from agentic_memory.temporal.seeds import parse_conversation_source_id
 
 router = APIRouter(dependencies=[Depends(require_auth)])
 
@@ -45,6 +48,137 @@ def _format_context_blocks(hits: Iterable[object]) -> list[dict[str, object]]:
             }
         )
     return blocks
+
+
+def _canonical_read_path(hit: dict[str, Any]) -> str:
+    """Return the stable path token OpenClaw should use for follow-up reads.
+
+    The plugin needs one identifier that survives across search and read calls.
+    Unified search already guarantees `source_id`, so we promote that to the
+    OpenClaw-facing `path` field.
+    """
+
+    return str(
+        hit.get("path")
+        or hit.get("source_id")
+        or hit.get("sig")
+        or hit.get("title")
+        or "unknown"
+    )
+
+
+def _normalize_openclaw_hit(hit: dict[str, Any]) -> dict[str, Any]:
+    """Translate unified search hits into the richer OpenClaw plugin shape."""
+
+    metadata = hit.get("metadata") or {}
+    turn_index = metadata.get("turn_index")
+    line_number = int(turn_index) + 1 if isinstance(turn_index, int) else 1
+    path = _canonical_read_path(hit)
+    snippet = (
+        hit.get("content")
+        or hit.get("snippet")
+        or hit.get("excerpt")
+        or hit.get("text")
+        or ""
+    )
+
+    return {
+        **hit,
+        "path": path,
+        "start_line": line_number,
+        "end_line": line_number,
+        "snippet": snippet,
+        "content": snippet,
+        "citation": f"{path}#L{line_number}",
+    }
+
+
+def _fetch_conversation_turn_by_source_id(
+    conversation_pipeline: Any,
+    *,
+    source_id: str,
+) -> dict[str, Any] | None:
+    """Read a conversation turn by the canonical `session_id:turn_index` source id."""
+
+    session_id, turn_index = parse_conversation_source_id(source_id)
+    with conversation_pipeline._conn.session() as session:  # type: ignore[attr-defined]
+        result = session.run(
+            (
+                "MATCH (t:Memory:Conversation:Turn {session_id: $session_id, turn_index: $turn_index}) "
+                "RETURN "
+                "    t.session_id AS session_id, "
+                "    t.turn_index AS turn_index, "
+                "    t.role AS role, "
+                "    t.content AS content, "
+                "    t.project_id AS project_id, "
+                "    t.workspace_id AS workspace_id, "
+                "    t.device_id AS device_id, "
+                "    t.agent_id AS agent_id, "
+                "    t.source_agent AS source_agent, "
+                "    t.timestamp AS timestamp, "
+                "    t.ingested_at AS ingested_at, "
+                "    t.entities AS entities, "
+                "    t.entity_types AS entity_types"
+            ),
+            session_id=session_id,
+            turn_index=turn_index,
+        ).single()
+    return dict(result) if result else None
+
+
+def _fetch_conversation_neighbors(
+    conversation_pipeline: Any,
+    *,
+    session_id: str,
+    turn_index: int,
+) -> list[dict[str, Any]]:
+    """Read immediate neighboring turns to provide useful canonical context."""
+
+    with conversation_pipeline._conn.session() as session:  # type: ignore[attr-defined]
+        result = session.run(
+            (
+                "MATCH (t:Memory:Conversation:Turn {session_id: $session_id}) "
+                "WHERE t.turn_index IN [$prev_index, $next_index] "
+                "RETURN "
+                "    t.turn_index AS turn_index, "
+                "    t.role AS role, "
+                "    t.content AS content "
+                "ORDER BY t.turn_index"
+            ),
+            session_id=session_id,
+            prev_index=turn_index - 1,
+            next_index=turn_index + 1,
+        )
+        return [dict(row) for row in result]
+
+
+def _format_conversation_read_document(
+    turn: dict[str, Any],
+    neighbors: list[dict[str, Any]],
+) -> str:
+    """Format a conversation turn and its immediate neighbors as canonical read text."""
+
+    sections: list[str] = []
+    for neighbor in neighbors:
+        if int(neighbor.get("turn_index", -1)) < int(turn.get("turn_index", 0)):
+            sections.append(
+                f"[previous {neighbor.get('role', 'unknown')} turn #{neighbor.get('turn_index', '?')}]\n"
+                f"{neighbor.get('content', '')}"
+            )
+
+    sections.append(
+        f"[matched {turn.get('role', 'unknown')} turn #{turn.get('turn_index', '?')}]\n"
+        f"{turn.get('content', '')}"
+    )
+
+    for neighbor in neighbors:
+        if int(neighbor.get("turn_index", -1)) > int(turn.get("turn_index", 0)):
+            sections.append(
+                f"[next {neighbor.get('role', 'unknown')} turn #{neighbor.get('turn_index', '?')}]\n"
+                f"{neighbor.get('content', '')}"
+            )
+
+    return "\n\n".join(section for section in sections if section.strip())
 
 
 @router.post("/openclaw/session/register")
@@ -106,8 +240,59 @@ async def search_openclaw_memory(body: OpenClawMemorySearchRequest) -> dict:
     return {
         "status": "ok",
         "identity": body.model_dump(),
-        "results": payload.get("results", []),
+        "results": [
+            _normalize_openclaw_hit(hit) for hit in payload.get("results", [])
+        ],
         "response": payload,
+    }
+
+
+@router.post("/openclaw/memory/read")
+async def read_openclaw_memory(body: OpenClawMemoryReadRequest) -> dict:
+    """Read canonical memory content for a previously returned OpenClaw search hit.
+
+    v1 intentionally supports canonical reads for conversation turns first.
+    Other hit types still rely on the plugin's cached snippet fallback until
+    we add dedicated read contracts for code and research memory.
+    """
+
+    canonical_path = body.rel_path.split("#", 1)[0].strip()
+    conversation_pipeline = get_conversation_pipeline()
+
+    try:
+        session_id, turn_index = parse_conversation_source_id(canonical_path)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Canonical OpenClaw reads currently support conversation-turn "
+                f"source ids only. Unsupported path: {canonical_path}"
+            ),
+        ) from exc
+
+    turn = _fetch_conversation_turn_by_source_id(
+        conversation_pipeline,
+        source_id=canonical_path,
+    )
+    if turn is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No OpenClaw memory turn found for {canonical_path}",
+        )
+
+    neighbors = _fetch_conversation_neighbors(
+        conversation_pipeline,
+        session_id=session_id,
+        turn_index=turn_index,
+    )
+    return {
+        "status": "ok",
+        "identity": body.model_dump(),
+        "path": canonical_path,
+        "source_kind": "conversation_turn",
+        "text": _format_conversation_read_document(turn, neighbors),
+        "matched_turn": turn,
+        "neighbors": neighbors,
     }
 
 

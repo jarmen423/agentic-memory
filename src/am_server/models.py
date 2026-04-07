@@ -135,6 +135,19 @@ class OpenClawMemorySearchRequest(OpenClawIdentityModel):
     modules: list[str] | None = None
 
 
+class OpenClawMemoryReadRequest(OpenClawIdentityModel):
+    """Request body for canonical OpenClaw memory reads.
+
+    The plugin passes the same stable `rel_path` identifier returned from
+    `/openclaw/memory/search`. For conversation hits this is currently the
+    `source_id` form `session_id:turn_index`.
+    """
+
+    rel_path: str
+    from_line: int | None = None
+    lines: int | None = None
+
+
 class OpenClawContextResolveRequest(OpenClawIdentityModel):
     """Request body for OpenClaw context resolution."""
 

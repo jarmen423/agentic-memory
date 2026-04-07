@@ -695,9 +695,12 @@ def test_openclaw_memory_search_uses_unified_search_contract(client, auth_header
             "results": [
                 {
                     "module": "conversation",
+                    "source_id": "session-1:4",
+                    "source_kind": "conversation_turn",
                     "title": "Relevant turn",
                     "score": 0.91,
-                    "content": "workspace memory hit",
+                    "excerpt": "workspace memory hit",
+                    "metadata": {"turn_index": 4},
                 }
             ]
         }
@@ -722,6 +725,8 @@ def test_openclaw_memory_search_uses_unified_search_contract(client, auth_header
     body = resp.json()
     assert body["identity"]["workspace_id"] == "workspace-1"
     assert body["results"][0]["title"] == "Relevant turn"
+    assert body["results"][0]["path"] == "session-1:4"
+    assert body["results"][0]["citation"] == "session-1:4#L5"
     assert captured["query"] == "where did we leave off?"
     assert captured["limit"] == 7
     assert captured["project_id"] == "project-1"
@@ -766,3 +771,84 @@ def test_openclaw_context_resolve_formats_context_blocks(client, auth_headers, m
     assert body["context_engine"] == "agentic-memory"
     assert body["context_blocks"][0]["title"] == "src/example.py"
     assert body["system_prompt_addition"]
+
+
+def test_openclaw_memory_read_returns_canonical_conversation_text(
+    client, auth_headers, monkeypatch
+):
+    """POST /openclaw/memory/read hydrates a conversation turn by source id."""
+
+    session = MagicMock()
+    session.run.side_effect = [
+        _single_result(
+            {
+                "session_id": "session-1",
+                "turn_index": 4,
+                "role": "assistant",
+                "content": "Here is the canonical answer.",
+                "project_id": "project-1",
+                "workspace_id": "workspace-1",
+                "device_id": "device-a",
+                "agent_id": "agent-x",
+                "source_agent": "openclaw",
+                "timestamp": "2026-04-07T00:00:00+00:00",
+                "ingested_at": "2026-04-07T00:00:00+00:00",
+                "entities": ["OpenClaw"],
+                "entity_types": ["technology"],
+            }
+        ),
+        _iter_result(
+            [
+                {"turn_index": 3, "role": "user", "content": "What did we decide?"},
+                {"turn_index": 5, "role": "assistant", "content": "We should ship the plugin."},
+            ]
+        ),
+    ]
+    session_ctx = MagicMock()
+    session_ctx.__enter__.return_value = session
+    session_ctx.__exit__.return_value = False
+
+    fake_pipeline = MagicMock()
+    fake_pipeline._conn.session.return_value = session_ctx
+    monkeypatch.setattr(openclaw, "get_conversation_pipeline", lambda: fake_pipeline)
+
+    resp = client.post(
+        "/openclaw/memory/read",
+        headers=auth_headers,
+        json={
+            "workspace_id": "workspace-1",
+            "device_id": "device-a",
+            "agent_id": "agent-x",
+            "session_id": "session-1",
+            "project_id": "project-1",
+            "rel_path": "session-1:4#L5",
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["path"] == "session-1:4"
+    assert body["source_kind"] == "conversation_turn"
+    assert "[previous user turn #3]" in body["text"]
+    assert "[matched assistant turn #4]" in body["text"]
+    assert "[next assistant turn #5]" in body["text"]
+
+
+def test_openclaw_memory_read_rejects_unsupported_paths(client, auth_headers):
+    """POST /openclaw/memory/read rejects non-conversation canonical paths for now."""
+
+    resp = client.post(
+        "/openclaw/memory/read",
+        headers=auth_headers,
+        json={
+            "workspace_id": "workspace-1",
+            "device_id": "device-a",
+            "agent_id": "agent-x",
+            "session_id": "session-1",
+            "project_id": "project-1",
+            "rel_path": "src/example.py",
+        },
+    )
+
+    assert resp.status_code == 404
+    assert "conversation-turn" in resp.json()["detail"]

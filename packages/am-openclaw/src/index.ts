@@ -410,6 +410,29 @@ class AgenticMemorySearchManager {
     from?: number;
     lines?: number;
   }): Promise<{ text: string; path: string }> {
+    try {
+      const response = await this.client.post<{
+        path?: string;
+        text?: string;
+      }>("/openclaw/memory/read", {
+        ...this.identityPayload(),
+        rel_path: params.relPath,
+        from_line: params.from,
+        lines: params.lines,
+      });
+
+      if (response.path && response.text) {
+        return {
+          path: response.path,
+          text: response.text,
+        };
+      }
+    } catch {
+      // The backend currently supports canonical reads for conversation turns
+      // first. Unsupported hit types still fall back to the last cached
+      // snippet from search results.
+    }
+
     const cached = this.cachedFiles.get(params.relPath);
     if (cached) {
       return {
@@ -418,12 +441,9 @@ class AgenticMemorySearchManager {
       };
     }
 
-    // The current backend does not expose a dedicated read endpoint yet. Until
-    // that lands, we return a small explanatory payload instead of pretending we
-    // can fetch canonical file content.
     return {
       path: params.relPath,
-      text: `No cached Agentic Memory snippet is available for ${params.relPath}. Re-run memory search first.`,
+      text: `No canonical Agentic Memory read is available for ${params.relPath}, and no cached snippet exists yet.`,
     };
   }
 

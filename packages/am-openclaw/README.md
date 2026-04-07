@@ -24,9 +24,9 @@ The runtime is backend-first and intentionally conservative:
 - memory search is real
 - context resolution is real
 - conversation ingestion is real
-- `readFile()` is still cache-backed because the backend does not yet expose a
-  dedicated OpenClaw memory-read endpoint
+- canonical `readFile()` is now real for conversation-turn hits
+- non-conversation hits still fall back to the cached snippet from search
 
-That means the next hardening step is to add a backend read contract so the
-runtime can serve canonical file/note reads instead of only cached snippets from
-recent search results.
+That means the next hardening step is to expand canonical read support beyond
+conversation turns so code and research hits can also be re-opened without
+depending on the cached search snippet.

@@ -54,6 +54,9 @@ class ConversationIngestRequest(BaseModel):
     session_id: str  # REQUIRED — caller owns session identity
     project_id: str
     turn_index: int
+    workspace_id: str | None = None
+    device_id: str | None = None
+    agent_id: str | None = None
     source_agent: str | None = None
     model: str | None = None
     tool_name: str | None = None
@@ -104,3 +107,41 @@ class ProductOnboardingStepRequest(BaseModel):
 
     step: str
     completed: bool = True
+
+
+class OpenClawIdentityModel(BaseModel):
+    """Common identity fields used by OpenClaw-facing endpoints."""
+
+    workspace_id: str
+    device_id: str
+    agent_id: str
+    session_id: str
+    project_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class OpenClawSessionRegisterRequest(OpenClawIdentityModel):
+    """Request body for registering an OpenClaw agent session."""
+
+    context_engine: str = "agentic-memory"
+
+
+class OpenClawMemorySearchRequest(OpenClawIdentityModel):
+    """Request body for OpenClaw memory search."""
+
+    query: str
+    limit: int = 10
+    as_of: str | None = None
+    modules: list[str] | None = None
+
+
+class OpenClawContextResolveRequest(OpenClawIdentityModel):
+    """Request body for OpenClaw context resolution."""
+
+    query: str
+    limit: int = 10
+    as_of: str | None = None
+    modules: list[str] | None = None
+    context_budget_tokens: int = 8000
+    include_system_prompt: bool = True
+    context_engine: str = "agentic-memory"

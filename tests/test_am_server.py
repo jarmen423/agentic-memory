@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from am_server import dependencies
 from am_server.app import create_app
+from am_server.routes import openclaw
 
 
 def _iter_result(rows):
@@ -143,7 +144,7 @@ def test_ingest_conversation_invalid_source_key_returns_422(client, auth_headers
     """POST /ingest/conversation rejects unknown source_key values."""
     pipeline = dependencies.get_conversation_pipeline()
     pipeline.ingest.side_effect = ValueError(
-        "Invalid source_key 'manual_test'. Must be one of: ['chat_cli', 'chat_ext', 'chat_mcp', 'chat_proxy']"
+        "Invalid source_key 'manual_test'. Must be one of: ['chat_cli', 'chat_ext', 'chat_mcp', 'chat_openclaw', 'chat_proxy']"
     )
     payload = {
         "role": "user",
@@ -180,6 +181,30 @@ def test_ingest_delegates(client, auth_headers):
     assert passed["content"] == "Important finding"
     assert passed["type"] == "finding"
     assert passed["source_agent"] == "perplexity"
+
+
+def test_ingest_conversation_accepts_openclaw_identity_fields(client, auth_headers):
+    """POST /ingest/conversation forwards OpenClaw workspace/device identity intact."""
+    payload = {
+        "role": "user",
+        "content": "Need context from another device",
+        "project_id": "proj-openclaw",
+        "session_id": "sess-openclaw",
+        "turn_index": 2,
+        "source_key": "chat_openclaw",
+        "workspace_id": "workspace-alpha",
+        "device_id": "device-phone",
+        "agent_id": "agent-openclaw-1",
+    }
+    resp = client.post("/ingest/conversation", json=payload, headers=auth_headers)
+    assert resp.status_code == 202
+
+    pipeline = dependencies.get_conversation_pipeline()
+    passed = pipeline.ingest.call_args[0][0]
+    assert passed["source_key"] == "chat_openclaw"
+    assert passed["workspace_id"] == "workspace-alpha"
+    assert passed["device_id"] == "device-phone"
+    assert passed["agent_id"] == "agent-openclaw-1"
 
 
 def test_get_pipeline_uses_web_embedding_runtime(monkeypatch):
@@ -599,3 +624,145 @@ def test_product_integration_endpoint_tracks_integration(
     body = resp.json()
     assert body["integration"]["surface"] == "browser_extension"
     assert body["integration"]["status"] == "configured"
+
+
+class _FakeOpenClawStore:
+    def __init__(self) -> None:
+        self.integrations: list[dict] = []
+        self.events: list[dict] = []
+
+    def upsert_integration(self, *, surface, target, status, config, last_error=None):
+        record = {
+            "surface": surface,
+            "target": target,
+            "status": status,
+            "config": config,
+            "last_error": last_error,
+        }
+        self.integrations.append(record)
+        return record
+
+    def record_event(self, *, event_type, status="ok", actor="api", details=None):
+        record = {
+            "event_type": event_type,
+            "status": status,
+            "actor": actor,
+            "details": details or {},
+        }
+        self.events.append(record)
+        return record
+
+
+def test_openclaw_session_register_updates_store_and_echoes_identity(
+    client, auth_headers, monkeypatch
+):
+    """POST /openclaw/session/register records the shared identity contract."""
+    fake_store = _FakeOpenClawStore()
+    monkeypatch.setattr(openclaw, "get_product_store", lambda: fake_store)
+
+    resp = client.post(
+        "/openclaw/session/register",
+        headers=auth_headers,
+        json={
+            "workspace_id": "workspace-1",
+            "device_id": "device-a",
+            "agent_id": "agent-x",
+            "session_id": "session-1",
+            "project_id": "project-1",
+            "metadata": {"platform": "macos"},
+            "context_engine": "agentic-memory",
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["identity"]["workspace_id"] == "workspace-1"
+    assert body["integration"]["target"] == "workspace-1:device-a:agent-x"
+    assert body["event"]["event_type"] == "openclaw_session_registered"
+
+
+def test_openclaw_memory_search_uses_unified_search_contract(client, auth_headers, monkeypatch):
+    """POST /openclaw/memory/search forwards the unified search inputs."""
+    captured = {}
+
+    monkeypatch.setattr(openclaw, "get_graph", lambda: object())
+    monkeypatch.setattr(openclaw, "get_pipeline", lambda: "research-pipeline")
+    monkeypatch.setattr(openclaw, "get_conversation_pipeline", lambda: "conversation-pipeline")
+
+    def fake_search_all_memory_sync(**kwargs):
+        captured.update(kwargs)
+        return {
+            "results": [
+                {
+                    "module": "conversation",
+                    "title": "Relevant turn",
+                    "score": 0.91,
+                    "content": "workspace memory hit",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(openclaw, "search_all_memory_sync", fake_search_all_memory_sync)
+
+    resp = client.post(
+        "/openclaw/memory/search",
+        headers=auth_headers,
+        json={
+            "workspace_id": "workspace-1",
+            "device_id": "device-a",
+            "agent_id": "agent-x",
+            "session_id": "session-1",
+            "project_id": "project-1",
+            "query": "where did we leave off?",
+            "limit": 7,
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["identity"]["workspace_id"] == "workspace-1"
+    assert body["results"][0]["title"] == "Relevant turn"
+    assert captured["query"] == "where did we leave off?"
+    assert captured["limit"] == 7
+    assert captured["project_id"] == "project-1"
+
+
+def test_openclaw_context_resolve_formats_context_blocks(client, auth_headers, monkeypatch):
+    """POST /openclaw/context/resolve returns memory blocks plus prompt guidance."""
+    monkeypatch.setattr(openclaw, "get_graph", lambda: object())
+    monkeypatch.setattr(openclaw, "get_pipeline", lambda: "research-pipeline")
+    monkeypatch.setattr(openclaw, "get_conversation_pipeline", lambda: "conversation-pipeline")
+    monkeypatch.setattr(
+        openclaw,
+        "search_all_memory_sync",
+        lambda **kwargs: {
+            "results": [
+                {
+                    "module": "code",
+                    "path": "src/example.py",
+                    "score": 0.84,
+                    "snippet": "useful memory snippet",
+                }
+            ]
+        },
+    )
+
+    resp = client.post(
+        "/openclaw/context/resolve",
+        headers=auth_headers,
+        json={
+            "workspace_id": "workspace-1",
+            "device_id": "device-a",
+            "agent_id": "agent-x",
+            "session_id": "session-1",
+            "query": "find the relevant memory",
+            "limit": 3,
+            "context_engine": "agentic-memory",
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["context_engine"] == "agentic-memory"
+    assert body["context_blocks"][0]["title"] == "src/example.py"
+    assert body["system_prompt_addition"]

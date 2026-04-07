@@ -28,6 +28,8 @@ DEFAULT_COMPONENTS = {
     "browser_extension": "unknown",
     "mcp": "unknown",
     "proxy": "unknown",
+    "openclaw_memory": "unknown",
+    "openclaw_context_engine": "unknown",
 }
 
 

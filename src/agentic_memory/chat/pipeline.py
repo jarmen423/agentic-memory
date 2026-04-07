@@ -21,15 +21,18 @@ from agentic_memory.temporal.bridge import TemporalBridge
 
 logger = logging.getLogger(__name__)
 
-# Register all four chat sources at import time per CONTEXT.md
+# Register all chat sources at import time per CONTEXT.md
 register_source("chat_mcp", ["Memory", "Conversation", "Turn"])
 register_source("chat_proxy", ["Memory", "Conversation", "Turn"])
 register_source("chat_ext", ["Memory", "Conversation", "Turn"])
 register_source("chat_cli", ["Memory", "Conversation", "Turn"])
+register_source("chat_openclaw", ["Memory", "Conversation", "Turn"])
 
 VALID_ROLES = frozenset({"user", "assistant", "system", "tool"})
 EMBEDDABLE_ROLES = frozenset({"user", "assistant"})
-VALID_SOURCE_KEYS = frozenset({"chat_mcp", "chat_proxy", "chat_ext", "chat_cli"})
+VALID_SOURCE_KEYS = frozenset(
+    {"chat_mcp", "chat_proxy", "chat_ext", "chat_cli", "chat_openclaw"}
+)
 
 
 class ConversationIngestionPipeline(BaseIngestionPipeline):
@@ -77,6 +80,7 @@ class ConversationIngestionPipeline(BaseIngestionPipeline):
         Args:
             source: Dict matching the turn schema. Required keys:
                 role, content, session_id, project_id, turn_index.
+                Optional identity fields: workspace_id, device_id, agent_id.
                 Optional: source_agent, model, tool_name, tool_call_id,
                 tokens_input, tokens_output, timestamp, ingestion_mode,
                 source_key.
@@ -123,6 +127,9 @@ class ConversationIngestionPipeline(BaseIngestionPipeline):
         session_id = source["session_id"]
         project_id = source["project_id"]
         turn_index = source["turn_index"]
+        workspace_id = source.get("workspace_id")
+        device_id = source.get("device_id")
+        agent_id = source.get("agent_id")
         source_key = source.get("source_key", "chat_mcp")
 
         # content_hash: session-scoped identity key per CONTEXT.md
@@ -161,6 +168,9 @@ class ConversationIngestionPipeline(BaseIngestionPipeline):
             "turn_index": turn_index,
             "session_id": session_id,
             "project_id": project_id,
+            "workspace_id": workspace_id,
+            "device_id": device_id,
+            "agent_id": agent_id,
             "source_agent": source.get("source_agent"),
             "model": source.get("model"),
             "tool_name": source.get("tool_name"),
@@ -187,6 +197,9 @@ class ConversationIngestionPipeline(BaseIngestionPipeline):
         session_props: dict[str, Any] = {
             "session_id": session_id,
             "project_id": project_id,
+            "workspace_id": workspace_id,
+            "device_id": device_id,
+            "agent_id": agent_id,
             "source_agent": source.get("source_agent"),
         }
         self._writer.write_session_node(
@@ -253,6 +266,9 @@ class ConversationIngestionPipeline(BaseIngestionPipeline):
             "embedded": embedded,
             "entities_count": len(entities),
             "project_id": project_id,
+            "workspace_id": workspace_id,
+            "device_id": device_id,
+            "agent_id": agent_id,
         }
 
     def _turn_content_hash(self, session_id: str, turn_index: int) -> str:

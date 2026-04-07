@@ -9,7 +9,7 @@ Tests cover:
   no entity relationship wiring
 - content_hash is session-scoped (same content + different session_id = different hash)
 - content_hash is deterministic (same session_id + turn_index = same hash)
-- Source registration: all four chat sources in SOURCE_REGISTRY
+- Source registration: all chat sources in SOURCE_REGISTRY
 
 All tests mock Neo4j, EmbeddingService, EntityExtractionService — no live services.
 """
@@ -59,6 +59,9 @@ def _turn_source(**overrides):
         "session_id": "sess-test-abc",
         "project_id": "proj-test",
         "turn_index": 0,
+        "workspace_id": "workspace-alpha",
+        "device_id": "device-laptop",
+        "agent_id": "agent-openclaw-1",
         "source_agent": "claude",
         "ingestion_mode": "active",
         "source_key": "chat_mcp",
@@ -145,6 +148,10 @@ class TestEmbeddableTurnFlow:
         pipeline, mock_writer = _make_pipeline()
         pipeline.ingest(_turn_source(role="user"))
         assert mock_writer.write_session_node.call_count == 1
+        props = mock_writer.write_session_node.call_args.kwargs["props"]
+        assert props["workspace_id"] == "workspace-alpha"
+        assert props["device_id"] == "device-laptop"
+        assert props["agent_id"] == "agent-openclaw-1"
 
     def test_user_turn_wires_has_turn_and_part_of(self):
         """ingest(role='user') calls write_has_turn_relationship and write_part_of_turn_relationship."""
@@ -172,6 +179,9 @@ class TestEmbeddableTurnFlow:
         result = pipeline.ingest(_turn_source(role="user"))
         assert result["embedded"] is True
         assert result["entities_count"] == 1
+        assert result["workspace_id"] == "workspace-alpha"
+        assert result["device_id"] == "device-laptop"
+        assert result["agent_id"] == "agent-openclaw-1"
 
     def test_assistant_turn_also_embeds(self):
         """ingest(role='assistant') calls embedder (same as user)."""
@@ -234,6 +244,9 @@ class TestNonEmbeddableTurnFlow:
         props = mock_writer.write_memory_node.call_args[0][1]
         assert props["embedding"] is None
         assert props["embedding_model"] is None
+        assert props["workspace_id"] == "workspace-alpha"
+        assert props["device_id"] == "device-laptop"
+        assert props["agent_id"] == "agent-openclaw-1"
 
     def test_system_turn_still_writes_session_node(self):
         """ingest(role='system') still calls write_session_node (session must be tracked)."""
@@ -318,11 +331,11 @@ class TestTurnContentHash:
 class TestChatSourceRegistration:
     """Tests for source registration at module import time."""
 
-    def test_all_four_chat_sources_registered(self):
-        """All four chat sources are in SOURCE_REGISTRY after import."""
+    def test_all_chat_sources_registered(self):
+        """All chat sources are in SOURCE_REGISTRY after import."""
         import agentic_memory.chat.pipeline  # noqa: F401 — ensure module is imported
         from agentic_memory.core.registry import SOURCE_REGISTRY
 
-        for key in ("chat_mcp", "chat_proxy", "chat_ext", "chat_cli"):
+        for key in ("chat_mcp", "chat_proxy", "chat_ext", "chat_cli", "chat_openclaw"):
             assert key in SOURCE_REGISTRY, f"Source key {key!r} not in SOURCE_REGISTRY"
             assert SOURCE_REGISTRY[key] == ["Memory", "Conversation", "Turn"]

@@ -90,7 +90,7 @@ def test_product_status_proxies_backend_response(monkeypatch):
     assert fake_client.requests == ["/product/status"]
 
 
-def test_openclaw_memory_setup_proxies_backend_post():
+def test_openclaw_session_registration_proxies_backend_post():
     fake_client = _FakeClient()
 
     def override() -> _FakeClient:
@@ -102,17 +102,14 @@ def test_openclaw_memory_setup_proxies_backend_post():
     try:
         client = TestClient(app)
         response = client.post(
-            "/api/product/integrations",
+            "/api/openclaw/session/register",
             json={
-                "surface": "openclaw_memory",
-                "target": "workspace",
-                "status": "configured",
-                "config": {
-                    "workspace_id": "workspace-acme",
-                    "device_id": "laptop-01",
-                    "agent_id": "openclaw-agent-a",
-                    "source": "desktop_shell",
-                },
+                "workspace_id": "workspace-acme",
+                "device_id": "laptop-01",
+                "agent_id": "openclaw-agent-a",
+                "session_id": "workspace-acme:laptop-01:openclaw-agent-a:desktop-shell",
+                "context_engine": "legacy",
+                "metadata": {"source": "desktop_shell"},
             },
         )
     finally:
@@ -121,23 +118,20 @@ def test_openclaw_memory_setup_proxies_backend_post():
     assert response.status_code == 200
     assert fake_client.posts == [
         (
-            "/product/integrations",
+            "/openclaw/session/register",
             {
-                "surface": "openclaw_memory",
-                "target": "workspace",
-                "status": "configured",
-                "config": {
-                    "workspace_id": "workspace-acme",
-                    "device_id": "laptop-01",
-                    "agent_id": "openclaw-agent-a",
-                    "source": "desktop_shell",
-                },
+                "workspace_id": "workspace-acme",
+                "device_id": "laptop-01",
+                "agent_id": "openclaw-agent-a",
+                "session_id": "workspace-acme:laptop-01:openclaw-agent-a:desktop-shell",
+                "context_engine": "legacy",
+                "metadata": {"source": "desktop_shell"},
             },
         )
     ]
 
 
-def test_openclaw_context_setup_proxies_backend_post():
+def test_openclaw_context_registration_proxies_backend_post():
     fake_client = _FakeClient()
 
     def override() -> _FakeClient:
@@ -149,17 +143,14 @@ def test_openclaw_context_setup_proxies_backend_post():
     try:
         client = TestClient(app)
         response = client.post(
-            "/api/product/integrations",
+            "/api/openclaw/session/register",
             json={
-                "surface": "openclaw_context_engine",
-                "target": "workspace",
-                "status": "configured",
-                "config": {
-                    "workspace_id": "workspace-acme",
-                    "device_id": "laptop-01",
-                    "agent_id": "openclaw-agent-a",
-                    "source": "desktop_shell",
-                },
+                "workspace_id": "workspace-acme",
+                "device_id": "laptop-01",
+                "agent_id": "openclaw-agent-a",
+                "session_id": "workspace-acme:laptop-01:openclaw-agent-a:desktop-shell",
+                "context_engine": "agentic-memory",
+                "metadata": {"source": "desktop_shell"},
             },
         )
     finally:
@@ -168,23 +159,20 @@ def test_openclaw_context_setup_proxies_backend_post():
     assert response.status_code == 200
     assert fake_client.posts == [
         (
-            "/product/integrations",
+            "/openclaw/session/register",
             {
-                "surface": "openclaw_context_engine",
-                "target": "workspace",
-                "status": "configured",
-                "config": {
-                    "workspace_id": "workspace-acme",
-                    "device_id": "laptop-01",
-                    "agent_id": "openclaw-agent-a",
-                    "source": "desktop_shell",
-                },
+                "workspace_id": "workspace-acme",
+                "device_id": "laptop-01",
+                "agent_id": "openclaw-agent-a",
+                "session_id": "workspace-acme:laptop-01:openclaw-agent-a:desktop-shell",
+                "context_engine": "agentic-memory",
+                "metadata": {"source": "desktop_shell"},
             },
         )
     ]
 
 
-def test_openclaw_test_event_proxies_backend_post():
+def test_openclaw_context_resolution_proxies_backend_post():
     fake_client = _FakeClient()
 
     def override() -> _FakeClient:
@@ -196,12 +184,15 @@ def test_openclaw_test_event_proxies_backend_post():
     try:
         client = TestClient(app)
         response = client.post(
-            "/api/product/events",
+            "/api/openclaw/context/resolve",
             json={
-                "event_type": "openclaw_cross_device_test",
-                "actor": "desktop_shell",
-                "status": "ok",
-                "details": {"workspace_id": "workspace-acme"},
+                "workspace_id": "workspace-acme",
+                "device_id": "laptop-01",
+                "agent_id": "openclaw-agent-a",
+                "session_id": "workspace-acme:laptop-01:openclaw-agent-a:desktop-shell-verify",
+                "query": "Verify shared OpenClaw memory connectivity from the desktop shell.",
+                "limit": 3,
+                "metadata": {"source": "desktop_shell", "probe": True},
             },
         )
     finally:
@@ -210,12 +201,15 @@ def test_openclaw_test_event_proxies_backend_post():
     assert response.status_code == 200
     assert fake_client.posts == [
         (
-            "/product/events",
+            "/openclaw/context/resolve",
             {
-                "event_type": "openclaw_cross_device_test",
-                "actor": "desktop_shell",
-                "status": "ok",
-                "details": {"workspace_id": "workspace-acme"},
+                "workspace_id": "workspace-acme",
+                "device_id": "laptop-01",
+                "agent_id": "openclaw-agent-a",
+                "session_id": "workspace-acme:laptop-01:openclaw-agent-a:desktop-shell-verify",
+                "query": "Verify shared OpenClaw memory connectivity from the desktop shell.",
+                "limit": 3,
+                "metadata": {"source": "desktop_shell", "probe": True},
             },
         )
     ]

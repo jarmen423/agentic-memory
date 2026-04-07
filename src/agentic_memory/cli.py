@@ -995,6 +995,146 @@ def cmd_product_onboarding_step(args: argparse.Namespace) -> None:
     print(f"   Completed: {not args.pending}")
 
 
+def cmd_openclaw_setup(args: argparse.Namespace) -> None:
+    """Generate a local OpenClaw config artifact and register product state.
+
+    This command is the first "magic install" path for OpenClaw power users.
+    It does not try to mutate a live OpenClaw installation directly yet.
+    Instead it creates a deterministic config file that the upcoming OpenClaw
+    package can consume, while also updating Agentic Memory's local control
+    plane so the desktop shell and dogfood loops can observe setup progress.
+    """
+    store = ProductStateStore()
+    config_path = Path(args.config_path).expanduser().resolve()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    session_id = (
+        args.session_id
+        or f"{args.workspace_id}:{args.device_id}:{args.agent_id}:bootstrap"
+    )
+    context_engine_slot = "agentic-memory" if args.enable_context_engine else "legacy"
+
+    openclaw_config = {
+        "generated_by": PRIMARY_CLI_NAME,
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "plugins": {
+            "package": "am-openclaw",
+            "slots": {
+                "memory": "agentic-memory",
+                "contextEngine": context_engine_slot,
+            },
+        },
+        "agenticMemory": {
+            "backend_url": args.backend_url,
+            "api_key_env": args.api_key_env,
+            "workspace_id": args.workspace_id,
+            "device_id": args.device_id,
+            "agent_id": args.agent_id,
+            "session_id": session_id,
+            "project_id": args.project_id,
+            "endpoints": {
+                "register": "/openclaw/session/register",
+                "memory_search": "/openclaw/memory/search",
+                "context_resolve": "/openclaw/context/resolve",
+            },
+        },
+    }
+    config_path.write_text(f"{json.dumps(openclaw_config, indent=2)}\n", encoding="utf-8")
+
+    memory_integration = store.upsert_integration(
+        surface="openclaw_memory",
+        target="workspace",
+        status="configured",
+        config={
+            "workspace_id": args.workspace_id,
+            "device_id": args.device_id,
+            "agent_id": args.agent_id,
+            "session_id": session_id,
+            "backend_url": args.backend_url,
+            "config_path": str(config_path),
+        },
+    )
+    memory_component = store.set_component_status(
+        "openclaw_memory",
+        status="healthy",
+        details={
+            "workspace_id": args.workspace_id,
+            "device_id": args.device_id,
+            "agent_id": args.agent_id,
+            "config_path": str(config_path),
+        },
+    )
+
+    context_integration = None
+    context_component = None
+    if args.enable_context_engine:
+        context_integration = store.upsert_integration(
+            surface="openclaw_context_engine",
+            target="workspace",
+            status="configured",
+            config={
+                "workspace_id": args.workspace_id,
+                "device_id": args.device_id,
+                "agent_id": args.agent_id,
+                "session_id": session_id,
+                "backend_url": args.backend_url,
+                "config_path": str(config_path),
+            },
+        )
+        context_component = store.set_component_status(
+            "openclaw_context_engine",
+            status="healthy",
+            details={
+                "workspace_id": args.workspace_id,
+                "device_id": args.device_id,
+                "agent_id": args.agent_id,
+                "config_path": str(config_path),
+            },
+        )
+
+    event = store.record_event(
+        event_type="openclaw_setup_completed",
+        actor=PRIMARY_CLI_NAME,
+        status="ok",
+        details={
+            "workspace_id": args.workspace_id,
+            "device_id": args.device_id,
+            "agent_id": args.agent_id,
+            "session_id": session_id,
+            "backend_url": args.backend_url,
+            "config_path": str(config_path),
+            "context_engine_enabled": args.enable_context_engine,
+        },
+    )
+
+    payload = {
+        "config_path": str(config_path),
+        "session_id": session_id,
+        "backend_url": args.backend_url,
+        "config": openclaw_config,
+        "memory_integration": memory_integration,
+        "memory_component": memory_component,
+        "context_integration": context_integration,
+        "context_component": context_component,
+        "event": event,
+    }
+    if _emit_success(
+        args,
+        data=payload,
+        metrics={
+            "context_engine_enabled": args.enable_context_engine,
+            "config_written": True,
+        },
+    ):
+        return
+
+    print(f"🪄 OpenClaw setup written: {config_path}")
+    print(f"🔗 Backend URL: {args.backend_url}")
+    print(f"🧠 Memory slot: agentic-memory")
+    print(f"🧩 Context engine slot: {context_engine_slot}")
+    print(f"🪪 Session bootstrap: {session_id}")
+
+
 def cmd_annotate_interaction(
     args: argparse.Namespace,
     *,
@@ -2144,6 +2284,52 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
         help="Emit machine-readable JSON output",
     )
 
+    openclaw_setup_parser = subparsers.add_parser(
+        "openclaw-setup",
+        help="Generate OpenClaw config and register local product state",
+    )
+    openclaw_setup_parser.add_argument("--workspace-id", required=True, help="Shared OpenClaw workspace identifier")
+    openclaw_setup_parser.add_argument("--device-id", required=True, help="Current device identifier")
+    openclaw_setup_parser.add_argument("--agent-id", required=True, help="OpenClaw agent identifier")
+    openclaw_setup_parser.add_argument(
+        "--session-id",
+        type=str,
+        help="Optional setup session identifier. Defaults to a deterministic bootstrap id.",
+    )
+    openclaw_setup_parser.add_argument(
+        "--project-id",
+        type=str,
+        help="Optional project identifier used to bias shared-memory retrieval",
+    )
+    openclaw_setup_parser.add_argument(
+        "--backend-url",
+        type=str,
+        default="http://127.0.0.1:8765",
+        help="Agentic Memory backend URL for the OpenClaw plugin package",
+    )
+    openclaw_setup_parser.add_argument(
+        "--api-key-env",
+        type=str,
+        default="AGENTIC_MEMORY_API_KEY",
+        help="Environment variable name OpenClaw should read for backend auth",
+    )
+    openclaw_setup_parser.add_argument(
+        "--config-path",
+        type=str,
+        default=str(Path.home() / ".openclaw" / "agentic-memory.json"),
+        help="Where to write the generated OpenClaw config artifact",
+    )
+    openclaw_setup_parser.add_argument(
+        "--enable-context-engine",
+        action="store_true",
+        help="Configure Agentic Memory as the OpenClaw context engine instead of leaving legacy enabled",
+    )
+    openclaw_setup_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output",
+    )
+
     # Web Research commands (Phase 2 stubs)
     subparsers.add_parser("web-init", help="Initialize web research module")
     web_ingest_parser = subparsers.add_parser("web-ingest", help="Ingest a web URL")
@@ -2327,6 +2513,8 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
         cmd_product_event_record(args)
     elif args.command == "product-onboarding-step":
         cmd_product_onboarding_step(args)
+    elif args.command == "openclaw-setup":
+        cmd_openclaw_setup(args)
     elif args.command == "web-init":
         cmd_web_init(args)
     elif args.command == "web-ingest":

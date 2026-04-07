@@ -205,6 +205,27 @@ function buildOpenClawConfig() {
   };
 }
 
+/**
+ * Build the identity payload the backend expects for OpenClaw routes.
+ *
+ * The shell reuses the same workspace/device/agent shape that the real
+ * OpenClaw plugin package will send later, which lets this UI act as a
+ * realistic setup and verification surface instead of a separate mock path.
+ */
+function buildOpenClawSessionPayload(contextEngine = "legacy") {
+  const config = buildOpenClawConfig();
+  return {
+    workspace_id: config.workspace_id,
+    device_id: config.device_id,
+    agent_id: config.agent_id,
+    session_id: `${config.workspace_id || "workspace"}:${config.device_id || "device"}:${config.agent_id || "agent"}:desktop-shell`,
+    context_engine: contextEngine,
+    metadata: {
+      source: "desktop_shell",
+    },
+  };
+}
+
 async function setOpenClawIntegration(surface, status) {
   const config = buildOpenClawConfig();
   await postJson("/api/product/integrations", {
@@ -221,13 +242,8 @@ function wireOpenClawForm() {
     event.preventDefault();
     try {
       saveOpenClawDraft();
+      await postJson("/api/openclaw/session/register", buildOpenClawSessionPayload("legacy"));
       await setOpenClawIntegration("openclaw_memory", "configured");
-      await postJson("/api/product/events", {
-        event_type: "openclaw_memory_enabled",
-        actor: "desktop_shell",
-        status: "ok",
-        details: buildOpenClawConfig(),
-      });
       await loadStatus();
       setFeedback("OpenClaw memory enabled.");
     } catch (error) {
@@ -238,13 +254,8 @@ function wireOpenClawForm() {
   openClawContextButton.addEventListener("click", async () => {
     try {
       saveOpenClawDraft();
+      await postJson("/api/openclaw/session/register", buildOpenClawSessionPayload("agentic-memory"));
       await setOpenClawIntegration("openclaw_context_engine", "configured");
-      await postJson("/api/product/events", {
-        event_type: "openclaw_context_enabled",
-        actor: "desktop_shell",
-        status: "ok",
-        details: buildOpenClawConfig(),
-      });
       await loadStatus();
       setFeedback("OpenClaw context engine enabled.");
     } catch (error) {
@@ -255,14 +266,30 @@ function wireOpenClawForm() {
   openClawVerifyButton.addEventListener("click", async () => {
     try {
       saveOpenClawDraft();
+      const config = buildOpenClawConfig();
+      const result = await postJson("/api/openclaw/context/resolve", {
+        workspace_id: config.workspace_id,
+        device_id: config.device_id,
+        agent_id: config.agent_id,
+        session_id: `${config.workspace_id || "workspace"}:${config.device_id || "device"}:${config.agent_id || "agent"}:desktop-shell-verify`,
+        query: "Verify shared OpenClaw memory connectivity from the desktop shell.",
+        limit: 3,
+        metadata: {
+          source: "desktop_shell",
+          probe: true,
+        },
+      });
       await postJson("/api/product/events", {
         event_type: "openclaw_cross_device_test",
         actor: "desktop_shell",
         status: "ok",
-        details: buildOpenClawConfig(),
+        details: {
+          ...config,
+          block_count: result.context_blocks?.length || 0,
+        },
       });
       await loadStatus();
-      setFeedback("Recorded OpenClaw cross-device test.");
+      setFeedback("OpenClaw cross-device test completed.");
     } catch (error) {
       showError(error);
     }

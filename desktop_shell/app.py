@@ -154,6 +154,35 @@ def create_app() -> FastAPI:
     ) -> dict:
         return _proxy_json_response(client, "POST", "/product/events", json_body=payload)
 
+    @app.post("/api/openclaw/session/register")
+    def register_openclaw_session(
+        payload: dict = Body(...),
+        client: httpx.Client = Depends(get_backend_client),
+    ) -> dict:
+        """Proxy OpenClaw session registration into the backend.
+
+        The desktop shell uses this route for the "magic" setup flow so the UI
+        can prove the backend understands the same workspace, device, and agent
+        identity that OpenClaw will later use across machines.
+        """
+        return _proxy_json_response(client, "POST", "/openclaw/session/register", json_body=payload)
+
+    @app.post("/api/openclaw/memory/search")
+    def search_openclaw_memory(
+        payload: dict = Body(...),
+        client: httpx.Client = Depends(get_backend_client),
+    ) -> dict:
+        """Proxy OpenClaw shared-memory search for shell diagnostics."""
+        return _proxy_json_response(client, "POST", "/openclaw/memory/search", json_body=payload)
+
+    @app.post("/api/openclaw/context/resolve")
+    def resolve_openclaw_context(
+        payload: dict = Body(...),
+        client: httpx.Client = Depends(get_backend_client),
+    ) -> dict:
+        """Proxy OpenClaw context resolution for connectivity verification."""
+        return _proxy_json_response(client, "POST", "/openclaw/context/resolve", json_body=payload)
+
     return app
 
 

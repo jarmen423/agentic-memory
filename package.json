@@ -3,12 +3,13 @@
   "private": true,
   "workspaces": [
     "packages/am-temporal-kg",
-    "packages/am-sync-neo4j"
+    "packages/am-sync-neo4j",
+    "packages/am-openclaw"
   ],
   "scripts": {
-    "build": "npm run build --workspace am-temporal-kg && npm run build --workspace am-sync-neo4j",
-    "typecheck": "npm run typecheck --workspace am-temporal-kg && npm run typecheck --workspace am-sync-neo4j",
-    "lint": "npm run lint --workspace am-temporal-kg && npm run lint --workspace am-sync-neo4j",
+    "build": "npm run build --workspace am-temporal-kg && npm run build --workspace am-sync-neo4j && npm run build --workspace am-openclaw",
+    "typecheck": "npm run typecheck --workspace am-temporal-kg && npm run typecheck --workspace am-sync-neo4j && npm run typecheck --workspace am-openclaw",
+    "lint": "npm run lint --workspace am-temporal-kg && npm run lint --workspace am-sync-neo4j && npm run lint --workspace am-openclaw",
     "bench:build-temporal": "tsx bench/build_temporal_kg.ts",
     "bench:run-queries": "tsx bench/run_queries.ts",
     "bench:tokens": "tsx bench/measure_tokens.ts",

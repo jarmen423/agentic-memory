@@ -726,6 +726,39 @@ def test_product_integration_set_json_updates_record(monkeypatch, capsys, tmp_pa
     assert payload["metrics"]["integration_count"] == 1
 
 
+def test_openclaw_setup_writes_config_and_updates_product_state(monkeypatch, capsys, tmp_path):
+    """openclaw-setup creates a config artifact and registers product state."""
+    state_path = tmp_path / "product-state.json"
+    config_path = tmp_path / ".openclaw" / "agentic-memory.json"
+    monkeypatch.setenv("CODEMEMORY_PRODUCT_STATE", str(state_path))
+
+    cli.cmd_openclaw_setup(
+        argparse.Namespace(
+            json=True,
+            workspace_id="workspace-acme",
+            device_id="laptop-01",
+            agent_id="openclaw-agent-a",
+            session_id=None,
+            project_id="project-neo",
+            backend_url="http://127.0.0.1:8765",
+            api_key_env="AGENTIC_MEMORY_API_KEY",
+            config_path=str(config_path),
+            enable_context_engine=True,
+        )
+    )
+
+    payload = _parse_json_stdout(capsys)
+    assert payload["ok"] is True
+    assert payload["data"]["config_path"] == str(config_path)
+    assert payload["data"]["config"]["plugins"]["slots"]["memory"] == "agentic-memory"
+    assert payload["data"]["config"]["plugins"]["slots"]["contextEngine"] == "agentic-memory"
+    assert payload["data"]["memory_integration"]["surface"] == "openclaw_memory"
+    assert payload["data"]["context_integration"]["surface"] == "openclaw_context_engine"
+    assert payload["data"]["event"]["event_type"] == "openclaw_setup_completed"
+    assert payload["metrics"]["config_written"] is True
+    assert json.loads(config_path.read_text(encoding="utf-8"))["agenticMemory"]["project_id"] == "project-neo"
+
+
 def test_help_uses_agentic_memory_as_primary_command(capsys):
     """CLI help text advertises the broader product command name first."""
     import unittest.mock as _mock

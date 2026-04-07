@@ -23,6 +23,7 @@
   - cross-device OpenClaw stress harness and tests
   - desktop shell OpenClaw setup/verify flow against real `/openclaw/*` routes
   - Python setup command: `agentic-memory openclaw-setup`
+  - OpenClaw-native setup command: `openclaw agentic-memory setup`
   - native `packages/am-openclaw/` runtime package with real memory/context wiring
 - `In progress`
   - live host validation inside a real OpenClaw install
@@ -38,6 +39,7 @@
   - added shell proxy routes, `openclaw-setup`, and the initial `am-openclaw` workspace package
 - `pending in worktree`
   - real `am-openclaw` runtime implementation, native plugin manifest, and OpenClaw-native setup config output
+  - OpenClaw-native plugin CLI setup command and config patch path
 
 ### Where Progress Has Been Tracked
 
@@ -121,6 +123,8 @@
 
 - Add a dedicated OpenClaw setup command on the Python side:
   - `agentic-memory openclaw-setup`
+- Add a dedicated OpenClaw-native setup command:
+  - `openclaw agentic-memory setup`
 - That command should:
   - verify `am-server` reachability
   - generate or patch OpenClaw plugin config
@@ -142,11 +146,13 @@
     - shell OpenClaw setup card
     - shell verification flow hitting `/openclaw/context/resolve`
     - `agentic-memory openclaw-setup`
+    - `openclaw agentic-memory setup` now writes the live OpenClaw plugin config in-place
     - `openclaw_setup_completed` event recording
   - `Partial:`
-    - setup currently writes a deterministic config artifact instead of patching a live OpenClaw install
+    - the Python setup command still writes a deterministic config artifact for non-OpenClaw flows
+    - live OpenClaw host validation is still incomplete because the host CLI has been hanging in this environment
   - `Next:`
-    - package-driven install that consumes the generated config and executes the real plugin flow
+    - prove the native setup command end-to-end inside a responsive real OpenClaw host session
 
 ## Test Plan
 

@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agentic Memory Desktop</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script defer src="/static/app.js"></script>
+  </head>
+  <body>
+    <div class="backdrop"></div>
+    <main class="shell">
+      <aside class="sidebar">
+        <div>
+          <p class="eyebrow">Local control plane</p>
+          <h1>Agentic Memory Desktop</h1>
+          <p class="lede">
+            One place to see runtime health, repo onboarding, and integration readiness.
+          </p>
+        </div>
+
+        <section class="panel">
+          <div class="panel-title">Dev path</div>
+          <div class="stack">
+            <button class="command-chip" data-copy="agentic-memory serve">agentic-memory serve</button>
+            <button class="command-chip" data-copy="python -m desktop_shell">
+              python -m desktop_shell
+            </button>
+            <button class="command-chip" data-copy="agentic-memory product-status --json">
+              agentic-memory product-status --json
+            </button>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title">Backend</div>
+          <dl class="kv">
+            <div>
+              <dt>URL</dt>
+              <dd id="backend-url">Loading...</dd>
+            </div>
+            <div>
+              <dt>Auth</dt>
+              <dd id="backend-auth">Loading...</dd>
+            </div>
+          </dl>
+        </section>
+      </aside>
+
+      <section class="content">
+        <header class="hero">
+          <div>
+            <p class="eyebrow">Status view</p>
+            <h2>Live product summary</h2>
+          </div>
+          <div class="hero-actions">
+            <button id="mark-shell-healthy-button" class="secondary-button">Mark shell healthy</button>
+            <button id="refresh-button" class="primary-button">Refresh</button>
+          </div>
+        </header>
+
+        <section class="panel action-panel">
+          <div class="panel-title">Repo onboarding</div>
+          <form id="repo-form" class="action-form">
+            <label>
+              <span>Repository path</span>
+              <input id="repo-path" name="repo_path" type="text" placeholder="D:\\code\\your-repo" required />
+            </label>
+            <label>
+              <span>Label</span>
+              <input id="repo-label" name="label" type="text" placeholder="Main workspace" />
+            </label>
+            <div class="form-actions">
+              <button type="submit" class="primary-button">Track repo</button>
+              <button type="button" id="mark-repo-step-button" class="secondary-button">Mark repo step complete</button>
+            </div>
+          </form>
+          <p id="action-feedback" class="feedback muted">No pending actions.</p>
+        </section>
+
+        <section class="grid two-up">
+          <article class="panel status-card">
+            <div class="panel-title">Runtime</div>
+            <div id="runtime-state" class="large-value">Loading...</div>
+            <p id="runtime-note" class="muted">Fetching local product status.</p>
+          </article>
+          <article class="panel status-card">
+            <div class="panel-title">Repos</div>
+            <div id="repo-count" class="large-value">Loading...</div>
+            <p id="repo-note" class="muted">Tracked workspaces will appear here.</p>
+          </article>
+        </section>
+
+        <section class="grid three-up">
+          <article class="panel integration-card" data-kind="browser-extension">
+            <div class="card-head">
+              <span class="badge">Placeholder</span>
+              <span class="status-pill" data-status="pending" data-surface="browser_extension" data-target="chatgpt">Pending</span>
+            </div>
+            <h3>Browser extension</h3>
+            <p>Capture chat context from supported AI tabs and send it to the local control plane.</p>
+            <pre class="snippet">agentic-memory product-integration-set --surface browser_extension --target chatgpt --status configured</pre>
+            <div class="card-actions">
+              <button class="secondary-button integration-button" data-surface="browser_extension" data-target="chatgpt" data-status="configured">Set configured</button>
+              <button class="secondary-button onboarding-button" data-step="integration_connected">Mark onboarding</button>
+            </div>
+          </article>
+
+          <article class="panel integration-card" data-kind="acp-proxy">
+            <div class="card-head">
+              <span class="badge">Placeholder</span>
+              <span class="status-pill" data-status="pending" data-surface="acp_proxy" data-target="cli">Pending</span>
+            </div>
+            <h3>ACP proxy</h3>
+            <p>Wrap command-line agent traffic so future runs can be inspected and replayed.</p>
+            <pre class="snippet">agentic-memory product-integration-set --surface acp_proxy --target cli --status configured</pre>
+            <div class="card-actions">
+              <button class="secondary-button integration-button" data-surface="acp_proxy" data-target="cli" data-status="configured">Set configured</button>
+              <button class="secondary-button component-button" data-component="proxy" data-status="healthy">Mark healthy</button>
+            </div>
+          </article>
+
+          <article class="panel integration-card" data-kind="mcp-client">
+            <div class="card-head">
+              <span class="badge">Placeholder</span>
+              <span class="status-pill" data-status="pending" data-surface="mcp_client" data-target="claude_desktop">Pending</span>
+            </div>
+            <h3>MCP clients</h3>
+            <p>Generate a standard local connection profile for desktop clients and future app surfaces.</p>
+            <pre class="snippet">agentic-memory product-integration-set --surface mcp_client --target claude_desktop --status configured</pre>
+            <div class="card-actions">
+              <button class="secondary-button integration-button" data-surface="mcp_client" data-target="claude_desktop" data-status="configured">Set configured</button>
+              <button class="secondary-button component-button" data-component="mcp" data-status="healthy">Mark healthy</button>
+            </div>
+          </article>
+        </section>
+
+        <section class="panel action-panel">
+          <div class="panel-title">Onboarding steps</div>
+          <div class="button-row">
+            <button class="secondary-button onboarding-button" data-step="runtime_bootstrap">Runtime bootstrap</button>
+            <button class="secondary-button onboarding-button" data-step="first_index_complete">First index complete</button>
+            <button class="secondary-button onboarding-button" data-step="first_useful_result">First useful result</button>
+          </div>
+        </section>
+
+        <section class="panel log-panel">
+          <div class="panel-title">Product status payload</div>
+          <pre id="status-json" class="status-json">Loading...</pre>
+        </section>
+      </section>
+    </main>
+  </body>
+</html>

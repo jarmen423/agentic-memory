@@ -1,9 +1,29 @@
 /**
- * OpenClaw package surface for Agentic Memory.
+ * Native OpenClaw plugin runtime for Agentic Memory.
  *
- * This file intentionally stays small. It gives the future plugin package a
- * typed home for shared configuration objects before the runtime wiring lands.
+ * This module turns the earlier scaffold into a real OpenClaw-native plugin
+ * surface. The plugin owns two responsibilities:
+ *
+ * 1. Register a memory runtime so OpenClaw can query shared Agentic Memory
+ *    state across devices.
+ * 2. Register an optional context engine named `agentic-memory` that asks the
+ *    backend to assemble context blocks from the same shared memory graph.
+ *
+ * The package intentionally stays backend-driven. OpenClaw remains the
+ * orchestration/runtime host, while Agentic Memory remains the source of truth
+ * for shared memory retrieval and context resolution.
  */
+
+import { definePluginEntry } from "openclaw/plugin-sdk/core";
+import type {
+  AgentMessage,
+  AssembleResult,
+  BootstrapResult,
+  CompactResult,
+  ContextEngine,
+  IngestBatchResult,
+  IngestResult,
+} from "openclaw/plugin-sdk";
 
 /**
  * Identity values that tie one OpenClaw workspace to one device and one agent.
@@ -15,21 +35,94 @@ export interface OpenClawIdentity {
 }
 
 /**
- * Options used by the next-wave bootstrap command when it generates OpenClaw
- * configuration for a user.
+ * Plugin config fields stored under `plugins.entries.agentic-memory.config`.
+ *
+ * This mirrors the OpenClaw-native config shape rather than the earlier custom
+ * setup artifact so the CLI-generated config can be used directly by OpenClaw.
  */
-export interface OpenClawBootstrapOptions extends OpenClawIdentity {
-  backendUrl: string;
-  backendApiKey?: string | null;
-  enableContextEngine?: boolean;
+export interface AgenticMemoryPluginConfig extends Partial<OpenClawIdentity> {
+  backendUrl?: string;
+  apiKey?: string | null;
+  apiKeyEnv?: string | null;
+  projectId?: string | null;
+  contextEngineId?: string | null;
 }
 
+type BackendResultHit = {
+  module?: string;
+  domain?: string;
+  title?: string;
+  name?: string;
+  path?: string;
+  score?: number;
+  snippet?: string;
+  content?: string;
+  text?: string;
+  start_line?: number;
+  end_line?: number;
+  source_kind?: string;
+};
+
+type BackendContextBlock = {
+  title?: string;
+  source?: string;
+  score?: number;
+  content?: string;
+  provenance?: Record<string, unknown>;
+};
+
+type PluginLogger = {
+  debug?: (...args: unknown[]) => void;
+  info?: (...args: unknown[]) => void;
+  warn?: (...args: unknown[]) => void;
+  error?: (...args: unknown[]) => void;
+};
+
+type SearchResultRecord = {
+  path: string;
+  text: string;
+};
+
+type SearchManagerStatus = {
+  backend: "builtin" | "qmd";
+  provider: string;
+  custom?: Record<string, unknown>;
+};
+
+const DEFAULT_BACKEND_URL = "http://127.0.0.1:8765";
+const DEFAULT_API_KEY_ENV = "AGENTIC_MEMORY_API_KEY";
+const DEFAULT_CONTEXT_ENGINE_ID = "agentic-memory";
+const PLUGIN_ID = "agentic-memory";
+
+const CONTEXT_ENGINE_INFO = {
+  id: DEFAULT_CONTEXT_ENGINE_ID,
+  name: "Agentic Memory",
+  version: "0.1.0",
+  ownsCompaction: false,
+} as const;
+
+const PLUGIN_CONFIG_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    backendUrl: { type: "string" },
+    apiKey: { type: "string" },
+    apiKeyEnv: { type: "string" },
+    workspaceId: { type: "string" },
+    deviceId: { type: "string" },
+    agentId: { type: "string" },
+    projectId: { type: "string" },
+    contextEngineId: { type: "string" },
+  },
+} as const;
+
 /**
- * Human-readable package metadata that can be displayed by installers and
- * setup flows.
+ * Human-readable package metadata used by setup flows and documentation.
  */
 export const OPENCLAW_PACKAGE_INFO = {
   packageName: "am-openclaw",
+  pluginId: PLUGIN_ID,
+  contextEngineId: DEFAULT_CONTEXT_ENGINE_ID,
   productName: "Agentic Memory OpenClaw Integration",
   defaultMode: "memory",
   supportedModes: ["memory", "context-engine"] as const,
@@ -52,18 +145,575 @@ export function normalizeOpenClawIdentity(identity: OpenClawIdentity): OpenClawI
 }
 
 /**
- * Build the JSON payload the future setup command can write into a local config
- * file or send to a backend bootstrap endpoint.
+ * Build the OpenClaw-native config payload written by `agentic-memory openclaw-setup`.
  */
-export function buildOpenClawBootstrapConfig(options: OpenClawBootstrapOptions) {
+export function buildOpenClawBootstrapConfig(
+  options: OpenClawIdentity & {
+    backendUrl: string;
+    backendApiKey?: string | null;
+    apiKeyEnv?: string | null;
+    projectId?: string | null;
+    enableContextEngine?: boolean;
+  },
+) {
   const identity = normalizeOpenClawIdentity(options);
 
   return {
-    ...identity,
-    backendUrl: options.backendUrl.trim(),
-    backendApiKey: options.backendApiKey?.trim() || null,
-    enableContextEngine: options.enableContextEngine ?? false,
-    packageName: OPENCLAW_PACKAGE_INFO.packageName,
-    mode: options.enableContextEngine ? "context-engine" : "memory",
+    plugins: {
+      slots: {
+        memory: PLUGIN_ID,
+        contextEngine: options.enableContextEngine ? DEFAULT_CONTEXT_ENGINE_ID : "legacy",
+      },
+      entries: {
+        [PLUGIN_ID]: {
+          enabled: true,
+          config: {
+            backendUrl: options.backendUrl.trim(),
+            apiKey: options.backendApiKey?.trim() || undefined,
+            apiKeyEnv: options.apiKeyEnv?.trim() || DEFAULT_API_KEY_ENV,
+            workspaceId: identity.workspaceId,
+            deviceId: identity.deviceId,
+            agentId: identity.agentId,
+            projectId: options.projectId?.trim() || undefined,
+            contextEngineId: DEFAULT_CONTEXT_ENGINE_ID,
+          },
+        },
+      },
+    },
   } as const;
 }
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function safeJsonStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function normalizeMessageText(content: unknown): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((item) => {
+        if (typeof item === "string") {
+          return item;
+        }
+        if (item && typeof item === "object" && "text" in item) {
+          return String((item as Record<string, unknown>).text ?? "");
+        }
+        return safeJsonStringify(item);
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (content && typeof content === "object" && "text" in (content as Record<string, unknown>)) {
+    return String((content as Record<string, unknown>).text ?? "");
+  }
+  return safeJsonStringify(content);
+}
+
+function getRole(message: AgentMessage): string {
+  const rawRole = typeof message.role === "string" ? message.role.toLowerCase() : "user";
+  if (rawRole === "assistant" || rawRole === "system" || rawRole === "tool" || rawRole === "user") {
+    return rawRole;
+  }
+  return "user";
+}
+
+function estimateTokenCount(text: string): number {
+  return Math.max(1, Math.ceil(text.length / 4));
+}
+
+function buildSessionId(sessionId: string, suffix: string): string {
+  return `${sessionId}:${suffix}`;
+}
+
+/**
+ * Resolve plugin configuration from OpenClaw config plus environment fallback.
+ *
+ * The plugin prefers explicit plugin config because that is what the new
+ * `openclaw-setup` command writes. Environment variables remain a fallback for
+ * manual operators and local development.
+ */
+export function resolveAgenticMemoryPluginConfig(
+  pluginConfig: Record<string, unknown>,
+  agentIdFromHost?: string,
+): Required<OpenClawIdentity> & {
+  backendUrl: string;
+  apiKey: string | null;
+  apiKeyEnv: string;
+  projectId: string | null;
+  contextEngineId: string;
+} {
+  const resolved = {
+    backendUrl:
+      asString(pluginConfig.backendUrl) ??
+      process.env.AGENTIC_MEMORY_BACKEND_URL ??
+      DEFAULT_BACKEND_URL,
+    apiKey:
+      asString(pluginConfig.apiKey) ??
+      (asString(pluginConfig.apiKeyEnv) ? process.env[asString(pluginConfig.apiKeyEnv)!] ?? null : null) ??
+      process.env[DEFAULT_API_KEY_ENV] ??
+      null,
+    apiKeyEnv: asString(pluginConfig.apiKeyEnv) ?? DEFAULT_API_KEY_ENV,
+    workspaceId:
+      asString(pluginConfig.workspaceId) ??
+      process.env.OPENCLAW_WORKSPACE_ID ??
+      "default-workspace",
+    deviceId:
+      asString(pluginConfig.deviceId) ??
+      process.env.OPENCLAW_DEVICE_ID ??
+      "default-device",
+    agentId:
+      asString(pluginConfig.agentId) ??
+      agentIdFromHost ??
+      process.env.OPENCLAW_AGENT_ID ??
+      "default-agent",
+    projectId: asString(pluginConfig.projectId) ?? process.env.OPENCLAW_PROJECT_ID ?? null,
+    contextEngineId: asString(pluginConfig.contextEngineId) ?? DEFAULT_CONTEXT_ENGINE_ID,
+  };
+
+  return normalizeOpenClawIdentity({
+    workspaceId: resolved.workspaceId,
+    deviceId: resolved.deviceId,
+    agentId: resolved.agentId,
+  }) && resolved;
+}
+
+class AgenticMemoryBackendClient {
+  private readonly logger: PluginLogger | undefined;
+
+  constructor(
+    private readonly config: ReturnType<typeof resolveAgenticMemoryPluginConfig>,
+    logger?: PluginLogger,
+  ) {
+    this.logger = logger;
+  }
+
+  private buildHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (this.config.apiKey) {
+      headers.Authorization = `Bearer ${this.config.apiKey}`;
+    }
+    return headers;
+  }
+
+  async post<T>(path: string, payload: Record<string, unknown>): Promise<T> {
+    const url = new URL(path, this.config.backendUrl).toString();
+    const response = await fetch(url, {
+      method: "POST",
+      headers: this.buildHeaders(),
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const detail = await response.text();
+      this.logger?.warn?.("Agentic Memory backend request failed", {
+        path,
+        status: response.status,
+        detail,
+      });
+      throw new Error(`Agentic Memory backend request failed (${response.status}): ${detail}`);
+    }
+
+    return (await response.json()) as T;
+  }
+}
+
+class AgenticMemorySearchManager {
+  private readonly cachedFiles = new Map<string, SearchResultRecord>();
+
+  constructor(
+    private readonly client: AgenticMemoryBackendClient,
+    private readonly config: ReturnType<typeof resolveAgenticMemoryPluginConfig>,
+  ) {}
+
+  private identityPayload(sessionKey?: string): Record<string, unknown> {
+    return {
+      workspace_id: this.config.workspaceId,
+      device_id: this.config.deviceId,
+      agent_id: this.config.agentId,
+      session_id: sessionKey || buildSessionId(this.config.agentId, "memory"),
+      project_id: this.config.projectId,
+      metadata: {
+        plugin: PLUGIN_ID,
+      },
+    };
+  }
+
+  private cacheHit(hit: BackendResultHit): void {
+    const path = hit.path?.trim();
+    const text = hit.content ?? hit.snippet ?? hit.text;
+    if (!path || !text) {
+      return;
+    }
+    this.cachedFiles.set(path, { path, text });
+  }
+
+  async search(
+    query: string,
+    opts?: { maxResults?: number; minScore?: number; sessionKey?: string },
+  ): Promise<
+    Array<{
+      path: string;
+      startLine: number;
+      endLine: number;
+      score: number;
+      snippet: string;
+      source: "memory" | "sessions";
+      citation?: string;
+    }>
+  > {
+    const response = await this.client.post<{
+      results?: BackendResultHit[];
+    }>("/openclaw/memory/search", {
+      ...this.identityPayload(opts?.sessionKey),
+      query,
+      limit: opts?.maxResults ?? 10,
+    });
+
+    const hits = Array.isArray(response.results) ? response.results : [];
+    return hits
+      .filter((hit) => (hit.score ?? 0) >= (opts?.minScore ?? 0))
+      .map((hit) => {
+        this.cacheHit(hit);
+        const citation = hit.path ? `${hit.path}#L${hit.start_line ?? 1}` : undefined;
+        return {
+          path: hit.path ?? `${hit.module ?? "memory"}:${hit.title ?? "result"}`,
+          startLine: hit.start_line ?? 1,
+          endLine: hit.end_line ?? 1,
+          score: hit.score ?? 0,
+          snippet: hit.snippet ?? hit.content ?? hit.text ?? "",
+          source: hit.module === "conversation" ? "sessions" : "memory",
+          ...(citation ? { citation } : {}),
+        };
+      });
+  }
+
+  async readFile(params: {
+    relPath: string;
+    from?: number;
+    lines?: number;
+  }): Promise<{ text: string; path: string }> {
+    const cached = this.cachedFiles.get(params.relPath);
+    if (cached) {
+      return {
+        path: cached.path,
+        text: cached.text,
+      };
+    }
+
+    // The current backend does not expose a dedicated read endpoint yet. Until
+    // that lands, we return a small explanatory payload instead of pretending we
+    // can fetch canonical file content.
+    return {
+      path: params.relPath,
+      text: `No cached Agentic Memory snippet is available for ${params.relPath}. Re-run memory search first.`,
+    };
+  }
+
+  status(): SearchManagerStatus {
+    return {
+      backend: "builtin",
+      provider: PLUGIN_ID,
+      custom: {
+        backendUrl: this.config.backendUrl,
+        workspaceId: this.config.workspaceId,
+        deviceId: this.config.deviceId,
+        agentId: this.config.agentId,
+        projectId: this.config.projectId,
+        cachedFiles: this.cachedFiles.size,
+      },
+    };
+  }
+
+  async sync(): Promise<void> {
+    // The backend already owns ingestion and indexing. There is nothing local
+    // for the OpenClaw plugin to synchronize yet.
+  }
+
+  async probeEmbeddingAvailability(): Promise<{ ok: boolean; error?: string }> {
+    return { ok: true };
+  }
+
+  async probeVectorAvailability(): Promise<boolean> {
+    return true;
+  }
+}
+
+class AgenticMemoryContextEngine implements ContextEngine {
+  readonly info = CONTEXT_ENGINE_INFO;
+
+  private readonly turnIndexBySession = new Map<string, number>();
+
+  constructor(
+    private readonly client: AgenticMemoryBackendClient,
+    private readonly config: ReturnType<typeof resolveAgenticMemoryPluginConfig>,
+  ) {}
+
+  private identityPayload(sessionId: string): Record<string, unknown> {
+    return {
+      workspace_id: this.config.workspaceId,
+      device_id: this.config.deviceId,
+      agent_id: this.config.agentId,
+      session_id: sessionId,
+      project_id: this.config.projectId,
+      metadata: {
+        plugin: PLUGIN_ID,
+      },
+    };
+  }
+
+  private nextTurnIndex(sessionId: string): number {
+    const next = this.turnIndexBySession.get(sessionId) ?? 0;
+    this.turnIndexBySession.set(sessionId, next + 1);
+    return next;
+  }
+
+  private async ingestOne(sessionId: string, message: AgentMessage): Promise<void> {
+    const content = normalizeMessageText(message.content);
+    if (!content.trim()) {
+      return;
+    }
+
+    await this.client.post("/ingest/conversation", {
+      role: getRole(message),
+      content,
+      project_id: this.config.projectId ?? "openclaw",
+      session_id: sessionId,
+      turn_index: this.nextTurnIndex(sessionId),
+      workspace_id: this.config.workspaceId,
+      device_id: this.config.deviceId,
+      agent_id: this.config.agentId,
+      source_key: "chat_openclaw",
+      ingestion_mode: "active",
+    });
+  }
+
+  async bootstrap(params: {
+    sessionId: string;
+    sessionKey?: string;
+    sessionFile: string;
+  }): Promise<BootstrapResult> {
+    await this.client.post("/openclaw/session/register", {
+      ...this.identityPayload(params.sessionId),
+      context_engine: this.config.contextEngineId,
+      metadata: {
+        plugin: PLUGIN_ID,
+        session_file: params.sessionFile,
+      },
+    });
+    return { bootstrapped: true, reason: "registered-with-agentic-memory" };
+  }
+
+  async ingest(params: {
+    sessionId: string;
+    sessionKey?: string;
+    message: AgentMessage;
+    isHeartbeat?: boolean;
+  }): Promise<IngestResult> {
+    await this.ingestOne(params.sessionId, params.message);
+    return { ingested: true };
+  }
+
+  async ingestBatch(params: {
+    sessionId: string;
+    sessionKey?: string;
+    messages: AgentMessage[];
+    isHeartbeat?: boolean;
+  }): Promise<IngestBatchResult> {
+    let ingestedCount = 0;
+    for (const message of params.messages) {
+      const text = normalizeMessageText(message.content);
+      if (!text.trim()) {
+        continue;
+      }
+      await this.ingestOne(params.sessionId, message);
+      ingestedCount += 1;
+    }
+    return { ingestedCount };
+  }
+
+  async afterTurn(params: {
+    sessionId: string;
+    sessionKey?: string;
+    sessionFile: string;
+    messages: AgentMessage[];
+    prePromptMessageCount: number;
+    autoCompactionSummary?: string;
+    isHeartbeat?: boolean;
+    tokenBudget?: number;
+    runtimeContext?: Record<string, unknown>;
+  }): Promise<void> {
+    const ingestParams: {
+      sessionId: string;
+      messages: AgentMessage[];
+      isHeartbeat?: boolean;
+    } = {
+      sessionId: params.sessionId,
+      messages: params.messages.slice(params.prePromptMessageCount),
+    };
+    if (params.isHeartbeat !== undefined) {
+      ingestParams.isHeartbeat = params.isHeartbeat;
+    }
+    await this.ingestBatch(ingestParams);
+  }
+
+  async assemble(params: {
+    sessionId: string;
+    sessionKey?: string;
+    messages: AgentMessage[];
+    tokenBudget?: number;
+    model?: string;
+    prompt?: string;
+  }): Promise<AssembleResult> {
+    const query =
+      params.prompt ??
+      normalizeMessageText(params.messages.at(-1)?.content) ??
+      "Recall the most relevant shared workspace context.";
+    const response = await this.client.post<{
+      context_blocks?: BackendContextBlock[];
+      system_prompt_addition?: string;
+    }>("/openclaw/context/resolve", {
+      ...this.identityPayload(params.sessionId),
+      context_engine: this.config.contextEngineId,
+      query,
+      limit: 6,
+      context_budget_tokens: params.tokenBudget,
+      include_system_prompt: true,
+    });
+
+    const blocks = Array.isArray(response.context_blocks) ? response.context_blocks : [];
+    const contextText = blocks
+      .map((block, index) => {
+        const title = block.title ?? `Memory block ${index + 1}`;
+        const source = block.source ?? "memory";
+        const body = block.content ?? "";
+        return `[#${index + 1}] ${title} (${source})\n${body}`;
+      })
+      .join("\n\n");
+    const messages = contextText
+      ? [
+          {
+            role: "system",
+            content: `Shared Agentic Memory context:\n\n${contextText}`,
+          },
+          ...params.messages,
+        ]
+      : params.messages;
+
+    return {
+      messages,
+      estimatedTokens: estimateTokenCount(contextText),
+      ...(response.system_prompt_addition
+        ? { systemPromptAddition: response.system_prompt_addition }
+        : {}),
+    };
+  }
+
+  async compact(params: {
+    sessionId: string;
+    sessionKey?: string;
+    sessionFile: string;
+    tokenBudget?: number;
+    force?: boolean;
+    currentTokenCount?: number;
+    compactionTarget?: "budget" | "threshold";
+    customInstructions?: string;
+    runtimeContext?: Record<string, unknown>;
+  }): Promise<CompactResult> {
+    const result: {
+      summary: string;
+      tokensBefore: number;
+      tokensAfter?: number;
+    } = {
+      summary: "Agentic Memory delegates compaction to the OpenClaw runtime in v1.",
+      tokensBefore: params.currentTokenCount ?? 0,
+    };
+    if (params.currentTokenCount !== undefined) {
+      result.tokensAfter = params.currentTokenCount;
+    }
+
+    return {
+      ok: true,
+      compacted: false,
+      reason: "delegated-to-openclaw-runtime",
+      result,
+    };
+  }
+
+  async dispose(): Promise<void> {
+    this.turnIndexBySession.clear();
+  }
+}
+
+function buildMemoryPromptSection(params: { availableTools: Set<string> }): string[] {
+  if (!params.availableTools.has("memory_search")) {
+    return [];
+  }
+
+  return [
+    "## Shared Agentic Memory",
+    "Before answering questions about prior work, decisions, or multi-device activity, query shared Agentic Memory first.",
+    "",
+  ];
+}
+
+export default definePluginEntry({
+  id: PLUGIN_ID,
+  name: "Agentic Memory",
+  description: "Shared Agentic Memory runtime and context engine for OpenClaw.",
+  kind: "memory",
+  configSchema: PLUGIN_CONFIG_SCHEMA,
+  register(api) {
+    const config = resolveAgenticMemoryPluginConfig(
+      asRecord(api.pluginConfig),
+      asString(asRecord(api.pluginConfig).agentId),
+    );
+    const client = new AgenticMemoryBackendClient(config, api.logger);
+
+    api.registerMemoryPromptSection(buildMemoryPromptSection);
+    api.registerMemoryRuntime({
+      async getMemorySearchManager(params: {
+        cfg: unknown;
+        agentId: string;
+        purpose?: "default" | "status";
+      }) {
+        const mergedConfig = resolveAgenticMemoryPluginConfig(asRecord(api.pluginConfig), params.agentId);
+        return {
+          manager: new AgenticMemorySearchManager(
+            new AgenticMemoryBackendClient(mergedConfig, api.logger),
+            mergedConfig,
+          ),
+        };
+      },
+      resolveMemoryBackendConfig() {
+        return {
+          backend: "builtin",
+        } as const;
+      },
+      async closeAllMemorySearchManagers() {
+        // The current runtime is stateless per manager instance.
+      },
+    });
+
+    api.registerContextEngine(config.contextEngineId, async () => {
+      return new AgenticMemoryContextEngine(client, config);
+    });
+  },
+});

@@ -1000,9 +1000,20 @@ def cmd_openclaw_setup(args: argparse.Namespace) -> None:
 
     This command is the first "magic install" path for OpenClaw power users.
     It does not try to mutate a live OpenClaw installation directly yet.
-    Instead it creates a deterministic config file that the upcoming OpenClaw
-    package can consume, while also updating Agentic Memory's local control
-    plane so the desktop shell and dogfood loops can observe setup progress.
+    Instead it creates a deterministic config file that the OpenClaw plugin
+    package can consume directly, while also updating Agentic Memory's local
+    control plane so the desktop shell and dogfood loops can observe setup
+    progress.
+
+    The important detail is that this file now follows OpenClaw's native plugin
+    configuration shape:
+
+    - `plugins.slots.*` selects which plugin IDs OpenClaw should mount.
+    - `plugins.entries.agentic-memory.config` stores the runtime settings that
+      the `am-openclaw` package reads through the official plugin SDK.
+
+    Keeping this file OpenClaw-native avoids a second translation layer later
+    when we package the "magic install" flow into the desktop shell.
     """
     store = ProductStateStore()
     config_path = Path(args.config_path).expanduser().resolve()
@@ -1014,28 +1025,30 @@ def cmd_openclaw_setup(args: argparse.Namespace) -> None:
     )
     context_engine_slot = "agentic-memory" if args.enable_context_engine else "legacy"
 
+    # Write the same config shape the OpenClaw runtime expects to load. This
+    # lets operators test the generated file immediately instead of relying on a
+    # future installer-specific adapter.
     openclaw_config = {
         "generated_by": PRIMARY_CLI_NAME,
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "plugins": {
-            "package": "am-openclaw",
             "slots": {
                 "memory": "agentic-memory",
                 "contextEngine": context_engine_slot,
             },
-        },
-        "agenticMemory": {
-            "backend_url": args.backend_url,
-            "api_key_env": args.api_key_env,
-            "workspace_id": args.workspace_id,
-            "device_id": args.device_id,
-            "agent_id": args.agent_id,
-            "session_id": session_id,
-            "project_id": args.project_id,
-            "endpoints": {
-                "register": "/openclaw/session/register",
-                "memory_search": "/openclaw/memory/search",
-                "context_resolve": "/openclaw/context/resolve",
+            "entries": {
+                "agentic-memory": {
+                    "enabled": True,
+                    "config": {
+                        "backendUrl": args.backend_url,
+                        "apiKeyEnv": args.api_key_env,
+                        "workspaceId": args.workspace_id,
+                        "deviceId": args.device_id,
+                        "agentId": args.agent_id,
+                        "projectId": args.project_id,
+                        "contextEngineId": "agentic-memory",
+                    },
+                },
             },
         },
     }

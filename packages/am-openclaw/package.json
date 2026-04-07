@@ -3,16 +3,32 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "OpenClaw integration scaffold for Agentic Memory",
+  "description": "OpenClaw memory and context-engine integration for Agentic Memory",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit"
   },
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ],
+    "install": {
+      "minHostVersion": ">=2026.4.5"
+    }
+  },
   "devDependencies": {
     "@types/node": "^22.10.2",
     "typescript": "^5.7.3"
+  },
+  "dependencies": {
+    "openclaw": "^2026.4.5"
   }
 }

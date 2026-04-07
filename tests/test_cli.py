@@ -752,11 +752,19 @@ def test_openclaw_setup_writes_config_and_updates_product_state(monkeypatch, cap
     assert payload["data"]["config_path"] == str(config_path)
     assert payload["data"]["config"]["plugins"]["slots"]["memory"] == "agentic-memory"
     assert payload["data"]["config"]["plugins"]["slots"]["contextEngine"] == "agentic-memory"
+    assert (
+        payload["data"]["config"]["plugins"]["entries"]["agentic-memory"]["config"]["projectId"]
+        == "project-neo"
+    )
     assert payload["data"]["memory_integration"]["surface"] == "openclaw_memory"
     assert payload["data"]["context_integration"]["surface"] == "openclaw_context_engine"
     assert payload["data"]["event"]["event_type"] == "openclaw_setup_completed"
     assert payload["metrics"]["config_written"] is True
-    assert json.loads(config_path.read_text(encoding="utf-8"))["agenticMemory"]["project_id"] == "project-neo"
+    saved_config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert (
+        saved_config["plugins"]["entries"]["agentic-memory"]["config"]["projectId"]
+        == "project-neo"
+    )
 
 
 def test_help_uses_agentic_memory_as_primary_command(capsys):

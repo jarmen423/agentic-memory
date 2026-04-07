@@ -1,0 +1,71 @@
+{
+  "id": "agentic-memory",
+  "name": "Agentic Memory",
+  "description": "Shared memory runtime and optional context engine for OpenClaw.",
+  "version": "0.1.0",
+  "kind": "memory",
+  "uiHints": {
+    "backendUrl": {
+      "label": "Backend URL",
+      "placeholder": "http://127.0.0.1:8765",
+      "help": "Agentic Memory backend URL that exposes the /openclaw endpoints."
+    },
+    "apiKeyEnv": {
+      "label": "API Key Environment Variable",
+      "placeholder": "AGENTIC_MEMORY_API_KEY",
+      "help": "Environment variable OpenClaw should read for bearer authentication."
+    },
+    "workspaceId": {
+      "label": "Workspace ID",
+      "help": "Shared memory workspace identifier used across devices."
+    },
+    "deviceId": {
+      "label": "Device ID",
+      "help": "Stable identifier for the current device."
+    },
+    "agentId": {
+      "label": "Agent ID",
+      "help": "Stable identifier for the current OpenClaw agent."
+    },
+    "projectId": {
+      "label": "Project ID",
+      "advanced": true,
+      "help": "Optional project identifier used to bias retrieval."
+    },
+    "contextEngineId": {
+      "label": "Context Engine ID",
+      "advanced": true,
+      "help": "Context engine id to register with OpenClaw. Defaults to agentic-memory."
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "backendUrl": {
+        "type": "string"
+      },
+      "apiKey": {
+        "type": "string"
+      },
+      "apiKeyEnv": {
+        "type": "string"
+      },
+      "workspaceId": {
+        "type": "string"
+      },
+      "deviceId": {
+        "type": "string"
+      },
+      "agentId": {
+        "type": "string"
+      },
+      "projectId": {
+        "type": "string"
+      },
+      "contextEngineId": {
+        "type": "string"
+      }
+    }
+  }
+}

@@ -13,7 +13,7 @@ All tests mock Neo4j connections — no live services required.
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
-from codememory.core.graph_writer import GraphWriter
+from agentic_memory.core.graph_writer import GraphWriter
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +194,7 @@ class TestTokenCount:
 
     def test_token_count_five_words(self):
         """_token_count returns int(word_count * 1.3)."""
-        from codememory.web.chunker import _token_count
+        from agentic_memory.web.chunker import _token_count
 
         result = _token_count("one two three four five")
         assert result == int(5 * 1.3)
@@ -205,24 +205,24 @@ class TestToMarkdown:
 
     def test_to_markdown_passthrough_markdown(self):
         """markdown format returns text unchanged."""
-        from codememory.web.chunker import RawContent, _to_markdown
+        from agentic_memory.web.chunker import RawContent, _to_markdown
 
         content = RawContent(text="# Hello", format="markdown")
         assert _to_markdown(content) == "# Hello"
 
     def test_to_markdown_passthrough_text(self):
         """text format returns text unchanged."""
-        from codememory.web.chunker import RawContent, _to_markdown
+        from agentic_memory.web.chunker import RawContent, _to_markdown
 
         content = RawContent(text="plain text here", format="text")
         assert _to_markdown(content) == "plain text here"
 
     def test_to_markdown_html_calls_markdownify(self):
         """html format calls markdownify with heading_style=ATX."""
-        from codememory.web.chunker import RawContent, _to_markdown
+        from agentic_memory.web.chunker import RawContent, _to_markdown
 
         html = "<h1>Title</h1><p>Body</p>"
-        with patch("codememory.web.chunker.markdownify") as mock_md:
+        with patch("agentic_memory.web.chunker.markdownify") as mock_md:
             mock_md.return_value = "# Title\n\nBody"
             content = RawContent(text=html, format="html")
             result = _to_markdown(content)
@@ -231,9 +231,9 @@ class TestToMarkdown:
 
     def test_to_markdown_pdf_calls_pymupdf4llm(self):
         """pdf format calls pymupdf4llm.to_markdown with the file path."""
-        from codememory.web.chunker import RawContent, _to_markdown
+        from agentic_memory.web.chunker import RawContent, _to_markdown
 
-        with patch("codememory.web.chunker.pymupdf4llm") as mock_pdf:
+        with patch("agentic_memory.web.chunker.pymupdf4llm") as mock_pdf:
             mock_pdf.to_markdown.return_value = "# PDF Content"
             content = RawContent(text="", format="pdf", path="/tmp/doc.pdf")
             result = _to_markdown(content)
@@ -242,7 +242,7 @@ class TestToMarkdown:
 
     def test_to_markdown_pdf_no_path_raises(self):
         """pdf format without path raises ValueError."""
-        from codememory.web.chunker import RawContent, _to_markdown
+        from agentic_memory.web.chunker import RawContent, _to_markdown
 
         content = RawContent(text="", format="pdf", path=None)
         with pytest.raises(ValueError, match="path"):
@@ -254,7 +254,7 @@ class TestChunkMarkdown:
 
     def test_chunk_markdown_two_headers_two_chunks(self):
         """Two ## headers each under 512 tokens produces exactly 2 chunks."""
-        from codememory.web.chunker import chunk_markdown
+        from agentic_memory.web.chunker import chunk_markdown
 
         markdown = "## Section One\n\nShort content for section one.\n\n## Section Two\n\nShort content for section two."
         chunks = chunk_markdown(markdown)
@@ -266,7 +266,7 @@ class TestChunkMarkdown:
 
     def test_chunk_markdown_oversize_triggers_recursive(self):
         """A section > 512 tokens is recursively split into smaller chunks."""
-        from codememory.web.chunker import chunk_markdown
+        from agentic_memory.web.chunker import chunk_markdown
 
         # Generate a big section: ~1000 words = ~1300 tokens
         big_section = "## Big Section\n\n" + " ".join(["word"] * 1000)
@@ -281,7 +281,7 @@ class TestChunkMarkdown:
 
     def test_chunk_markdown_chunk_objects_have_correct_fields(self):
         """Chunk objects have text, index, and total attributes."""
-        from codememory.web.chunker import chunk_markdown
+        from agentic_memory.web.chunker import chunk_markdown
 
         markdown = "## Header\n\nsome content here"
         chunks = chunk_markdown(markdown)
@@ -300,7 +300,7 @@ class TestRecursiveSplitOverlap:
 
     def test_recursive_split_produces_overlap(self):
         """Last ~50 tokens of chunk N appear at start of chunk N+1."""
-        from codememory.web.chunker import _recursive_split
+        from agentic_memory.web.chunker import _recursive_split
 
         # Build a text that forces at least 2 chunks
         # 500 unique words that won't fit in one 512-token chunk
@@ -330,7 +330,7 @@ class TestCrawlUrl:
     @pytest.mark.asyncio
     async def test_crawl_url_success(self):
         """crawl_url returns markdown string when crawl succeeds."""
-        from codememory.web.crawler import crawl_url
+        from agentic_memory.web.crawler import crawl_url
 
         mock_result = MagicMock()
         mock_result.success = True
@@ -341,7 +341,7 @@ class TestCrawlUrl:
         mock_crawler_instance.__aenter__ = AsyncMock(return_value=mock_crawler_instance)
         mock_crawler_instance.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("codememory.web.crawler.AsyncWebCrawler", return_value=mock_crawler_instance):
+        with patch("agentic_memory.web.crawler.AsyncWebCrawler", return_value=mock_crawler_instance):
             result = await crawl_url("https://example.com")
 
         assert result == "# Page Title\n\nSome content here."
@@ -349,7 +349,7 @@ class TestCrawlUrl:
     @pytest.mark.asyncio
     async def test_crawl_url_failure_raises_runtime_error(self):
         """crawl_url raises RuntimeError when result.success is False."""
-        from codememory.web.crawler import crawl_url
+        from agentic_memory.web.crawler import crawl_url
 
         mock_result = MagicMock()
         mock_result.success = False
@@ -360,7 +360,7 @@ class TestCrawlUrl:
         mock_crawler_instance.__aenter__ = AsyncMock(return_value=mock_crawler_instance)
         mock_crawler_instance.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("codememory.web.crawler.AsyncWebCrawler", return_value=mock_crawler_instance):
+        with patch("agentic_memory.web.crawler.AsyncWebCrawler", return_value=mock_crawler_instance):
             with pytest.raises(RuntimeError, match="Crawl failed"):
                 await crawl_url("https://example.com")
 
@@ -372,7 +372,7 @@ class TestCrawlUrl:
 
 def _make_pipeline(temporal_bridge: MagicMock | None = None):
     """Return a (pipeline, mock_writer) pair with all dependencies mocked."""
-    from codememory.web.pipeline import ResearchIngestionPipeline
+    from agentic_memory.web.pipeline import ResearchIngestionPipeline
 
     mock_conn = MagicMock()
     mock_session = MagicMock()
@@ -445,8 +445,8 @@ class TestResearchIngestionPipelineSubclassContract:
 
     def test_pipeline_subclass_contract(self):
         """ResearchIngestionPipeline is a subclass of BaseIngestionPipeline with DOMAIN_LABEL."""
-        from codememory.core.base import BaseIngestionPipeline
-        from codememory.web.pipeline import ResearchIngestionPipeline
+        from agentic_memory.core.base import BaseIngestionPipeline
+        from agentic_memory.web.pipeline import ResearchIngestionPipeline
 
         assert issubclass(ResearchIngestionPipeline, BaseIngestionPipeline)
         assert ResearchIngestionPipeline.DOMAIN_LABEL == "Research"
@@ -741,8 +741,8 @@ class TestSourceRegistration:
 
     def test_source_registration(self):
         """pipeline module registers deep_research_agent and web_crawl4ai in SOURCE_REGISTRY."""
-        import codememory.web.pipeline  # noqa: F401 — ensure module is imported
-        from codememory.core.registry import SOURCE_REGISTRY
+        import agentic_memory.web.pipeline  # noqa: F401 — ensure module is imported
+        from agentic_memory.core.registry import SOURCE_REGISTRY
 
         assert "deep_research_agent" in SOURCE_REGISTRY
         assert "web_crawl4ai" in SOURCE_REGISTRY

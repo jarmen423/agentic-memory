@@ -17,7 +17,7 @@ class TestToolkit:
     @pytest.fixture
     def toolkit(self, mock_graph):
         """Create a Toolkit with mocked graph."""
-        from codememory.server.tools import Toolkit
+        from agentic_memory.server.tools import Toolkit
         return Toolkit(graph=mock_graph)
 
     def test_semantic_search(self, toolkit, mock_graph):
@@ -105,7 +105,7 @@ class TestMCPServerTools:
 
     def test_mcp_initialization(self):
         """Test that MCP server can be initialized."""
-        from codememory.server.app import mcp, graph
+        from agentic_memory.server.app import mcp, graph
         
         assert mcp is not None
         assert graph is None
@@ -118,7 +118,7 @@ class TestMCPServerTools:
 
     def test_search_all_memory_formats_unified_results(self, monkeypatch):
         """search_all_memory formats normalized service output for MCP callers."""
-        from codememory.server import app as app_module
+        from agentic_memory.server import app as app_module
 
         monkeypatch.setattr(
             app_module,
@@ -165,9 +165,9 @@ class TestIdentifyImpact:
 
     def test_identify_impact_basic(self, mock_graph):
         """Test basic impact analysis."""
-        from codememory.server.app import identify_impact
+        from agentic_memory.server.app import identify_impact
         
-        with patch('codememory.server.app.graph', mock_graph):
+        with patch('agentic_memory.server.app.graph', mock_graph):
             result = identify_impact("file.py", max_depth=3)
             
             assert isinstance(result, str)
@@ -177,8 +177,8 @@ class TestIdentifyImpact:
         """Test impact analysis for non-existent file."""
         mock_graph.identify_impact.return_value = {"affected_files": [], "total_count": 0}
 
-        from codememory.server.app import identify_impact
-        with patch('codememory.server.app.graph', mock_graph):
+        from agentic_memory.server.app import identify_impact
+        with patch('agentic_memory.server.app.graph', mock_graph):
             result = identify_impact("nonexistent.py")
             
             assert "isolated" in result.lower() or "no files depend" in result.lower()
@@ -187,8 +187,8 @@ class TestIdentifyImpact:
         """Test impact analysis error handling."""
         mock_graph.identify_impact.side_effect = Exception("Graph error")
 
-        from codememory.server.app import identify_impact
-        with patch('codememory.server.app.graph', mock_graph):
+        from agentic_memory.server.app import identify_impact
+        with patch('agentic_memory.server.app.graph', mock_graph):
             result = identify_impact("file.py")
             
             assert "failed" in result.lower()
@@ -204,8 +204,8 @@ class TestSearchCodebase:
             {"name": "fn", "score": 0.9, "text": "def fn(): pass", "sig": "a.py:fn"}
         ]
 
-        with patch("codememory.server.app.graph", mock_graph):
-            from codememory.server.app import search_codebase
+        with patch("agentic_memory.server.app.graph", mock_graph):
+            from agentic_memory.server.app import search_codebase
 
             result = search_codebase("test query", limit=10)
 
@@ -217,15 +217,15 @@ class TestSearchCodebase:
         mock_graph = Mock()
         mock_graph.semantic_search.side_effect = Exception("Search failed")
 
-        with patch("codememory.server.app.graph", mock_graph):
-            from codememory.server.app import search_codebase
+        with patch("agentic_memory.server.app.graph", mock_graph):
+            from agentic_memory.server.app import search_codebase
 
             result = search_codebase("test")
             assert "failed" in result.lower()
 
     def test_search_codebase_invalid_domain(self):
         """Test invalid domain validation for search routing."""
-        from codememory.server.app import search_codebase
+        from agentic_memory.server.app import search_codebase
 
         result = search_codebase("test query", domain="invalid-domain")
 
@@ -237,8 +237,8 @@ class TestSearchCodebase:
         mock_graph = Mock()
         mock_graph.has_git_graph_data.return_value = False
 
-        with patch("codememory.server.app.graph", mock_graph):
-            from codememory.server.app import search_codebase
+        with patch("agentic_memory.server.app.graph", mock_graph):
+            from agentic_memory.server.app import search_codebase
 
             result = search_codebase("src/main.py", domain="git")
 
@@ -261,8 +261,8 @@ class TestSearchCodebase:
             }
         ]
 
-        with patch("codememory.server.app.graph", mock_graph):
-            from codememory.server.app import search_codebase
+        with patch("agentic_memory.server.app.graph", mock_graph):
+            from agentic_memory.server.app import search_codebase
 
             result = search_codebase("src/main.py", domain="git", limit=3)
 
@@ -275,8 +275,8 @@ class TestSearchCodebase:
         mock_graph = Mock()
         mock_graph.has_git_graph_data.return_value = False
 
-        with patch("codememory.server.app.graph", mock_graph):
-            from codememory.server.app import search_codebase
+        with patch("agentic_memory.server.app.graph", mock_graph):
+            from agentic_memory.server.app import search_codebase
 
             result = search_codebase("test query", domain="hybrid")
 
@@ -303,8 +303,8 @@ class TestGitMCPTools:
             }
         ]
 
-        with patch("codememory.server.app.graph", mock_graph):
-            from codememory.server.app import get_git_file_history
+        with patch("agentic_memory.server.app.graph", mock_graph):
+            from agentic_memory.server.app import get_git_file_history
 
             result = get_git_file_history("src/codememory/server/app.py", limit=5)
 
@@ -319,8 +319,8 @@ class TestGitMCPTools:
         mock_graph = Mock()
         mock_graph.has_git_graph_data.return_value = False
 
-        with patch("codememory.server.app.graph", mock_graph):
-            from codememory.server.app import get_git_file_history
+        with patch("agentic_memory.server.app.graph", mock_graph):
+            from agentic_memory.server.app import get_git_file_history
 
             result = get_git_file_history("src/codememory/server/app.py")
 
@@ -347,8 +347,8 @@ class TestGitMCPTools:
             "stats": {"files_changed": 1, "additions": 20, "deletions": 5},
         }
 
-        with patch("codememory.server.app.graph", mock_graph):
-            from codememory.server.app import get_commit_context
+        with patch("agentic_memory.server.app.graph", mock_graph):
+            from agentic_memory.server.app import get_commit_context
 
             result = get_commit_context("abcdef1234567890", include_diff_stats=True)
 
@@ -363,8 +363,8 @@ class TestGitMCPTools:
         mock_graph = Mock()
         mock_graph.has_git_graph_data.return_value = False
 
-        with patch("codememory.server.app.graph", mock_graph):
-            from codememory.server.app import get_commit_context
+        with patch("agentic_memory.server.app.graph", mock_graph):
+            from agentic_memory.server.app import get_commit_context
 
             result = get_commit_context("abcdef1234567890")
 
@@ -376,8 +376,8 @@ class TestGitMCPTools:
         mock_graph = Mock()
         mock_graph.has_git_graph_data.return_value = True
 
-        with patch("codememory.server.app.graph", mock_graph):
-            from codememory.server.app import get_commit_context
+        with patch("agentic_memory.server.app.graph", mock_graph):
+            from agentic_memory.server.app import get_commit_context
 
             result = get_commit_context("not-a-sha")
 
@@ -390,7 +390,7 @@ class TestTemporalSeedHelpers:
 
     def test_collect_seed_entities_ranks_deterministically(self):
         """Entity seed collection combines row scores and preserves deterministic ordering."""
-        from codememory.temporal.seeds import collect_seed_entities
+        from agentic_memory.temporal.seeds import collect_seed_entities
 
         rows = [
             {
@@ -413,19 +413,19 @@ class TestTemporalSeedHelpers:
 
     def test_collect_seed_entities_empty_rows(self):
         """Empty search rows return no seed entities."""
-        from codememory.temporal.seeds import collect_seed_entities
+        from agentic_memory.temporal.seeds import collect_seed_entities
 
         assert collect_seed_entities([], limit=5) == []
 
     def test_parse_as_of_to_micros_invalid_returns_none(self):
         """Invalid as_of strings do not crash temporal retrieval setup."""
-        from codememory.temporal.seeds import parse_as_of_to_micros
+        from agentic_memory.temporal.seeds import parse_as_of_to_micros
 
         assert parse_as_of_to_micros("definitely-not-a-date") is None
 
     def test_parse_conversation_source_id(self):
         """Conversation source ids parse into session and turn index."""
-        from codememory.temporal.seeds import parse_conversation_source_id
+        from agentic_memory.temporal.seeds import parse_conversation_source_id
 
         session_id, turn_index = parse_conversation_source_id("sess-1:4")
 

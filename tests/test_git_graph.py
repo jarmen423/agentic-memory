@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from codememory.ingestion.git_graph import (
+from agentic_memory.ingestion.git_graph import (
     GitCommitRecord,
     GitFileChange,
     GitGraphIngestor,

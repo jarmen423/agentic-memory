@@ -10,7 +10,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from codememory import cli
+from agentic_memory import cli
 
 pytestmark = [pytest.mark.unit]
 
@@ -353,7 +353,7 @@ def _patch_server_module(monkeypatch):
     """Inject a fake codememory.server.app module with a mock run_server."""
     run_server = Mock()
     fake_module = types.SimpleNamespace(run_server=run_server)
-    monkeypatch.setitem(sys.modules, "codememory.server.app", fake_module)
+    monkeypatch.setitem(sys.modules, "agentic_memory.server.app", fake_module)
     return run_server
 
 
@@ -662,6 +662,97 @@ def test_git_status_json_success_envelope(monkeypatch, capsys, tmp_path):
     mock_ingestor.close.assert_called_once()
 
 
+def test_product_status_json_success_envelope(monkeypatch, capsys, tmp_path):
+    """product-status emits the standard JSON envelope with summary metrics."""
+    state_path = tmp_path / "product-state.json"
+    monkeypatch.setenv("CODEMEMORY_PRODUCT_STATE", str(state_path))
+
+    cli.cmd_product_status(argparse.Namespace(json=True, repo=None))
+
+    payload = _parse_json_stdout(capsys)
+    assert payload["ok"] is True
+    assert payload["error"] is None
+    assert payload["data"]["state_path"] == str(state_path)
+    assert payload["metrics"]["repo_count"] == 0
+
+
+def test_product_repo_add_json_tracks_initialized_repo(monkeypatch, capsys, tmp_path):
+    """product-repo-add registers the repo and returns it in JSON mode."""
+    state_path = tmp_path / "product-state.json"
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    codememory_dir = repo_root / ".codememory"
+    codememory_dir.mkdir()
+    (codememory_dir / "config.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setenv("CODEMEMORY_PRODUCT_STATE", str(state_path))
+
+    cli.cmd_product_repo_add(
+        argparse.Namespace(
+            json=True,
+            path=str(repo_root),
+            label="Dogfood Repo",
+            metadata_json='{"tier":"alpha"}',
+        )
+    )
+
+    payload = _parse_json_stdout(capsys)
+    assert payload["ok"] is True
+    assert payload["data"]["repo"]["label"] == "Dogfood Repo"
+    assert payload["data"]["repo"]["initialized"] is True
+    assert payload["metrics"]["repo_count"] == 1
+
+
+def test_product_integration_set_json_updates_record(monkeypatch, capsys, tmp_path):
+    """product-integration-set persists integration state and returns JSON."""
+    state_path = tmp_path / "product-state.json"
+    monkeypatch.setenv("CODEMEMORY_PRODUCT_STATE", str(state_path))
+
+    cli.cmd_product_integration_set(
+        argparse.Namespace(
+            json=True,
+            surface="mcp",
+            target="claude_desktop",
+            status="configured",
+            config_json='{"command":"codememory"}',
+            last_error=None,
+        )
+    )
+
+    payload = _parse_json_stdout(capsys)
+    assert payload["ok"] is True
+    assert payload["data"]["integration"]["surface"] == "mcp"
+    assert payload["data"]["integration"]["config"]["command"] == "codememory"
+    assert payload["metrics"]["integration_count"] == 1
+
+
+def test_help_uses_agentic_memory_as_primary_command(capsys):
+    """CLI help text advertises the broader product command name first."""
+    import unittest.mock as _mock
+
+    with _mock.patch("sys.argv", ["agentic-memory", "--help"]):
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "agentic-memory init" in out
+    assert "Legacy alias still supported: codememory" in out
+
+
+def test_pyproject_registers_agentic_memory_console_script():
+    """Packaging metadata exposes the new primary CLI alias."""
+    pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
+    assert 'agentic-memory = "agentic_memory.cli:main"' in pyproject
+
+
+def test_agentic_memory_namespace_imports_cli():
+    """The new public namespace exposes the CLI entrypoint."""
+    from agentic_memory.cli import main as renamed_main
+
+    assert renamed_main is cli.main
+
+
 # ---------------------------------------------------------------------------
 # Stub command tests (Phase 2 / Phase 4 placeholders)
 # ---------------------------------------------------------------------------
@@ -672,7 +763,7 @@ def test_web_init_calls_setup_database_on_connection(monkeypatch, capsys):
     from unittest.mock import Mock, patch
 
     mock_conn = Mock()
-    with patch("codememory.core.connection.ConnectionManager", Mock(return_value=mock_conn)):
+    with patch("agentic_memory.core.connection.ConnectionManager", Mock(return_value=mock_conn)):
         cli.cmd_web_init(argparse.Namespace())
 
     mock_conn.setup_database.assert_called_once()
@@ -705,7 +796,7 @@ def test_chat_init_calls_setup_and_fix_dimensions(monkeypatch, capsys):
     mock_conn = Mock()
     mock_conn_class = Mock(return_value=mock_conn)
 
-    with patch("codememory.core.connection.ConnectionManager", mock_conn_class):
+    with patch("agentic_memory.core.connection.ConnectionManager", mock_conn_class):
         cli.cmd_chat_init(argparse.Namespace())
 
     mock_conn.setup_database.assert_called_once()
@@ -742,7 +833,7 @@ def test_stub_commands_are_registered_in_parser():
     for cmd in registered_commands:
         try:
             with _mock.patch("sys.argv", ["codememory", cmd]), \
-                 patch("codememory.core.connection.ConnectionManager", Mock(return_value=mock_conn)):
+                 patch("agentic_memory.core.connection.ConnectionManager", Mock(return_value=mock_conn)):
                 cli.main()
             # No exception = command ran and returned normally (fine)
         except SystemExit as exc:
@@ -778,7 +869,7 @@ def test_web_init_calls_setup_database(monkeypatch, capsys):
     mock_conn = Mock()
     mock_conn_class = Mock(return_value=mock_conn)
 
-    with patch("codememory.core.connection.ConnectionManager", mock_conn_class):
+    with patch("agentic_memory.core.connection.ConnectionManager", mock_conn_class):
         cli.cmd_web_init(argparse.Namespace())
 
     mock_conn.setup_database.assert_called_once()
@@ -809,11 +900,11 @@ def test_web_ingest_calls_pipeline(monkeypatch, capsys):
     async def fake_crawl_url(url, timeout_ms=30000):
         return "# Test Page\nSome content here."
 
-    with patch("codememory.web.crawler.crawl_url", fake_crawl_url), \
-         patch("codememory.core.connection.ConnectionManager", Mock(return_value=mock_conn)), \
-         patch("codememory.core.runtime_embedding.build_embedding_service", Mock(return_value=mock_embedder)), \
-         patch("codememory.core.entity_extraction.EntityExtractionService", Mock(return_value=mock_extractor)), \
-         patch("codememory.web.pipeline.ResearchIngestionPipeline", Mock(return_value=mock_pipeline)):
+    with patch("agentic_memory.web.crawler.crawl_url", fake_crawl_url), \
+         patch("agentic_memory.core.connection.ConnectionManager", Mock(return_value=mock_conn)), \
+         patch("agentic_memory.core.runtime_embedding.build_embedding_service", Mock(return_value=mock_embedder)), \
+         patch("agentic_memory.core.entity_extraction.EntityExtractionService", Mock(return_value=mock_extractor)), \
+         patch("agentic_memory.web.pipeline.ResearchIngestionPipeline", Mock(return_value=mock_pipeline)):
 
         cli.cmd_web_ingest(argparse.Namespace(url="https://example.com"))
 
@@ -844,11 +935,11 @@ def test_web_ingest_pdf_format_detection(monkeypatch, capsys):
 
     crawl_url_spy = Mock()
 
-    with patch("codememory.web.crawler.crawl_url", crawl_url_spy), \
-         patch("codememory.core.connection.ConnectionManager", Mock(return_value=mock_conn)), \
-         patch("codememory.core.runtime_embedding.build_embedding_service", Mock(return_value=mock_embedder)), \
-         patch("codememory.core.entity_extraction.EntityExtractionService", Mock(return_value=mock_extractor)), \
-         patch("codememory.web.pipeline.ResearchIngestionPipeline", Mock(return_value=mock_pipeline)), \
+    with patch("agentic_memory.web.crawler.crawl_url", crawl_url_spy), \
+         patch("agentic_memory.core.connection.ConnectionManager", Mock(return_value=mock_conn)), \
+         patch("agentic_memory.core.runtime_embedding.build_embedding_service", Mock(return_value=mock_embedder)), \
+         patch("agentic_memory.core.entity_extraction.EntityExtractionService", Mock(return_value=mock_extractor)), \
+         patch("agentic_memory.web.pipeline.ResearchIngestionPipeline", Mock(return_value=mock_pipeline)), \
          patch("os.path.isfile", return_value=True):
 
         cli.cmd_web_ingest(argparse.Namespace(url="/some/path/doc.pdf"))
@@ -883,10 +974,10 @@ def test_web_ingest_pdf_url_detection(monkeypatch, capsys):
     mock_httpx_resp.raise_for_status = Mock()
     mock_httpx_resp.content = b"%PDF fake content"
 
-    with patch("codememory.core.connection.ConnectionManager", Mock(return_value=mock_conn)), \
-         patch("codememory.core.runtime_embedding.build_embedding_service", Mock(return_value=mock_embedder)), \
-         patch("codememory.core.entity_extraction.EntityExtractionService", Mock(return_value=mock_extractor)), \
-         patch("codememory.web.pipeline.ResearchIngestionPipeline", Mock(return_value=mock_pipeline)), \
+    with patch("agentic_memory.core.connection.ConnectionManager", Mock(return_value=mock_conn)), \
+         patch("agentic_memory.core.runtime_embedding.build_embedding_service", Mock(return_value=mock_embedder)), \
+         patch("agentic_memory.core.entity_extraction.EntityExtractionService", Mock(return_value=mock_extractor)), \
+         patch("agentic_memory.web.pipeline.ResearchIngestionPipeline", Mock(return_value=mock_pipeline)), \
          patch("httpx.get", Mock(return_value=mock_httpx_resp)), \
          patch("os.path.isfile", return_value=False):
 
@@ -930,7 +1021,7 @@ def test_web_schedule_calls_scheduler(capsys):
         cli,
         "_resolve_scheduler_dependencies",
         Mock(return_value=(mock_pipeline, "groq-key", "brave-key")),
-    ), patch("codememory.core.scheduler.ResearchScheduler", Mock(return_value=mock_scheduler)):
+    ), patch("agentic_memory.core.scheduler.ResearchScheduler", Mock(return_value=mock_scheduler)):
         cli.cmd_web_schedule(
             argparse.Namespace(
                 template="Research {topic}",
@@ -970,7 +1061,7 @@ def test_web_run_research_calls_scheduler_for_ad_hoc_run(capsys):
         cli,
         "_resolve_scheduler_dependencies",
         Mock(return_value=(mock_pipeline, "groq-key", "brave-key")),
-    ), patch("codememory.core.scheduler.ResearchScheduler", Mock(return_value=mock_scheduler)):
+    ), patch("agentic_memory.core.scheduler.ResearchScheduler", Mock(return_value=mock_scheduler)):
         cli.cmd_web_run_research(
             argparse.Namespace(
                 schedule_id=None,
@@ -1003,10 +1094,10 @@ def test_resolve_scheduler_dependencies_uses_web_embedding_runtime(monkeypatch):
     mock_extractor = Mock()
     mock_pipeline = Mock()
 
-    with patch("codememory.core.connection.ConnectionManager", Mock(return_value=mock_conn)), \
-         patch("codememory.core.runtime_embedding.build_embedding_service", Mock(return_value=mock_embedder)) as build_embedder, \
-         patch("codememory.core.entity_extraction.EntityExtractionService", Mock(return_value=mock_extractor)), \
-         patch("codememory.web.pipeline.ResearchIngestionPipeline", Mock(return_value=mock_pipeline)):
+    with patch("agentic_memory.core.connection.ConnectionManager", Mock(return_value=mock_conn)), \
+         patch("agentic_memory.core.runtime_embedding.build_embedding_service", Mock(return_value=mock_embedder)) as build_embedder, \
+         patch("agentic_memory.core.entity_extraction.EntityExtractionService", Mock(return_value=mock_extractor)), \
+         patch("agentic_memory.web.pipeline.ResearchIngestionPipeline", Mock(return_value=mock_pipeline)):
         pipeline, extraction_llm, brave_api_key = cli._resolve_scheduler_dependencies()
 
     assert pipeline is mock_pipeline
@@ -1025,7 +1116,7 @@ def test_migrate_temporal_runs_all_backfill_statements(capsys):
     mock_conn.session.return_value.__exit__ = Mock(return_value=None)
     mock_session.run.return_value = _consume_result(properties_set=5)
 
-    with patch("codememory.core.connection.ConnectionManager", Mock(return_value=mock_conn)):
+    with patch("agentic_memory.core.connection.ConnectionManager", Mock(return_value=mock_conn)):
         cli.cmd_migrate_temporal(argparse.Namespace())
 
     assert mock_session.run.call_count == 14
@@ -1044,7 +1135,7 @@ def test_migrate_temporal_handles_unavailable_neo4j(capsys):
     mock_conn.session.return_value.__exit__ = Mock(return_value=None)
     mock_session.run.side_effect = cli.neo4j.exceptions.ServiceUnavailable("down")
 
-    with patch("codememory.core.connection.ConnectionManager", Mock(return_value=mock_conn)):
+    with patch("agentic_memory.core.connection.ConnectionManager", Mock(return_value=mock_conn)):
         with pytest.raises(SystemExit) as exc:
             cli.cmd_migrate_temporal(argparse.Namespace())
 

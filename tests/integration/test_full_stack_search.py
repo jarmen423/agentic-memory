@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from codememory.server.result_types import UnifiedMemoryHit
+from agentic_memory.server.result_types import UnifiedMemoryHit
 from tests.integration.conftest import result_data, result_iter
 
 pytestmark = [pytest.mark.integration]
@@ -38,7 +38,7 @@ def test_search_all_returns_code_and_temporal_web_results(
         "am_server.routes.search.get_conversation_pipeline", lambda: mock_conversation
     )
     monkeypatch.setattr(
-        "codememory.server.unified_search._search_research_structured",
+        "agentic_memory.server.unified_search._search_research_structured",
         lambda pipeline, query, limit, as_of: [
             UnifiedMemoryHit(
                 module="web",
@@ -55,7 +55,7 @@ def test_search_all_returns_code_and_temporal_web_results(
         ],
     )
     monkeypatch.setattr(
-        "codememory.server.unified_search.search_conversation_turns_sync",
+        "agentic_memory.server.unified_search.search_conversation_turns_sync",
         lambda *args, **kwargs: [],
     )
 
@@ -118,7 +118,7 @@ def test_search_all_surfaces_partial_module_failures(
         "am_server.routes.search.get_conversation_pipeline", lambda: mock_conversation
     )
     monkeypatch.setattr(
-        "codememory.server.unified_search.search_conversation_turns_sync",
+        "agentic_memory.server.unified_search.search_conversation_turns_sync",
         lambda *args, **kwargs: [],
     )
 

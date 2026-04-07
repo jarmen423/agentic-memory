@@ -11,7 +11,7 @@ All tests mock Neo4j connections — no live services required.
 import pytest
 from unittest.mock import MagicMock
 
-from codememory.core.graph_writer import GraphWriter
+from agentic_memory.core.graph_writer import GraphWriter
 
 
 def _make_writer():

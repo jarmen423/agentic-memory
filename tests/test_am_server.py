@@ -40,6 +40,7 @@ def client(monkeypatch):
     monkeypatch.setenv("NEO4J_PASSWORD", "test")
     monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini")
     monkeypatch.setenv("GROQ_API_KEY", "fake-groq")
+    monkeypatch.setenv("CODEMEMORY_PRODUCT_STATE", "/tmp/am-product-state.json")
 
     mock_pipeline = MagicMock()
     mock_pipeline.ingest.return_value = {"stored": True}
@@ -64,6 +65,7 @@ def client(monkeypatch):
 
     dependencies.get_pipeline.cache_clear()
     dependencies.get_conversation_pipeline.cache_clear()
+    dependencies.get_product_store.cache_clear()
     app = create_app()
     with TestClient(app, raise_server_exceptions=False) as c:
         yield c
@@ -531,3 +533,69 @@ def test_search_all_endpoint_returns_unified_results(client, auth_headers, monke
     body = resp.json()
     assert body["results"][0]["module"] == "web"
     assert body["results"][0]["temporal_applied"] is True
+
+
+def test_product_status_returns_local_control_plane_summary(
+    client, auth_headers, monkeypatch, tmp_path
+):
+    """GET /product/status returns persisted state plus runtime facts."""
+    state_path = tmp_path / "product-state.json"
+    monkeypatch.setenv("CODEMEMORY_PRODUCT_STATE", str(state_path))
+    dependencies.get_product_store.cache_clear()
+
+    resp = client.get("/product/status", headers=auth_headers)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["state_path"] == str(state_path)
+    assert body["summary"]["repo_count"] == 0
+    assert body["runtime"]["server"]["status"] == "healthy"
+    assert "connected" in body["runtime"]["graph"]
+
+
+def test_product_repo_upsert_endpoint_tracks_repo(client, auth_headers, monkeypatch, tmp_path):
+    """POST /product/repos stores a repo record and returns it."""
+    state_path = tmp_path / "product-state.json"
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    codememory_dir = repo_root / ".codememory"
+    codememory_dir.mkdir()
+    (codememory_dir / "config.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("CODEMEMORY_PRODUCT_STATE", str(state_path))
+    dependencies.get_product_store.cache_clear()
+
+    resp = client.post(
+        "/product/repos",
+        json={"repo_path": str(repo_root), "label": "Dogfood Repo", "metadata": {"source": "cli"}},
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["repo"]["label"] == "Dogfood Repo"
+    assert body["repo"]["initialized"] is True
+
+
+def test_product_integration_endpoint_tracks_integration(
+    client, auth_headers, monkeypatch, tmp_path
+):
+    """POST /product/integrations stores an integration record."""
+    state_path = tmp_path / "product-state.json"
+    monkeypatch.setenv("CODEMEMORY_PRODUCT_STATE", str(state_path))
+    dependencies.get_product_store.cache_clear()
+
+    resp = client.post(
+        "/product/integrations",
+        json={
+            "surface": "browser_extension",
+            "target": "chatgpt",
+            "status": "configured",
+            "config": {"platform": "chatgpt"},
+        },
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["integration"]["surface"] == "browser_extension"
+    assert body["integration"]["status"] == "configured"

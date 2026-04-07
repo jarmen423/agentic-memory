@@ -6,8 +6,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from codememory.server.result_types import UnifiedMemoryHit
-from codememory.server.unified_search import search_all_memory_sync
+from agentic_memory.server.result_types import UnifiedMemoryHit
+from agentic_memory.server.unified_search import search_all_memory_sync
 
 pytestmark = [pytest.mark.unit]
 
@@ -15,7 +15,7 @@ pytestmark = [pytest.mark.unit]
 def test_search_all_memory_merges_and_sorts_hits(monkeypatch):
     """Unified search merges hits and orders by normalized score."""
     monkeypatch.setattr(
-        "codememory.server.unified_search._normalize_code_results",
+        "agentic_memory.server.unified_search._normalize_code_results",
         lambda graph, query, limit: [
             UnifiedMemoryHit(
                 module="code",
@@ -28,7 +28,7 @@ def test_search_all_memory_merges_and_sorts_hits(monkeypatch):
         ],
     )
     monkeypatch.setattr(
-        "codememory.server.unified_search._search_research_structured",
+        "agentic_memory.server.unified_search._search_research_structured",
         lambda pipeline, query, limit, as_of: [
             UnifiedMemoryHit(
                 module="web",
@@ -42,7 +42,7 @@ def test_search_all_memory_merges_and_sorts_hits(monkeypatch):
         ],
     )
     monkeypatch.setattr(
-        "codememory.server.unified_search._search_conversation_structured",
+        "agentic_memory.server.unified_search._search_conversation_structured",
         lambda pipeline, query, project_id, limit, as_of: [
             UnifiedMemoryHit(
                 module="conversation",
@@ -69,11 +69,11 @@ def test_search_all_memory_merges_and_sorts_hits(monkeypatch):
 def test_search_all_memory_records_partial_module_failures(monkeypatch):
     """One module failure does not suppress healthy module results."""
     monkeypatch.setattr(
-        "codememory.server.unified_search._normalize_code_results",
+        "agentic_memory.server.unified_search._normalize_code_results",
         lambda graph, query, limit: (_ for _ in ()).throw(RuntimeError("code down")),
     )
     monkeypatch.setattr(
-        "codememory.server.unified_search._search_research_structured",
+        "agentic_memory.server.unified_search._search_research_structured",
         lambda pipeline, query, limit, as_of: [
             UnifiedMemoryHit(
                 module="web",
@@ -119,9 +119,9 @@ def test_search_all_memory_honors_module_filters(monkeypatch):
         conv_called = True
         return []
 
-    monkeypatch.setattr("codememory.server.unified_search._normalize_code_results", _code)
-    monkeypatch.setattr("codememory.server.unified_search._search_research_structured", _web)
-    monkeypatch.setattr("codememory.server.unified_search._search_conversation_structured", _conv)
+    monkeypatch.setattr("agentic_memory.server.unified_search._normalize_code_results", _code)
+    monkeypatch.setattr("agentic_memory.server.unified_search._search_research_structured", _web)
+    monkeypatch.setattr("agentic_memory.server.unified_search._search_conversation_structured", _conv)
 
     search_all_memory_sync(
         query="neo4j",

@@ -19,12 +19,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from codememory.core.graph_writer import GraphWriter
+from agentic_memory.core.graph_writer import GraphWriter
 
 
 def _make_pipeline(source_key: str = "chat_mcp", temporal_bridge: MagicMock | None = None):
     """Return a (pipeline, mock_writer) pair with all dependencies mocked."""
-    from codememory.chat.pipeline import ConversationIngestionPipeline
+    from agentic_memory.chat.pipeline import ConversationIngestionPipeline
 
     mock_conn = MagicMock()
     mock_session = MagicMock()
@@ -77,8 +77,8 @@ class TestConversationPipelineSubclassContract:
 
     def test_pipeline_subclass_contract(self):
         """ConversationIngestionPipeline subclasses BaseIngestionPipeline with DOMAIN_LABEL."""
-        from codememory.core.base import BaseIngestionPipeline
-        from codememory.chat.pipeline import ConversationIngestionPipeline
+        from agentic_memory.core.base import BaseIngestionPipeline
+        from agentic_memory.chat.pipeline import ConversationIngestionPipeline
 
         assert issubclass(ConversationIngestionPipeline, BaseIngestionPipeline)
         assert ConversationIngestionPipeline.DOMAIN_LABEL == "Conversation"
@@ -320,8 +320,8 @@ class TestChatSourceRegistration:
 
     def test_all_four_chat_sources_registered(self):
         """All four chat sources are in SOURCE_REGISTRY after import."""
-        import codememory.chat.pipeline  # noqa: F401 — ensure module is imported
-        from codememory.core.registry import SOURCE_REGISTRY
+        import agentic_memory.chat.pipeline  # noqa: F401 — ensure module is imported
+        from agentic_memory.core.registry import SOURCE_REGISTRY
 
         for key in ("chat_mcp", "chat_proxy", "chat_ext", "chat_cli"):
             assert key in SOURCE_REGISTRY, f"Source key {key!r} not in SOURCE_REGISTRY"

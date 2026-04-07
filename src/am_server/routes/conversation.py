@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from am_server.auth import require_auth
 from am_server.dependencies import get_conversation_pipeline
 from am_server.models import ConversationIngestRequest
-from codememory.server.tools import search_conversation_turns_sync
+from agentic_memory.server.tools import search_conversation_turns_sync
 
 logger = logging.getLogger(__name__)
 

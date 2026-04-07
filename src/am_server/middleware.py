@@ -6,7 +6,7 @@ import uuid
 
 from fastapi import Request
 
-from codememory.core.request_context import reset_request_id, set_request_id
+from agentic_memory.core.request_context import reset_request_id, set_request_id
 
 REQUEST_ID_HEADER = "X-Request-ID"
 

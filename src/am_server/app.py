@@ -10,7 +10,7 @@ from fastapi import FastAPI
 
 from am_server.dependencies import get_conversation_pipeline, get_pipeline
 from am_server.middleware import request_id_middleware
-from am_server.routes import conversation, ext, health, research, search
+from am_server.routes import conversation, ext, health, product, research, search
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ def create_app() -> FastAPI:
     app.middleware("http")(request_id_middleware)
 
     # Mount FastMCP ASGI app — import here to avoid circular imports at module level
-    from codememory.server.app import mcp  # noqa: PLC0415
+    from agentic_memory.server.app import mcp  # noqa: PLC0415
 
     app.mount("/mcp", mcp.sse_app())
 
@@ -58,5 +58,6 @@ def create_app() -> FastAPI:
     app.include_router(conversation.router)
     app.include_router(search.router)
     app.include_router(ext.router)
+    app.include_router(product.router)
 
     return app

@@ -6,8 +6,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from codememory.config import Config
-from codememory.core.runtime_embedding import build_embedding_service, resolve_embedding_runtime
+from agentic_memory.config import Config
+from agentic_memory.core.runtime_embedding import build_embedding_service, resolve_embedding_runtime
 
 
 def _write_config(repo_root: Path, payload: dict) -> Config:
@@ -38,7 +38,7 @@ def test_build_embedding_service_uses_nemotron_from_module_env(monkeypatch, tmp_
     monkeypatch.setenv("WEB_EMBEDDING_DIMENSIONS", "4096")
     monkeypatch.setenv("NVIDIA_API_KEY", "nim-key")
 
-    with patch("codememory.core.runtime_embedding.EmbeddingService") as mock_service:
+    with patch("agentic_memory.core.runtime_embedding.EmbeddingService") as mock_service:
         build_embedding_service("web", config=Config(tmp_path))
 
     mock_service.assert_called_once_with(

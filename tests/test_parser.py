@@ -1,5 +1,5 @@
 import pytest
-from codememory.ingestion.parser import CodeParser
+from agentic_memory.ingestion.parser import CodeParser
 
 @pytest.fixture
 def parser():

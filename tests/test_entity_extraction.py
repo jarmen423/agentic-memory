@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from codememory.core.entity_extraction import EntityExtractionService, build_embed_text
+from agentic_memory.core.entity_extraction import EntityExtractionService, build_embed_text
 
 
 class TestEntityExtractionServiceInit:
@@ -14,7 +14,7 @@ class TestEntityExtractionServiceInit:
 
     def test_default_allowed_types(self) -> None:
         """EntityExtractionService uses default allowed types when none provided."""
-        with patch("codememory.core.entity_extraction.build_extraction_openai_client"):
+        with patch("agentic_memory.core.entity_extraction.build_extraction_openai_client"):
             service = EntityExtractionService(api_key="test-key")
             assert service.allowed_types == [
                 "project",
@@ -26,7 +26,7 @@ class TestEntityExtractionServiceInit:
 
     def test_custom_allowed_types(self) -> None:
         """EntityExtractionService stores custom allowed_types and passes them in prompt."""
-        with patch("codememory.core.entity_extraction.build_extraction_openai_client") as mock_client_factory:
+        with patch("agentic_memory.core.entity_extraction.build_extraction_openai_client") as mock_client_factory:
             mock_client = MagicMock()
             mock_client_factory.return_value = mock_client
 
@@ -54,7 +54,7 @@ class TestEntityExtractionServiceExtract:
         self, response_content: str
     ) -> tuple[EntityExtractionService, MagicMock]:
         """Helper: create service with a mocked JSON-capable LLM client."""
-        with patch("codememory.core.entity_extraction.build_extraction_openai_client") as mock_client_factory:
+        with patch("agentic_memory.core.entity_extraction.build_extraction_openai_client") as mock_client_factory:
             mock_client = MagicMock()
             mock_client_factory.return_value = mock_client
             mock_client.chat.completions.create.return_value.choices = [
@@ -69,7 +69,7 @@ class TestEntityExtractionServiceExtract:
         response_json = json.dumps(
             {"entities": [{"name": "Python", "type": "technology"}]}
         )
-        with patch("codememory.core.entity_extraction.build_extraction_openai_client") as mock_client_factory:
+        with patch("agentic_memory.core.entity_extraction.build_extraction_openai_client") as mock_client_factory:
             mock_client = MagicMock()
             mock_client_factory.return_value = mock_client
             mock_client.chat.completions.create.return_value.choices = [
@@ -90,7 +90,7 @@ class TestEntityExtractionServiceExtract:
                 ]
             }
         )
-        with patch("codememory.core.entity_extraction.build_extraction_openai_client") as mock_client_factory:
+        with patch("agentic_memory.core.entity_extraction.build_extraction_openai_client") as mock_client_factory:
             mock_client = MagicMock()
             mock_client_factory.return_value = mock_client
             mock_client.chat.completions.create.return_value.choices = [
@@ -106,7 +106,7 @@ class TestEntityExtractionServiceExtract:
         """extract() truncates document_text to 8000 chars before sending to LLM."""
         long_text = "a" * 10000  # 10000 chars, should be truncated to 8000
         response_json = json.dumps({"entities": []})
-        with patch("codememory.core.entity_extraction.build_extraction_openai_client") as mock_client_factory:
+        with patch("agentic_memory.core.entity_extraction.build_extraction_openai_client") as mock_client_factory:
             mock_client = MagicMock()
             mock_client_factory.return_value = mock_client
             mock_client.chat.completions.create.return_value.choices = [
@@ -124,7 +124,7 @@ class TestEntityExtractionServiceExtract:
     def test_extract_handles_empty_response(self) -> None:
         """extract() returns [] when the provider returns {'entities': []}."""
         response_json = json.dumps({"entities": []})
-        with patch("codememory.core.entity_extraction.build_extraction_openai_client") as mock_client_factory:
+        with patch("agentic_memory.core.entity_extraction.build_extraction_openai_client") as mock_client_factory:
             mock_client = MagicMock()
             mock_client_factory.return_value = mock_client
             mock_client.chat.completions.create.return_value.choices = [
@@ -140,7 +140,7 @@ class TestEntityExtractionServiceExtract:
         # LLM returns "results" instead of "entities" — Pitfall 4
         entities_list = [{"name": "OpenAI", "type": "technology"}]
         response_json = json.dumps({"results": entities_list})
-        with patch("codememory.core.entity_extraction.build_extraction_openai_client") as mock_client_factory:
+        with patch("agentic_memory.core.entity_extraction.build_extraction_openai_client") as mock_client_factory:
             mock_client = MagicMock()
             mock_client_factory.return_value = mock_client
             mock_client.chat.completions.create.return_value.choices = [
@@ -154,7 +154,7 @@ class TestEntityExtractionServiceExtract:
     def test_extract_uses_json_object_mode(self) -> None:
         """extract() passes response_format={'type': 'json_object'} to the provider."""
         response_json = json.dumps({"entities": []})
-        with patch("codememory.core.entity_extraction.build_extraction_openai_client") as mock_client_factory:
+        with patch("agentic_memory.core.entity_extraction.build_extraction_openai_client") as mock_client_factory:
             mock_client = MagicMock()
             mock_client_factory.return_value = mock_client
             mock_client.chat.completions.create.return_value.choices = [
@@ -170,7 +170,7 @@ class TestEntityExtractionServiceExtract:
     def test_extract_uses_temperature_zero(self) -> None:
         """extract() passes temperature=0.0 to the provider for deterministic output."""
         response_json = json.dumps({"entities": []})
-        with patch("codememory.core.entity_extraction.build_extraction_openai_client") as mock_client_factory:
+        with patch("agentic_memory.core.entity_extraction.build_extraction_openai_client") as mock_client_factory:
             mock_client = MagicMock()
             mock_client_factory.return_value = mock_client
             mock_client.chat.completions.create.return_value.choices = [

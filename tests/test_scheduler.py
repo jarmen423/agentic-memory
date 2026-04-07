@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, Mock
 import httpx
 import pytest
 
-from codememory.core import scheduler as scheduler_module
-from codememory.server import tools as tools_module
+from agentic_memory.core import scheduler as scheduler_module
+from agentic_memory.server import tools as tools_module
 
 pytestmark = [pytest.mark.unit]
 

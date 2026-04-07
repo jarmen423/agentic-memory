@@ -5,13 +5,14 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 
-from codememory.chat.pipeline import ConversationIngestionPipeline
-from codememory.core.connection import ConnectionManager
-from codememory.core.entity_extraction import EntityExtractionService
-from codememory.core.extraction_llm import resolve_extraction_llm_config
-from codememory.core.runtime_embedding import build_embedding_service
-from codememory.temporal.bridge import get_temporal_bridge
-from codememory.web.pipeline import ResearchIngestionPipeline
+from agentic_memory.chat.pipeline import ConversationIngestionPipeline
+from agentic_memory.core.connection import ConnectionManager
+from agentic_memory.core.entity_extraction import EntityExtractionService
+from agentic_memory.core.extraction_llm import resolve_extraction_llm_config
+from agentic_memory.product.state import ProductStateStore
+from agentic_memory.core.runtime_embedding import build_embedding_service
+from agentic_memory.temporal.bridge import get_temporal_bridge
+from agentic_memory.web.pipeline import ResearchIngestionPipeline
 
 
 @lru_cache(maxsize=1)
@@ -66,3 +67,9 @@ def get_conversation_pipeline() -> ConversationIngestionPipeline:
         extractor,
         temporal_bridge=get_temporal_bridge(),
     )
+
+
+@lru_cache(maxsize=1)
+def get_product_store() -> ProductStateStore:
+    """Return the shared local product-state store."""
+    return ProductStateStore()

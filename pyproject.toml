@@ -31,7 +31,8 @@ dependencies = [
 ]
 
 [project.scripts]
-codememory = "codememory.cli:main"
+agentic-memory = "agentic_memory.cli:main"
+codememory = "agentic_memory.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -48,7 +49,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/codememory", "src/am_server"]
+packages = ["src/agentic_memory", "src/codememory", "src/am_server"]
 
 # pytest configuration
 [tool.pytest.ini_options]
@@ -66,7 +67,7 @@ markers = [
 
 # Coverage configuration
 [tool.coverage.run]
-source = ["src/codememory"]
+source = ["src/agentic_memory", "src/am_server"]
 omit = ["*/tests/*", "*/__pycache__/*"]
 branch = true
 

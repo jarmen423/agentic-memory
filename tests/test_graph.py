@@ -24,12 +24,12 @@ class TestKnowledgeGraphBuilder:
     @pytest.fixture
     def builder(self, mock_driver):
         """Create a KnowledgeGraphBuilder with mocked dependencies."""
-        from codememory.ingestion.graph import KnowledgeGraphBuilder
+        from agentic_memory.ingestion.graph import KnowledgeGraphBuilder
 
         driver, session = mock_driver
         with patch('neo4j.GraphDatabase.driver', return_value=driver), \
              patch.object(KnowledgeGraphBuilder, '_init_parsers'), \
-             patch('codememory.ingestion.graph.OpenAI'):
+             patch('agentic_memory.ingestion.graph.OpenAI'):
             
             builder = KnowledgeGraphBuilder(
                 uri="bolt://localhost:7687",
@@ -130,7 +130,7 @@ class TestGraphIntegration:
     def neo4j_builder(self):
         """Create a builder connected to real Neo4j (if available)."""
         import os
-        from codememory.ingestion.graph import KnowledgeGraphBuilder
+        from agentic_memory.ingestion.graph import KnowledgeGraphBuilder
 
         uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
         user = os.getenv("NEO4J_USER", "neo4j")

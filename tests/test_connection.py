@@ -4,13 +4,13 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from codememory.core.connection import ConnectionManager
+from agentic_memory.core.connection import ConnectionManager
 
 
 @pytest.mark.unit
 def test_init_creates_driver():
     """ConnectionManager.__init__ creates neo4j.GraphDatabase.driver with correct args."""
-    with patch("codememory.core.connection.neo4j.GraphDatabase.driver") as mock_driver:
+    with patch("agentic_memory.core.connection.neo4j.GraphDatabase.driver") as mock_driver:
         conn = ConnectionManager("bolt://localhost:7687", "neo4j", "password")
         mock_driver.assert_called_once_with(
             "bolt://localhost:7687",
@@ -26,7 +26,7 @@ def test_init_creates_driver():
 @pytest.mark.unit
 def test_session_context_manager():
     """conn.session() yields a neo4j session via driver.session()."""
-    with patch("codememory.core.connection.neo4j.GraphDatabase.driver") as mock_driver:
+    with patch("agentic_memory.core.connection.neo4j.GraphDatabase.driver") as mock_driver:
         mock_session = MagicMock()
         mock_driver.return_value.session.return_value.__enter__ = MagicMock(return_value=mock_session)
         mock_driver.return_value.session.return_value.__exit__ = MagicMock(return_value=False)
@@ -40,7 +40,7 @@ def test_session_context_manager():
 @pytest.mark.unit
 def test_setup_database_runs_all_queries():
     """setup_database() executes all vector index CREATE statements and entity uniqueness constraint."""
-    with patch("codememory.core.connection.neo4j.GraphDatabase.driver") as mock_driver:
+    with patch("agentic_memory.core.connection.neo4j.GraphDatabase.driver") as mock_driver:
         mock_session = MagicMock()
         mock_driver.return_value.session.return_value.__enter__ = MagicMock(return_value=mock_session)
         mock_driver.return_value.session.return_value.__exit__ = MagicMock(return_value=False)
@@ -62,7 +62,7 @@ def test_setup_database_runs_all_queries():
 @pytest.mark.unit
 def test_close_closes_driver():
     """conn.close() calls driver.close()."""
-    with patch("codememory.core.connection.neo4j.GraphDatabase.driver") as mock_driver:
+    with patch("agentic_memory.core.connection.neo4j.GraphDatabase.driver") as mock_driver:
         conn = ConnectionManager("bolt://localhost:7687", "neo4j", "password")
         conn.close()
         mock_driver.return_value.close.assert_called_once()
@@ -84,7 +84,7 @@ def test_from_config(monkeypatch):
             "password": "secret",
         }
     }
-    with patch("codememory.core.connection.neo4j.GraphDatabase.driver") as mock_driver:
+    with patch("agentic_memory.core.connection.neo4j.GraphDatabase.driver") as mock_driver:
         conn = ConnectionManager.from_config(config)
         mock_driver.assert_called_once_with(
             "bolt://myhost:7687",
@@ -110,7 +110,7 @@ def test_from_config_env_var_fallback(monkeypatch):
             "password": "password",
         }
     }
-    with patch("codememory.core.connection.neo4j.GraphDatabase.driver") as mock_driver:
+    with patch("agentic_memory.core.connection.neo4j.GraphDatabase.driver") as mock_driver:
         conn = ConnectionManager.from_config(config)
         mock_driver.assert_called_once_with(
             "bolt://envhost:7687",

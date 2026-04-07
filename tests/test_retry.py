@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from codememory.core.retry import retry_transient
+from agentic_memory.core.retry import retry_transient
 
 
 def test_retry_transient_retries_timeout_then_succeeds():

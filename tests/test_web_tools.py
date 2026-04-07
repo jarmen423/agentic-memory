@@ -58,7 +58,7 @@ class TestMemoryIngestResearch:
         mock_pipeline = _make_mock_pipeline()
 
         # Patch _get_research_pipeline to return mock
-        from codememory.server import app as app_module
+        from agentic_memory.server import app as app_module
         monkeypatch.setattr(app_module, "_get_research_pipeline", lambda: mock_pipeline)
 
         result = app_module.memory_ingest_research(
@@ -81,7 +81,7 @@ class TestMemoryIngestResearch:
         """memory_ingest_research returns JSON string with status=ok."""
         mock_pipeline = _make_mock_pipeline()
 
-        from codememory.server import app as app_module
+        from agentic_memory.server import app as app_module
         monkeypatch.setattr(app_module, "_get_research_pipeline", lambda: mock_pipeline)
 
         result = app_module.memory_ingest_research(
@@ -108,7 +108,7 @@ class TestMemoryIngestResearch:
             "session_id": "sess1",
         }
 
-        from codememory.server import app as app_module
+        from agentic_memory.server import app as app_module
         monkeypatch.setattr(app_module, "_get_research_pipeline", lambda: mock_pipeline)
 
         result = app_module.memory_ingest_research(
@@ -136,7 +136,7 @@ class TestMemoryIngestResearch:
             "session_id": "sess1",
         }
 
-        from codememory.server import app as app_module
+        from agentic_memory.server import app as app_module
         monkeypatch.setattr(app_module, "_get_research_pipeline", lambda: mock_pipeline)
 
         result = app_module.memory_ingest_research(
@@ -152,7 +152,7 @@ class TestMemoryIngestResearch:
 
     def test_memory_ingest_research_missing_api_keys_returns_error(self, monkeypatch):
         """memory_ingest_research returns error string when pipeline unavailable."""
-        from codememory.server import app as app_module
+        from agentic_memory.server import app as app_module
         monkeypatch.setattr(app_module, "_get_research_pipeline", lambda: None)
 
         result = app_module.memory_ingest_research(
@@ -168,7 +168,7 @@ class TestMemoryIngestResearch:
 
     def test_memory_ingest_research_has_always_call_description(self):
         """memory_ingest_research tool docstring contains 'ALWAYS call this tool'."""
-        from codememory.server import app as app_module
+        from agentic_memory.server import app as app_module
         assert "ALWAYS call this tool" in app_module.memory_ingest_research.__doc__
 
 
@@ -206,7 +206,7 @@ class TestSearchWebMemory:
         session_ctx.__exit__ = Mock(return_value=False)
         mock_pipeline._conn.session.return_value = session_ctx
 
-        from codememory.server import app as app_module
+        from agentic_memory.server import app as app_module
         monkeypatch.setattr(app_module, "_get_research_pipeline", lambda: mock_pipeline)
 
         result = app_module.search_web_memory(query="graph database", limit=5)
@@ -230,7 +230,7 @@ class TestSearchWebMemory:
         session_ctx.__exit__ = Mock(return_value=False)
         mock_pipeline._conn.session.return_value = session_ctx
 
-        from codememory.server import app as app_module
+        from agentic_memory.server import app as app_module
         monkeypatch.setattr(app_module, "_get_research_pipeline", lambda: mock_pipeline)
 
         result = app_module.search_web_memory(query="nothing here", limit=5)
@@ -251,7 +251,7 @@ class TestSearchWebMemory:
         session_ctx.__exit__ = Mock(return_value=False)
         mock_pipeline._conn.session.return_value = session_ctx
 
-        from codememory.server import app as app_module
+        from agentic_memory.server import app as app_module
         monkeypatch.setattr(app_module, "_get_research_pipeline", lambda: mock_pipeline)
 
         app_module.search_web_memory(query="test query", limit=5)
@@ -262,7 +262,7 @@ class TestSearchWebMemory:
 
     def test_search_web_memory_pipeline_unavailable_returns_error(self, monkeypatch):
         """search_web_memory returns error string when pipeline unavailable."""
-        from codememory.server import app as app_module
+        from agentic_memory.server import app as app_module
         monkeypatch.setattr(app_module, "_get_research_pipeline", lambda: None)
 
         result = app_module.search_web_memory(query="test", limit=5)
@@ -295,7 +295,7 @@ class TestSearchWebMemory:
         session_ctx.__exit__ = Mock(return_value=False)
         mock_pipeline._conn.session.return_value = session_ctx
 
-        from codememory.server import app as app_module
+        from agentic_memory.server import app as app_module
         monkeypatch.setattr(app_module, "_get_research_pipeline", lambda: mock_pipeline)
 
         result = app_module.search_web_memory(query="fallback", limit=5)
@@ -330,7 +330,7 @@ class TestSearchWebMemory:
         session_ctx.__exit__ = Mock(return_value=False)
         mock_pipeline._conn.session.return_value = session_ctx
 
-        from codememory.server import app as app_module
+        from agentic_memory.server import app as app_module
         monkeypatch.setattr(app_module, "_get_research_pipeline", lambda: mock_pipeline)
 
         with caplog.at_level("WARNING"):
@@ -381,7 +381,7 @@ class TestSearchWebMemory:
         session_ctx.__exit__ = Mock(return_value=False)
         mock_pipeline._conn.session.return_value = session_ctx
 
-        from codememory.server import app as app_module
+        from agentic_memory.server import app as app_module
         monkeypatch.setattr(app_module, "_get_research_pipeline", lambda: mock_pipeline)
 
         result = app_module.search_web_memory(
@@ -441,7 +441,7 @@ class TestSearchWebMemory:
         session_ctx.__exit__ = Mock(return_value=False)
         mock_pipeline._conn.session.return_value = session_ctx
 
-        from codememory.server import app as app_module
+        from agentic_memory.server import app as app_module
         monkeypatch.setattr(app_module, "_get_research_pipeline", lambda: mock_pipeline)
 
         result = app_module.search_web_memory(query="graph database", limit=5)
@@ -481,7 +481,7 @@ class TestSearchWebMemory:
         session_ctx.__exit__ = Mock(return_value=False)
         mock_pipeline._conn.session.return_value = session_ctx
 
-        from codememory.server import app as app_module
+        from agentic_memory.server import app as app_module
         monkeypatch.setattr(app_module, "_get_research_pipeline", lambda: mock_pipeline)
 
         result = app_module.search_web_memory(query="graph database", limit=5)
@@ -502,7 +502,7 @@ class TestBraveSearch:
         """brave_search returns error string when BRAVE_SEARCH_API_KEY not set."""
         monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
 
-        from codememory.server import app as app_module
+        from agentic_memory.server import app as app_module
 
         result = app_module.brave_search(query="python neo4j", count=5)
 
@@ -530,10 +530,10 @@ class TestBraveSearch:
         mock_client_ctx.__enter__ = Mock(return_value=mock_client_instance)
         mock_client_ctx.__exit__ = Mock(return_value=False)
 
-        with patch("codememory.server.app.httpx") as mock_httpx:
+        with patch("agentic_memory.server.app.httpx") as mock_httpx:
             mock_httpx.Client.return_value = mock_client_ctx
 
-            from codememory.server import app as app_module
+            from agentic_memory.server import app as app_module
             result = app_module.brave_search(query="neo4j", count=5)
 
         assert isinstance(result, str)
@@ -554,10 +554,10 @@ class TestBraveSearch:
         mock_client_ctx.__enter__ = Mock(return_value=mock_client_instance)
         mock_client_ctx.__exit__ = Mock(return_value=False)
 
-        with patch("codememory.server.app.httpx") as mock_httpx:
+        with patch("agentic_memory.server.app.httpx") as mock_httpx:
             mock_httpx.Client.return_value = mock_client_ctx
 
-            from codememory.server import app as app_module
+            from agentic_memory.server import app as app_module
             app_module.brave_search(query="test query", count=3)
 
         # Verify the GET call used the correct URL and auth header
@@ -586,10 +586,10 @@ class TestBraveSearch:
         mock_client_ctx.__enter__ = Mock(return_value=mock_client_instance)
         mock_client_ctx.__exit__ = Mock(return_value=False)
 
-        with patch("codememory.server.app.httpx") as mock_httpx:
+        with patch("agentic_memory.server.app.httpx") as mock_httpx:
             mock_httpx.Client.return_value = mock_client_ctx
-            with patch("codememory.server.app._get_research_pipeline") as mock_get_pipeline:
-                from codememory.server import app as app_module
+            with patch("agentic_memory.server.app._get_research_pipeline") as mock_get_pipeline:
+                from agentic_memory.server import app as app_module
                 app_module.brave_search(query="test", count=5)
 
                 # brave_search must NOT call the research pipeline
@@ -609,10 +609,10 @@ class TestBraveSearch:
         mock_client_ctx.__enter__ = Mock(return_value=mock_client_instance)
         mock_client_ctx.__exit__ = Mock(return_value=False)
 
-        with patch("codememory.server.app.httpx") as mock_httpx:
+        with patch("agentic_memory.server.app.httpx") as mock_httpx:
             mock_httpx.Client.return_value = mock_client_ctx
 
-            from codememory.server import app as app_module
+            from agentic_memory.server import app as app_module
             result = app_module.brave_search(query="xyzzy impossible query", count=5)
 
         assert isinstance(result, str)

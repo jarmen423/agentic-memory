@@ -11,7 +11,7 @@ Tests enforce:
 
 import pytest
 
-from codememory.core.config_validator import validate_embedding_config
+from agentic_memory.core.config_validator import validate_embedding_config
 
 
 # ---------------------------------------------------------------------------

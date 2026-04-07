@@ -6,8 +6,8 @@ from fastapi import APIRouter, Depends, Query
 
 from am_server.auth import require_auth
 from am_server.dependencies import get_conversation_pipeline, get_pipeline
-from codememory.server.app import get_graph
-from codememory.server.unified_search import search_all_memory_sync
+from agentic_memory.server.app import get_graph
+from agentic_memory.server.unified_search import search_all_memory_sync
 
 router = APIRouter(dependencies=[Depends(require_auth)])
 

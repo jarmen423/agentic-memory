@@ -13,9 +13,9 @@ Tests enforce:
 from unittest.mock import MagicMock, call, patch
 import pytest
 
-from codememory.core.registry import SOURCE_REGISTRY, register_source
-from codememory.core.base import BaseIngestionPipeline
-from codememory.core.graph_writer import GraphWriter
+from agentic_memory.core.registry import SOURCE_REGISTRY, register_source
+from agentic_memory.core.base import BaseIngestionPipeline
+from agentic_memory.core.graph_writer import GraphWriter
 
 
 # ---------------------------------------------------------------------------

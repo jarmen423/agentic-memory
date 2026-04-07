@@ -2,7 +2,7 @@
 
 import pytest
 
-from codememory.core.registry import SOURCE_REGISTRY, register_source
+from agentic_memory.core.registry import SOURCE_REGISTRY, register_source
 
 
 @pytest.fixture(autouse=True)

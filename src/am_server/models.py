@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from typing import Any
+
+from pydantic import BaseModel, Field
 
 
 class CitationModel(BaseModel):
@@ -18,7 +20,7 @@ class FindingModel(BaseModel):
 
     text: str
     confidence: str | None = None
-    citations: list[CitationModel] = []
+    citations: list[CitationModel] = Field(default_factory=list)
 
 
 class ResearchIngestRequest(BaseModel):
@@ -61,3 +63,44 @@ class ConversationIngestRequest(BaseModel):
     timestamp: str | None = None
     ingestion_mode: str = "active"
     source_key: str = "chat_mcp"
+
+
+class ProductRepoUpsertRequest(BaseModel):
+    """Request body for creating or updating a tracked repository."""
+
+    repo_path: str
+    label: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProductIntegrationUpsertRequest(BaseModel):
+    """Request body for creating or updating an integration status."""
+
+    surface: str
+    target: str
+    status: str
+    config: dict[str, Any] = Field(default_factory=dict)
+    last_error: str | None = None
+
+
+class ProductComponentStatusRequest(BaseModel):
+    """Request body for component health updates."""
+
+    status: str
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProductEventRequest(BaseModel):
+    """Request body for product event ingestion."""
+
+    event_type: str
+    status: str = "ok"
+    actor: str = "api"
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProductOnboardingStepRequest(BaseModel):
+    """Request body for onboarding progress updates."""
+
+    step: str
+    completed: bool = True

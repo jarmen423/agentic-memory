@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from codememory.core.claim_extraction import ClaimExtractionService
+from agentic_memory.core.claim_extraction import ClaimExtractionService
 
 
 def _mock_response(payload: str) -> Mock:
@@ -24,7 +24,7 @@ def test_extract_returns_normalized_claims():
     )
 
     with patch(
-        "codememory.core.claim_extraction.build_extraction_openai_client",
+        "agentic_memory.core.claim_extraction.build_extraction_openai_client",
         Mock(return_value=mock_client),
     ):
         service = ClaimExtractionService(api_key="test-key")
@@ -50,7 +50,7 @@ def test_extract_remaps_unknown_predicates_to_references():
     )
 
     with patch(
-        "codememory.core.claim_extraction.build_extraction_openai_client",
+        "agentic_memory.core.claim_extraction.build_extraction_openai_client",
         Mock(return_value=mock_client),
     ):
         service = ClaimExtractionService(api_key="test-key")
@@ -65,7 +65,7 @@ def test_extract_truncates_input_to_8000_characters():
     mock_client.chat.completions.create.return_value = _mock_response('{"claims":[]}')
 
     with patch(
-        "codememory.core.claim_extraction.build_extraction_openai_client",
+        "agentic_memory.core.claim_extraction.build_extraction_openai_client",
         Mock(return_value=mock_client),
     ):
         service = ClaimExtractionService(api_key="test-key")
@@ -81,7 +81,7 @@ def test_extract_returns_empty_list_for_empty_claims():
     mock_client.chat.completions.create.return_value = _mock_response('{"claims":[]}')
 
     with patch(
-        "codememory.core.claim_extraction.build_extraction_openai_client",
+        "agentic_memory.core.claim_extraction.build_extraction_openai_client",
         Mock(return_value=mock_client),
     ):
         service = ClaimExtractionService(api_key="test-key")
@@ -96,7 +96,7 @@ def test_extract_wraps_provider_errors():
     mock_client.chat.completions.create.side_effect = ValueError("bad request")
 
     with patch(
-        "codememory.core.claim_extraction.build_extraction_openai_client",
+        "agentic_memory.core.claim_extraction.build_extraction_openai_client",
         Mock(return_value=mock_client),
     ):
         service = ClaimExtractionService(api_key="test-key")
@@ -110,7 +110,7 @@ def test_extract_uses_json_object_mode_and_zero_temperature():
     mock_client.chat.completions.create.return_value = _mock_response('{"claims":[]}')
 
     with patch(
-        "codememory.core.claim_extraction.build_extraction_openai_client",
+        "agentic_memory.core.claim_extraction.build_extraction_openai_client",
         Mock(return_value=mock_client),
     ):
         service = ClaimExtractionService(api_key="test-key")

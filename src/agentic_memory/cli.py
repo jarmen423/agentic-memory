@@ -1041,7 +1041,7 @@ def cmd_openclaw_setup(args: argparse.Namespace) -> None:
                     "enabled": True,
                     "config": {
                         "backendUrl": args.backend_url,
-                        "apiKeyEnv": args.api_key_env,
+                        "apiKey": f"${{{args.api_key_env}}}",
                         "workspaceId": args.workspace_id,
                         "deviceId": args.device_id,
                         "agentId": args.agent_id,
@@ -2324,7 +2324,7 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
         "--api-key-env",
         type=str,
         default="AGENTIC_MEMORY_API_KEY",
-        help="Environment variable name OpenClaw should read for backend auth",
+        help="Environment variable name to interpolate into the generated apiKey field",
     )
     openclaw_setup_parser.add_argument(
         "--config-path",

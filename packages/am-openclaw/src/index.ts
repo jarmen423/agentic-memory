@@ -43,7 +43,6 @@ export interface OpenClawIdentity {
 export interface AgenticMemoryPluginConfig extends Partial<OpenClawIdentity> {
   backendUrl?: string;
   apiKey?: string | null;
-  apiKeyEnv?: string | null;
   projectId?: string | null;
   contextEngineId?: string | null;
 }
@@ -90,7 +89,6 @@ type SearchManagerStatus = {
 };
 
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:8765";
-const DEFAULT_API_KEY_ENV = "AGENTIC_MEMORY_API_KEY";
 const DEFAULT_CONTEXT_ENGINE_ID = "agentic-memory";
 const PLUGIN_ID = "agentic-memory";
 
@@ -107,7 +105,6 @@ const PLUGIN_CONFIG_SCHEMA = {
   properties: {
     backendUrl: { type: "string" },
     apiKey: { type: "string" },
-    apiKeyEnv: { type: "string" },
     workspaceId: { type: "string" },
     deviceId: { type: "string" },
     agentId: { type: "string" },
@@ -151,7 +148,7 @@ export function buildOpenClawBootstrapConfig(
   options: OpenClawIdentity & {
     backendUrl: string;
     backendApiKey?: string | null;
-    apiKeyEnv?: string | null;
+    apiKeyTemplateVar?: string | null;
     projectId?: string | null;
     enableContextEngine?: boolean;
   },
@@ -169,8 +166,9 @@ export function buildOpenClawBootstrapConfig(
           enabled: true,
           config: {
             backendUrl: options.backendUrl.trim(),
-            apiKey: options.backendApiKey?.trim() || undefined,
-            apiKeyEnv: options.apiKeyEnv?.trim() || DEFAULT_API_KEY_ENV,
+            apiKey:
+              options.backendApiKey?.trim() ||
+              `\${${options.apiKeyTemplateVar?.trim() || "AGENTIC_MEMORY_API_KEY"}}`,
             workspaceId: identity.workspaceId,
             deviceId: identity.deviceId,
             agentId: identity.agentId,
@@ -242,11 +240,11 @@ function buildSessionId(sessionId: string, suffix: string): string {
 }
 
 /**
- * Resolve plugin configuration from OpenClaw config plus environment fallback.
+ * Resolve plugin configuration from the OpenClaw plugin config payload.
  *
  * The plugin prefers explicit plugin config because that is what the new
- * `openclaw-setup` command writes. Environment variables remain a fallback for
- * manual operators and local development.
+ * `openclaw-setup` command writes. Secrets should already be resolved by the
+ * host configuration layer before the plugin receives them.
  */
 export function resolveAgenticMemoryPluginConfig(
   pluginConfig: Record<string, unknown>,
@@ -254,35 +252,16 @@ export function resolveAgenticMemoryPluginConfig(
 ): Required<OpenClawIdentity> & {
   backendUrl: string;
   apiKey: string | null;
-  apiKeyEnv: string;
   projectId: string | null;
   contextEngineId: string;
 } {
   const resolved = {
-    backendUrl:
-      asString(pluginConfig.backendUrl) ??
-      process.env.AGENTIC_MEMORY_BACKEND_URL ??
-      DEFAULT_BACKEND_URL,
-    apiKey:
-      asString(pluginConfig.apiKey) ??
-      (asString(pluginConfig.apiKeyEnv) ? process.env[asString(pluginConfig.apiKeyEnv)!] ?? null : null) ??
-      process.env[DEFAULT_API_KEY_ENV] ??
-      null,
-    apiKeyEnv: asString(pluginConfig.apiKeyEnv) ?? DEFAULT_API_KEY_ENV,
-    workspaceId:
-      asString(pluginConfig.workspaceId) ??
-      process.env.OPENCLAW_WORKSPACE_ID ??
-      "default-workspace",
-    deviceId:
-      asString(pluginConfig.deviceId) ??
-      process.env.OPENCLAW_DEVICE_ID ??
-      "default-device",
-    agentId:
-      asString(pluginConfig.agentId) ??
-      agentIdFromHost ??
-      process.env.OPENCLAW_AGENT_ID ??
-      "default-agent",
-    projectId: asString(pluginConfig.projectId) ?? process.env.OPENCLAW_PROJECT_ID ?? null,
+    backendUrl: asString(pluginConfig.backendUrl) ?? DEFAULT_BACKEND_URL,
+    apiKey: asString(pluginConfig.apiKey) ?? null,
+    workspaceId: asString(pluginConfig.workspaceId) ?? "default-workspace",
+    deviceId: asString(pluginConfig.deviceId) ?? "default-device",
+    agentId: asString(pluginConfig.agentId) ?? agentIdFromHost ?? "default-agent",
+    projectId: asString(pluginConfig.projectId) ?? null,
     contextEngineId: asString(pluginConfig.contextEngineId) ?? DEFAULT_CONTEXT_ENGINE_ID,
   };
 

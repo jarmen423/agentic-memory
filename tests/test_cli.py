@@ -753,6 +753,10 @@ def test_openclaw_setup_writes_config_and_updates_product_state(monkeypatch, cap
     assert payload["data"]["config"]["plugins"]["slots"]["memory"] == "agentic-memory"
     assert payload["data"]["config"]["plugins"]["slots"]["contextEngine"] == "agentic-memory"
     assert (
+        payload["data"]["config"]["plugins"]["entries"]["agentic-memory"]["config"]["apiKey"]
+        == "${AGENTIC_MEMORY_API_KEY}"
+    )
+    assert (
         payload["data"]["config"]["plugins"]["entries"]["agentic-memory"]["config"]["projectId"]
         == "project-neo"
     )

@@ -10,10 +10,10 @@
       "placeholder": "http://127.0.0.1:8765",
       "help": "Agentic Memory backend URL that exposes the /openclaw endpoints."
     },
-    "apiKeyEnv": {
-      "label": "API Key Environment Variable",
-      "placeholder": "AGENTIC_MEMORY_API_KEY",
-      "help": "Environment variable OpenClaw should read for bearer authentication."
+    "apiKey": {
+      "label": "API Key",
+      "placeholder": "${AGENTIC_MEMORY_API_KEY}",
+      "help": "Bearer token for the Agentic Memory backend. Prefer OpenClaw env interpolation such as ${AGENTIC_MEMORY_API_KEY}."
     },
     "workspaceId": {
       "label": "Workspace ID",
@@ -46,9 +46,6 @@
         "type": "string"
       },
       "apiKey": {
-        "type": "string"
-      },
-      "apiKeyEnv": {
         "type": "string"
       },
       "workspaceId": {

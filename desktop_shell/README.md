@@ -6,6 +6,7 @@ Minimal local web shell for the control plane.
 
 - Shows a live status view from the existing `am-server` product API.
 - Surfaces placeholder cards for browser extension, ACP proxy, and MCP client integrations.
+- Adds an OpenClaw setup card for shared workspace memory and optional context-engine enablement.
 - Gives you a simple dev path without Electron or Tauri.
 
 ## Run It

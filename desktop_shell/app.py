@@ -1,4 +1,18 @@
-"""FastAPI app for the local desktop control-plane shell."""
+"""FastAPI app for the local desktop control-plane shell.
+
+This shell is intentionally thin: it serves static UI assets locally and proxies
+product-control requests into the separately running backend API. That means the
+desktop shell needs to handle two classes of failure cleanly:
+
+1. The backend responded, but it returned an HTTP error.
+2. The backend is not reachable at all because it is not running yet, is bound
+   to a different port, or refused the TCP connection.
+
+The second case used to bubble an ``httpx.ConnectError`` up through FastAPI,
+which produced an internal server error and an ASGI traceback in the shell logs.
+We translate transport failures into a stable 503 response instead so callers
+and the UI get an actionable "backend unavailable" result.
+"""
 
 from __future__ import annotations
 
@@ -39,8 +53,32 @@ def _proxy_json_response(
     *,
     json_body: dict | None = None,
 ) -> dict:
-    """Proxy a JSON request to the backend."""
-    response = client.request(method, path, json=json_body)
+    """Proxy a JSON request to the backend.
+
+    Args:
+        client: Configured HTTPX client that targets the backend API.
+        method: HTTP method to send upstream.
+        path: Backend route path.
+        json_body: Optional JSON request body forwarded to the backend.
+
+    Returns:
+        Parsed JSON payload returned by the backend.
+
+    Raises:
+        HTTPException: If the backend responds with an HTTP error or cannot be
+            reached over the network.
+    """
+    try:
+        response = client.request(method, path, json=json_body)
+    except httpx.RequestError as exc:
+        backend_url = str(client.base_url).rstrip("/")
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Backend API unavailable at {backend_url}. "
+                "Start the Agentic Memory backend or update the shell backend URL."
+            ),
+        ) from exc
     try:
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:  # pragma: no cover - exercised in integration smoke

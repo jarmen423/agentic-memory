@@ -12,11 +12,22 @@ const repoLabelInput = document.getElementById("repo-label");
 const actionFeedback = document.getElementById("action-feedback");
 const markShellHealthyButton = document.getElementById("mark-shell-healthy-button");
 const markRepoStepButton = document.getElementById("mark-repo-step-button");
+const openClawForm = document.getElementById("openclaw-form");
+const openClawWorkspaceInput = document.getElementById("openclaw-workspace-id");
+const openClawDeviceInput = document.getElementById("openclaw-device-id");
+const openClawAgentInput = document.getElementById("openclaw-agent-id");
+const openClawMemoryPill = document.getElementById("openclaw-memory-pill");
+const openClawContextPill = document.getElementById("openclaw-context-pill");
+const openClawNote = document.getElementById("openclaw-note");
+const openClawContextButton = document.getElementById("openclaw-context-button");
+const openClawVerifyButton = document.getElementById("openclaw-verify-button");
 
 const integrationMap = [
   { surface: "browser_extension", target: "chatgpt" },
   { surface: "acp_proxy", target: "cli" },
   { surface: "mcp_client", target: "claude_desktop" },
+  { surface: "openclaw_memory", target: "workspace" },
+  { surface: "openclaw_context_engine", target: "workspace" },
 ];
 
 function setText(el, value) {
@@ -44,6 +55,7 @@ function renderProductStatus(data) {
   setText(repoCount, String(repoSummary));
   setText(repoNote, `State file: ${data.state_path ?? "unknown"}`);
   statusJson.textContent = JSON.stringify(data, null, 2);
+  renderOpenClawStatus(integrations);
 
   integrationMap.forEach(({ surface, target }) => {
     const pill = document.querySelector(`[data-surface="${surface}"][data-target="${target}"]`);
@@ -55,6 +67,47 @@ function renderProductStatus(data) {
     pill.dataset.status = status;
     setText(pill, status);
   });
+}
+
+function renderOpenClawStatus(integrations) {
+  const memoryRecord = integrations.find(
+    (item) => item.surface === "openclaw_memory" && item.target === "workspace",
+  );
+  const contextRecord = integrations.find(
+    (item) => item.surface === "openclaw_context_engine" && item.target === "workspace",
+  );
+
+  setText(
+    openClawMemoryPill,
+    memoryRecord ? `Memory ${memoryRecord.status}` : "Memory pending",
+  );
+  setText(
+    openClawContextPill,
+    contextRecord ? `Context ${contextRecord.status}` : "Context pending",
+  );
+  openClawMemoryPill.dataset.status = memoryRecord?.status ?? "pending";
+  openClawContextPill.dataset.status = contextRecord?.status ?? "pending";
+
+  const workspaceId =
+    memoryRecord?.config?.workspace_id ||
+    contextRecord?.config?.workspace_id ||
+    openClawWorkspaceInput.value ||
+    "unassigned";
+  const deviceId =
+    memoryRecord?.config?.device_id ||
+    contextRecord?.config?.device_id ||
+    openClawDeviceInput.value ||
+    "unknown";
+  const agentId =
+    memoryRecord?.config?.agent_id ||
+    contextRecord?.config?.agent_id ||
+    openClawAgentInput.value ||
+    "unknown";
+
+  setText(
+    openClawNote,
+    `Workspace ${workspaceId} is shared across devices. Device ${deviceId} and agent ${agentId} are tracked for memory and context testing.`,
+  );
 }
 
 async function loadBootstrap() {
@@ -125,6 +178,91 @@ function wireRepoForm() {
       });
       await loadStatus();
       setFeedback(`Tracked repo: ${repoPath}`);
+    } catch (error) {
+      showError(error);
+    }
+  });
+}
+
+function loadOpenClawDraft() {
+  openClawWorkspaceInput.value = localStorage.getItem("desktop_shell.openclaw.workspace_id") || "";
+  openClawDeviceInput.value = localStorage.getItem("desktop_shell.openclaw.device_id") || "";
+  openClawAgentInput.value = localStorage.getItem("desktop_shell.openclaw.agent_id") || "";
+}
+
+function saveOpenClawDraft() {
+  localStorage.setItem("desktop_shell.openclaw.workspace_id", openClawWorkspaceInput.value.trim());
+  localStorage.setItem("desktop_shell.openclaw.device_id", openClawDeviceInput.value.trim());
+  localStorage.setItem("desktop_shell.openclaw.agent_id", openClawAgentInput.value.trim());
+}
+
+function buildOpenClawConfig() {
+  return {
+    workspace_id: openClawWorkspaceInput.value.trim() || null,
+    device_id: openClawDeviceInput.value.trim() || null,
+    agent_id: openClawAgentInput.value.trim() || null,
+    source: "desktop_shell",
+  };
+}
+
+async function setOpenClawIntegration(surface, status) {
+  const config = buildOpenClawConfig();
+  await postJson("/api/product/integrations", {
+    surface,
+    target: "workspace",
+    status,
+    config,
+  });
+}
+
+function wireOpenClawForm() {
+  loadOpenClawDraft();
+  openClawForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      saveOpenClawDraft();
+      await setOpenClawIntegration("openclaw_memory", "configured");
+      await postJson("/api/product/events", {
+        event_type: "openclaw_memory_enabled",
+        actor: "desktop_shell",
+        status: "ok",
+        details: buildOpenClawConfig(),
+      });
+      await loadStatus();
+      setFeedback("OpenClaw memory enabled.");
+    } catch (error) {
+      showError(error);
+    }
+  });
+
+  openClawContextButton.addEventListener("click", async () => {
+    try {
+      saveOpenClawDraft();
+      await setOpenClawIntegration("openclaw_context_engine", "configured");
+      await postJson("/api/product/events", {
+        event_type: "openclaw_context_enabled",
+        actor: "desktop_shell",
+        status: "ok",
+        details: buildOpenClawConfig(),
+      });
+      await loadStatus();
+      setFeedback("OpenClaw context engine enabled.");
+    } catch (error) {
+      showError(error);
+    }
+  });
+
+  openClawVerifyButton.addEventListener("click", async () => {
+    try {
+      saveOpenClawDraft();
+      await postJson("/api/product/events", {
+        event_type: "openclaw_cross_device_test",
+        actor: "desktop_shell",
+        status: "ok",
+        details: buildOpenClawConfig(),
+      });
+      await loadStatus();
+      setFeedback("Recorded OpenClaw cross-device test.");
     } catch (error) {
       showError(error);
     }
@@ -215,6 +353,7 @@ function wireActionButtons() {
 async function init() {
   wireCopyButtons();
   wireRepoForm();
+  wireOpenClawForm();
   wireActionButtons();
   refreshButton.addEventListener("click", () => loadStatus().catch(showError));
 

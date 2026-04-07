@@ -195,6 +195,13 @@ h3 {
   flex-wrap: wrap;
 }
 
+.pill-stack {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .action-form {
   display: grid;
   gap: 14px;
@@ -280,6 +287,22 @@ h3 {
   color: var(--muted);
   line-height: 1.5;
   margin: 12px 0 14px;
+}
+
+.openclaw-panel {
+  border-color: rgba(121, 224, 166, 0.22);
+  background:
+    linear-gradient(180deg, rgba(13, 31, 24, 0.92), rgba(10, 20, 18, 0.88)),
+    var(--panel);
+}
+
+.openclaw-panel .panel-title,
+.openclaw-panel h3 {
+  color: #c9ffe1;
+}
+
+.openclaw-panel .muted {
+  color: #a6cfb8;
 }
 
 .snippet,

@@ -78,6 +78,48 @@
           <p id="action-feedback" class="feedback muted">No pending actions.</p>
         </section>
 
+        <section class="panel openclaw-panel">
+          <div class="card-head">
+            <div>
+              <div class="panel-title">OpenClaw</div>
+              <h3>Shared workspace memory</h3>
+            </div>
+            <div class="pill-stack">
+              <span id="openclaw-memory-pill" class="status-pill" data-status="pending">Memory pending</span>
+              <span id="openclaw-context-pill" class="status-pill" data-status="pending">Context pending</span>
+            </div>
+          </div>
+          <p id="openclaw-note" class="muted">
+            Bind OpenClaw agents to one workspace memory layer across devices. Memory is the
+            default path; context engine is available when you want deeper prompt assembly.
+          </p>
+          <form id="openclaw-form" class="action-form">
+            <label>
+              <span>Workspace ID</span>
+              <input id="openclaw-workspace-id" name="workspace_id" type="text" placeholder="workspace-acme" />
+            </label>
+            <label>
+              <span>Device ID</span>
+              <input id="openclaw-device-id" name="device_id" type="text" placeholder="laptop-01" />
+            </label>
+            <label>
+              <span>Agent ID</span>
+              <input id="openclaw-agent-id" name="agent_id" type="text" placeholder="openclaw-agent-a" />
+            </label>
+            <div class="form-actions">
+              <button type="submit" class="primary-button">Enable memory</button>
+              <button type="button" id="openclaw-context-button" class="secondary-button">
+                Enable context engine
+              </button>
+              <button type="button" id="openclaw-verify-button" class="secondary-button">
+                Record device test
+              </button>
+            </div>
+          </form>
+          <pre class="snippet">agentic-memory product-integration-set --surface openclaw_memory --target workspace --status configured</pre>
+          <pre class="snippet">agentic-memory product-integration-set --surface openclaw_context_engine --target workspace --status configured</pre>
+        </section>
+
         <section class="grid two-up">
           <article class="panel status-card">
             <div class="panel-title">Runtime</div>
@@ -103,6 +145,36 @@
             <div class="card-actions">
               <button class="secondary-button integration-button" data-surface="browser_extension" data-target="chatgpt" data-status="configured">Set configured</button>
               <button class="secondary-button onboarding-button" data-step="integration_connected">Mark onboarding</button>
+            </div>
+          </article>
+
+          <article class="panel integration-card" data-kind="openclaw">
+            <div class="card-head">
+              <span class="badge">OpenClaw</span>
+              <div class="pill-stack">
+                <span class="status-pill" data-status="pending" data-surface="openclaw_memory" data-target="workspace">
+                  Memory pending
+                </span>
+                <span class="status-pill" data-status="pending" data-surface="openclaw_context_engine" data-target="workspace">
+                  Context pending
+                </span>
+              </div>
+            </div>
+            <h3>OpenClaw memory layer</h3>
+            <p>
+              Share memory across OpenClaw agents and devices, then optionally turn on the
+              context engine when you want Agentic Memory to shape the prompt path too.
+            </p>
+            <div class="card-actions">
+              <button class="secondary-button integration-button" data-surface="openclaw_memory" data-target="workspace" data-status="configured">
+                Set memory
+              </button>
+              <button class="secondary-button integration-button" data-surface="openclaw_context_engine" data-target="workspace" data-status="configured">
+                Set context
+              </button>
+              <button class="secondary-button onboarding-button" data-step="openclaw_ready">
+                Mark ready
+              </button>
             </div>
           </article>
 

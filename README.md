@@ -38,8 +38,6 @@ uvx agentic-memory --help
 pip install agentic-memory
 ```
 
-`codememory` remains available as a compatibility alias, but `agentic-memory` is the primary name.
-
 ### 2. Initialize in any repository
 
 ```bash
@@ -229,7 +227,7 @@ Get a free instance at [neo4j.com/cloud/aura/](https://neo4j.com/cloud/aura/)
 
 ## 📁 Configuration
 
-Per-repository configuration is stored in `.codememory/config.json`:
+Per-repository configuration is stored in `.agentic-memory/config.json`:
 
 ```json
 {
@@ -248,7 +246,7 @@ Per-repository configuration is stored in `.codememory/config.json`:
 }
 ```
 
-**Note:** `.codememory/` is gitignored by default to prevent committing API keys.
+**Note:** `.agentic-memory/` is gitignored by default to prevent committing API keys.
 
 ---
 

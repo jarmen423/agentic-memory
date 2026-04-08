@@ -1,11 +1,11 @@
 # 🧠 Agentic Memory
 https://github.com/jarmen423/agentic-memory
 
-> **Active, Structural Memory System for AI Coding Agents**
+> **Multi-Domain Memory Layer for AI Agents**
 
-Agentic Memory is not just "RAG" for code. It is an **active, structural memory layer** that understands code relationships (dependencies, imports, inheritance), not just text similarity.
+Agentic Memory gives AI agents persistent, searchable memory across four domains: **code**, **git history**, **web research**, and **conversations** — all stored in a unified Neo4j graph and exposed via MCP.
 
-**Core Value Prop:** *"Don't let your Agent code blind. Give it a map."*
+**Core Value Prop:** *"Don't let your agent work from a blank slate. Give it memory."*
 
 ---
 
@@ -13,16 +13,18 @@ Agentic Memory is not just "RAG" for code. It is an **active, structural memory 
 
 | Feature | Description |
 |---------|-------------|
-| **📊 Structural Graph** | Understands imports, dependencies, call graphs - not just text similarity |
-| **🔍 Semantic Search** | Vector embeddings with contextual prefixing for accurate results |
-| **⚡ Real-time Sync** | File watcher automatically updates the graph as you code |
-| **🧬 Git Graph (Opt-in)** | Adds commit/author/file-version history in the same Neo4j DB with separate labels |
+| **📊 Code Graph** | Structural understanding of imports, dependencies, and call graphs — not just text similarity |
+| **💬 Conversation Memory** | Stores and retrieves past agent/user exchanges by semantic similarity |
+| **🌐 Research & Web Memory** | Ingests URLs, PDFs, and research reports as searchable findings |
+| **🧬 Git Graph (Opt-in)** | Adds commit/author/file-version history in the same Neo4j DB |
+| **🔍 Unified Search** | `search_all_memory` spans all domains in a single query |
+| **⚡ Real-time Sync** | File watcher automatically updates the code graph as you work |
 | **🤖 MCP Protocol** | Drop-in integration with Claude, Cursor, Windsurf, and any MCP-compatible AI |
-| **💥 Impact Analysis** | See the blast radius of changes before you make them |
+| **⏱️ Temporal GraphRAG** | Time-aware graph layer for deterministic retrieval at any point in time |
 
 ---
 
-## 🚀 Quick Start (One Command Setup)
+## 🚀 Quick Start
 
 ### 1. Install globally
 
@@ -37,8 +39,6 @@ uvx agentic-memory --help
 # Or use pip in a virtualenv
 pip install agentic-memory
 ```
-
-`codememory` remains available as a compatibility alias, but `agentic-memory` is the primary name.
 
 ### 2. Initialize in any repository
 
@@ -58,7 +58,7 @@ That's it! Your repository is now indexed and ready for AI agents.
 
 ## 📖 Usage
 
-### In any initialized repository:
+### Code memory
 
 ```bash
 # Show repository status and statistics
@@ -73,10 +73,45 @@ agentic-memory watch
 # Start MCP server for AI agents
 agentic-memory serve
 
-# Test semantic search
+# Semantic search across code
 agentic-memory search "where is the auth logic?"
+```
 
-# Git graph (rollout build)
+### Web & research memory
+
+```bash
+# Initialize the research module
+agentic-memory web-init
+
+# Ingest a URL or PDF
+agentic-memory web-ingest https://example.com/paper.pdf
+
+# Search research memory
+agentic-memory web-search "transformer attention mechanisms"
+
+# Schedule recurring research sessions
+agentic-memory web-schedule --project my-project --query "LLM memory" --interval 24h
+
+# Run a research session immediately
+agentic-memory web-run-research --project my-project
+```
+
+### Conversation memory
+
+```bash
+# Initialize the conversation module
+agentic-memory chat-init
+
+# Ingest conversation logs
+agentic-memory chat-ingest /path/to/conversation.json
+
+# Search past conversations
+agentic-memory chat-search "what did we decide about the auth flow?"
+```
+
+### Git graph (opt-in)
+
+```bash
 agentic-memory git-init --repo /absolute/path/to/repo --mode local --full-history
 agentic-memory git-sync --repo /absolute/path/to/repo --incremental
 agentic-memory git-status --repo /absolute/path/to/repo --json
@@ -88,7 +123,7 @@ Git graph command details and rollout notes: [docs/GIT_GRAPH.md](docs/GIT_GRAPH.
 
 ## 🧾 Tool-Use Annotation (Research)
 
-Agentic Memory now supports SQLite telemetry for MCP tool calls plus manual post-response labeling as `prompted` or `unprompted`.
+Agentic Memory supports SQLite telemetry for MCP tool calls plus manual post-response labeling as `prompted` or `unprompted`.
 
 ```bash
 agentic-memory --prompted "check our auth"
@@ -102,17 +137,21 @@ Full workflow and options: [docs/TOOL_USE_ANNOTATION.md](docs/TOOL_USE_ANNOTATIO
 ## 🏗️ Architecture
 
 ```
-┌─────────────────┐     Watches      ┌──────────────────┐
-│  User Repository│ ───────────────> │ Ingestion Service│
-│                 │                  │ (Observer)       │
-└─────────────────┘                  └────────┬─────────┘
-                                              │ Writes
+┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐
+│  Code Repository │    │  Web / PDFs /    │    │  Conversation    │    │  Git Commits /   │
+│  (file watcher)  │    │  Research Reports│    │  Logs            │    │  Blame / History │
+└────────┬─────────┘    └────────┬─────────┘    └────────┬─────────┘    └────────┬─────────┘
+         │                       │                        │                        │
+         └───────────────────────┴────────────────────────┴────────────────────────┘
+                                              │
+                                    Ingestion Pipelines
+                                              │
                                               ▼
                                        ┌──────────────┐
                                        │  Neo4j       │
-                                       │  Cortex      │
+                                       │  Memory Graph│
                                        └──────┬───────┘
-                                              │ Reads
+                                              │
                                               ▼
 ┌─────────────────┐     MCP Protocol  ┌──────────────────┐
 │   AI Agent /    │ <───────────────> │  MCP Server      │
@@ -124,9 +163,67 @@ Full workflow and options: [docs/TOOL_USE_ANNOTATION.md](docs/TOOL_USE_ANNOTATIO
 
 | Component | Role | Description |
 |-----------|------|-------------|
-| **Observer** (`watcher.py`) | The "Writer" | Watches filesystem changes and keeps the graph in sync |
-| **Graph Builder** (`graph.py`) | The "Mapper" | Parses code with Tree-sitter, builds Neo4j graph with embeddings |
-| **MCP Server** (`app.py`) | The "Interface" | Exposes high-level skills to AI agents via MCP protocol |
+| **Code Watcher** (`watcher.py`) | The "Code Writer" | Watches filesystem changes, keeps the code graph in sync |
+| **Graph Builder** (`graph.py`) | The "Code Mapper" | Parses code with Tree-sitter, builds Neo4j graph with embeddings |
+| **Research Pipeline** (`web/pipeline.py`) | The "Research Writer" | Ingests URLs, PDFs, and findings into the memory graph |
+| **Chat Pipeline** (`chat/pipeline.py`) | The "Conversation Writer" | Stores conversation turns with semantic embeddings |
+| **MCP Server** (`server/app.py`) | The "Interface" | Exposes all memory domains to AI agents via MCP protocol |
+
+---
+
+## 🔌 MCP Tools Available to AI Agents
+
+### Unified search
+
+| Tool | Description |
+|------|-------------|
+| `search_all_memory(query)` | Search across all domains — code, research, and conversations — in one call |
+
+### Code domain
+
+| Tool | Description |
+|------|-------------|
+| `search_codebase(query, limit=5)` | Semantic search over code |
+| `get_file_dependencies(file_path)` | Returns imports and dependents for a file |
+| `identify_impact(file_path, max_depth=3)` | Blast radius analysis for changes |
+| `get_file_info(file_path)` | File structure overview (classes, functions) |
+
+### Conversation domain
+
+| Tool | Description |
+|------|-------------|
+| `search_conversations(query, limit=5)` | Semantic search over past conversation turns |
+| `get_conversation_context(session_id)` | Retrieve a full conversation context window |
+| `add_message(role, content, session_id)` | Store a new message in conversation memory |
+
+### Research domain
+
+| Tool | Description |
+|------|-------------|
+| `schedule_research(project_id, query, interval)` | Schedule recurring research sessions |
+| `run_research_session(project_id)` | Run a research session immediately |
+| `list_research_schedules(project_id)` | List active research schedules |
+
+### Git domain (opt-in)
+
+| Tool | Description |
+|------|-------------|
+| `get_git_file_history(file_path, limit=20)` | File-level commit history and ownership signals |
+| `get_commit_context(sha, include_diff_stats=true)` | Commit metadata and change statistics |
+| `find_recent_risky_changes(path_or_symbol, window_days)` | Recent high-risk changes using hybrid signals |
+
+> Note: Git-domain tools are part of the git graph rollout. If missing in your build, run `agentic-memory git-init` first.
+
+---
+
+## 🗂️ Memory Domains
+
+| Domain | What Gets Stored | Graph Nodes |
+|--------|-----------------|-------------|
+| **Code** | Source files, functions, classes, imports | `File`, `Function`, `Class`, `Chunk` |
+| **Conversations** | Agent/user message turns, session context | `ConversationTurn`, `Session` |
+| **Research** | Web pages, PDFs, reports, findings, claims | `Report`, `Finding`, `Chunk`, `Source` |
+| **Git** | Commits, authors, file versions, diffs | `Commit`, `Author`, `FileVersion` |
 
 ---
 
@@ -137,30 +234,31 @@ Phase 8 adds a shadow-mode temporal maintenance layer alongside the existing Neo
 - `packages/am-temporal-kg/` — SpacetimeDB TypeScript module for temporal edge ingest, scheduled maintenance, and deterministic temporal retrieval
 - `packages/am-sync-neo4j/` — subscription worker that mirrors curated temporal rows back into Neo4j
 
-This layer is additive in the current branch. Existing retrieval paths remain unchanged until the later retrieval cutover phase.
+This layer is additive. Existing retrieval paths remain unchanged until the later retrieval cutover phase.
 
-## Full-Stack Local Flow
+---
 
-Phase 10 adds a unified search surface across code, research, and conversation memory:
+## 🖥️ Full-Stack Local Flow
+
+A unified search surface spans code, research, and conversation memory:
 
 - MCP: `search_all_memory(...)`
 - REST: `GET /search/all`
 
-The next packaging layer adds a local product control plane for install and dogfood
-loops:
+A local product control plane handles install and dogfood loops:
 
 - CLI: `agentic-memory product-status`, `agentic-memory product-repo-add`, `agentic-memory product-integration-set`, `agentic-memory product-component-set`, `agentic-memory product-event-record`
 - REST: `GET /product/status`, `POST /product/repos`, `POST /product/integrations`, `POST /product/components/{component}`, `POST /product/events`, `POST /product/onboarding`
 - Workflow: [docs/PRODUCT_DOGFOODING.md](docs/PRODUCT_DOGFOODING.md)
 
-The first desktop-facing shell is a lightweight local FastAPI app in `desktop_shell/`. It
-proxies the `am-server` product API and gives a browser-based control plane without
-committing to a native desktop framework yet.
+A lightweight local FastAPI app in `desktop_shell/` provides a browser-based control plane:
 
-- Run `python -m am_server.server`
-- Then run `python -m desktop_shell --backend-url http://127.0.0.1:8765`
+```bash
+python -m am_server.server
+python -m desktop_shell --backend-url http://127.0.0.1:8765
+```
 
-Use these docs for the current local operator flow:
+Reference docs:
 
 - [docs/SETUP_FULL_STACK.md](docs/SETUP_FULL_STACK.md)
 - [docs/MCP_TOOL_REFERENCE.md](docs/MCP_TOOL_REFERENCE.md)
@@ -170,23 +268,7 @@ Use these docs for the current local operator flow:
 
 ---
 
-## 🔌 MCP Tools Available to AI Agents
-
-| Tool | Description |
-|------|-------------|
-| `search_codebase(query, limit=5, domain="code")` | Semantic search for code, git, or hybrid domain routing |
-| `get_file_dependencies(file_path, domain="code")` | Returns imports and dependents for a file |
-| `identify_impact(file_path, max_depth=3, domain="code")` | Blast radius analysis for changes |
-| `get_file_info(file_path, domain="code")` | File structure overview (classes, functions) |
-| `get_git_file_history(file_path, limit=20, domain="git")` | File-level commit history and ownership signals (git rollout) |
-| `get_commit_context(sha, include_diff_stats=true)` | Commit metadata and change statistics (git rollout) |
-| `find_recent_risky_changes(path_or_symbol, window_days, domain="hybrid")` | Recent high-risk changes using hybrid signals (git rollout) |
-
-> Note: `domain` routing and git-domain tools are part of the git graph rollout. If they are missing in your installed build, use code-domain tools only and upgrade to a git-enabled release.
-
----
-
-## ✅ Integration Recommendation Policy (PR7)
+## ✅ Integration Recommendation Policy
 
 Current recommendation policy is explicit:
 
@@ -208,8 +290,6 @@ Reference docs and evaluation artifacts:
 
 ## 🐳 Docker Setup (Neo4j)
 
-### Quick Start
-
 ```bash
 # Start Neo4j
 docker-compose up -d neo4j
@@ -229,7 +309,7 @@ Get a free instance at [neo4j.com/cloud/aura/](https://neo4j.com/cloud/aura/)
 
 ## 📁 Configuration
 
-Per-repository configuration is stored in `.codememory/config.json`:
+Per-repository configuration is stored in `.agentic-memory/config.json`:
 
 ```json
 {
@@ -239,7 +319,7 @@ Per-repository configuration is stored in `.codememory/config.json`:
     "password": "password"
   },
   "openai": {
-    "api_key": "sk-..."  // Optional - can use OPENAI_API_KEY env var
+    "api_key": "sk-..."
   },
   "indexing": {
     "ignore_dirs": ["node_modules", "__pycache__", ".git"],
@@ -248,49 +328,7 @@ Per-repository configuration is stored in `.codememory/config.json`:
 }
 ```
 
-**Note:** `.codememory/` is gitignored by default to prevent committing API keys.
-
----
-
-## 🔧 Installation from Source
-
-```bash
-# Clone the repository
-git clone https://github.com/jarmen423/agentic-memory.git
-cd agentic-memory
-
-# Install in editable mode
-pip install -e .
-
-# Run the init wizard in any repo
-agentic-memory init
-```
-
----
-
-## 🧪 Development
-
-```bash
-# Install in editable mode
-pip install -e .
-
-# Run type checking (when mypy is configured)
-mypy src/agentic_memory
-
-# Run tests (when added)
-pytest
-```
-
----
-
-## 📊 What Gets Indexed?
-
-| Entity | Description | Relationships |
-|--------|-------------|---------------|
-| **Files** | Source code files | `[:DEFINES]`→ Functions/Classes, `[:IMPORTS]`→ Files |
-| **Functions** | Function definitions | `[:CALLS]`→ Functions, `[:HAS_METHOD]`← Classes |
-| **Classes** | Class definitions | `[:HAS_METHOD]`→ Methods |
-| **Chunks** | Semantic embeddings | `[:DESCRIBES]`→ Functions/Classes |
+**Note:** `.agentic-memory/` is gitignored by default to prevent committing API keys.
 
 ---
 
@@ -326,9 +364,28 @@ pytest
 
 Add to your MCP configuration file.
 
-> Note: `--repo` requires the upcoming release that adds explicit repo targeting for `serve`.
-> If your installed version does not support `--repo`, use your client's `cwd` setting
-> (if supported) or launch via a wrapper script that runs `cd /absolute/path/to/project && agentic-memory serve`.
+> Note: If your installed version does not support `--repo`, use your client's `cwd` setting or launch via a wrapper script: `cd /absolute/path/to/project && agentic-memory serve`.
+
+---
+
+## 🔧 Installation from Source
+
+```bash
+git clone https://github.com/jarmen423/agentic-memory.git
+cd agentic-memory
+pip install -e .
+agentic-memory init
+```
+
+---
+
+## 🧪 Development
+
+```bash
+pip install -e .
+mypy src/agentic_memory
+pytest
+```
 
 ---
 
@@ -350,3 +407,4 @@ Contributions welcome! Please see TODO.md for the roadmap.
 - **Tree-sitter** - Incremental parsing for code
 - **OpenAI** - Embeddings for semantic search
 - **MCP (Model Context Protocol)** - Standard interface for AI tools
+- **SpacetimeDB** - Temporal graph layer

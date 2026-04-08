@@ -1,4 +1,4 @@
-# am-openclaw
+# agentic-memory
 
 Native OpenClaw plugin package for Agentic Memory.
 
@@ -25,11 +25,18 @@ The setup command can run as:
 - a non-interactive command when you pass flags such as:
   - `--backend-url`
   - `--api-key`
+  - `--workspace`
   - `--workspace-id`
   - `--device-id`
   - `--agent-id`
   - `--project-id`
   - `--enable-context-engine`
+
+Example:
+
+```bash
+openclaw agentic-memory setup --workspace work-agent
+```
 
 That command writes the plugin's live OpenClaw config under:
 

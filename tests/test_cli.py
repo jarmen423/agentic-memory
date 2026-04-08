@@ -70,6 +70,7 @@ def test_status_json_success_envelope(monkeypatch, capsys, tmp_path):
 
     mock_cfg = _mock_config(exists=True)
     mock_builder = Mock()
+    mock_builder.repo_id = str(repo_root.resolve())
     session = Mock()
     session_context = Mock()
     session_context.__enter__ = Mock(return_value=session)
@@ -101,6 +102,10 @@ def test_status_json_success_envelope(monkeypatch, capsys, tmp_path):
         "chunks": 11,
         "last_sync": "2026-02-01T00:00:00Z",
     }
+    queries = [call.args[0] for call in session.run.call_args_list]
+    kwargs = [call.kwargs for call in session.run.call_args_list]
+    assert all("repo_id = $repo_id" in query for query in queries)
+    assert all(item.get("repo_id") == str(repo_root.resolve()) for item in kwargs)
 
 
 def test_status_json_missing_config_exits_nonzero(monkeypatch, capsys, tmp_path):
@@ -255,6 +260,7 @@ def test_search_loads_openai_key_from_repo_dotenv(monkeypatch, tmp_path):
         user="neo4j",
         password="password",
         openai_key="from-search-dotenv",
+        repo_root=repo_root,
     )
     mock_builder.semantic_search.assert_called_once_with("auth", limit=5)
 
@@ -308,6 +314,13 @@ def test_deps_json_success_uses_graph_method(monkeypatch, capsys, tmp_path):
         "imports_count": 2,
         "imported_by_count": 1,
     }
+    cli.KnowledgeGraphBuilder.assert_called_once_with(
+        uri="bolt://localhost:7687",
+        user="neo4j",
+        password="password",
+        openai_key="test-openai-key",
+        repo_root=repo_root,
+    )
     mock_builder.get_file_dependencies.assert_called_once_with("src/main.py")
 
 
@@ -335,6 +348,13 @@ def test_impact_json_success_uses_graph_method(monkeypatch, capsys, tmp_path):
     assert payload["data"]["path"] == "src/main.py"
     assert payload["data"]["affected_files"][0]["path"] == "src/caller.py"
     assert payload["metrics"] == {"total_count": 1, "max_depth": 3}
+    cli.KnowledgeGraphBuilder.assert_called_once_with(
+        uri="bolt://localhost:7687",
+        user="neo4j",
+        password="password",
+        openai_key="test-openai-key",
+        repo_root=repo_root,
+    )
     mock_builder.identify_impact.assert_called_once_with("src/main.py", max_depth=3)
 
 

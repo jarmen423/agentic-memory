@@ -15,18 +15,37 @@ class Toolkit:
 
     def semantic_search(self, query: str, limit: int = 5) -> str:
         """
-        Performs hybrid search and formats the result as a readable string for the Agent.
+        Graph-enriched hybrid search formatted for the Agent.
+
+        Each result includes the vector-matched code plus graph context:
+        file location, call relationships, sibling functions, and file imports.
         """
         try:
             results = self.graph.semantic_search(query, limit)
             if not results:
                 return "No relevant code found in the graph."
 
-            # Format for LLM consumption (Markdown)
-            report = f"### Found {len(results)} relevant code snippets for '{query}':\n\n"
+            report = f"### Found {len(results)} relevant code results for '{query}':\n\n"
             for r in results:
-                report += f"#### 📄 {r['name']} (Score: {r['score']:.2f})\n"
-                report += f"**Signature:** `{r['sig']}`\n"
+                score_display = r.get('final_score', r.get('score', 0.0))
+                report += f"#### {r['name']} (Score: {score_display:.2f})\n"
+                if r.get('sig'):
+                    report += f"**Signature:** `{r['sig']}`\n"
+                if r.get('file_path'):
+                    report += f"**File:** `{r['file_path']}`\n"
+                if r.get('calls_out'):
+                    report += f"**Calls:** {', '.join(r['calls_out'])}\n"
+                if r.get('called_by'):
+                    report += f"**Called by:** {', '.join(r['called_by'])}\n"
+                if r.get('methods'):
+                    report += f"**Methods:** {', '.join(r['methods'])}\n"
+                if r.get('siblings'):
+                    report += f"**Siblings in file:** {', '.join(r['siblings'])}\n"
+                if r.get('file_imports'):
+                    report += f"**File imports:** {', '.join(r['file_imports'])}\n"
+                if r.get('text'):
+                    report += f"```\n{r['text']}\n```\n"
+                report += "\n"
             return report
         except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
             logger.error(f"search failed:{e}")

@@ -821,11 +821,28 @@ print(f"Cost: ${metrics['cost_usd']:.4f}")
 
 ##### `semantic_search()`
 
-Perform vector similarity search.
+Perform vector similarity search with optional multi-repo filtering.
 
 ```python
-def semantic_search(self, query: str, limit: int = 5) -> List[Dict]
+def semantic_search(
+    self,
+    query: str,
+    limit: int = 5,
+    repo_id: Optional[str] = None
+) -> List[Dict]
 ```
+
+**Parameters:**
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `query` | str | Yes | - | Natural language search query |
+| `limit` | int | No | 5 | Maximum results to return |
+| `repo_id` | Optional[str] | No | None | Restrict results to a specific repo. Falls back to `self.repo_id` if set. |
+
+**Behavior when `repo_id` is active:**
+- Over-fetches `limit × 3` candidates from the vector index
+- Adds a `WHERE entity.repo_id = $repo_id` filter after the DESCRIBE hop
+- Calls `_rerank_results()` to score and trim to `limit`
 
 **Returns:**
 ```python
@@ -833,18 +850,108 @@ def semantic_search(self, query: str, limit: int = 5) -> List[Dict]
     {
         "name": "authenticate",
         "sig": "src/auth.py:authenticate",
-        "score": 0.92,
+        "score": 0.92,        # raw vector similarity (0–1)
+        "final_score": 0.94,  # 0.9×vector_score + structural_bonus
         "text": "def authenticate(username, password):..."
     },
     ...
 ]
 ```
 
+- `final_score` is always present when `repo_id` filtering is active (via `_rerank_results()`).
+
 **Example:**
 ```python
-results = builder.semantic_search("JWT validation", limit=3)
+results = builder.semantic_search("JWT validation", limit=3, repo_id="my-service")
 for r in results:
-    print(f"{r['name']} - Score: {r['score']:.2f}")
+    print(f"{r['name']} - Score: {r['score']:.2f}  Final: {r['final_score']:.2f}")
+```
+
+---
+
+##### `_rerank_results()`
+
+Private method. Re-scores a candidate list by combining vector similarity with graph connectivity bonuses, then trims to `limit`.
+
+```python
+def _rerank_results(self, results: List[Dict], limit: int) -> List[Dict]
+```
+
+**Parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `results` | List[Dict] | Candidate results (over-fetched, each with a `score` field) |
+| `limit` | int | Final number of results to return |
+
+**Scoring formula:**
+```
+final_score = 0.9 × vector_score + structural_bonus
+```
+
+**Connectivity bonuses (structural_bonus):**
+| Relation | Bonus |
+|----------|-------|
+| `calls_out` | +0.05 |
+| `called_by` | +0.05 |
+| `methods` | +0.03 |
+
+**Behavior:**
+- Sorts descending by `final_score`
+- Trims list to `limit`
+- Adds `final_score` key to each result dict
+
+**GDS upgrade path:** Replace heuristic bonuses with `entity.pagerank` from `gds.pageRank.write()` once GDS is available.
+
+**Note:** This is a private method — call `semantic_search()` directly; it invokes `_rerank_results()` internally.
+
+---
+
+##### `search_memory_nodes()`
+
+Search the graph for memory nodes (agent-authored notes and observations) with optional repo filtering. Returns both outgoing and incoming relations for each result.
+
+```python
+def search_memory_nodes(
+    self,
+    query: str,
+    limit: int = 5,
+    repo_id: Optional[str] = None
+) -> List[Dict]
+```
+
+**Parameters:**
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `query` | str | Yes | - | Natural language search query |
+| `limit` | int | No | 5 | Maximum results to return |
+| `repo_id` | Optional[str] | No | None | Restrict results to a specific repo. Falls back to `self.repo_id` if set. |
+
+**Returns:**
+```python
+[
+    {
+        "name": "note_about_auth",
+        "sig": "memory:note_about_auth",
+        "score": 0.88,
+        "text": "Authentication flow requires...",
+        "outgoing_relations": [
+            {"target": "src/auth.py:authenticate", "relation_type": "REFERENCES"}
+        ],
+        "incoming_relations": [
+            {"source": "src/api/routes/auth.py", "relation_type": "DOCUMENTED_BY"}
+        ]
+    },
+    ...
+]
+```
+
+**`incoming_relations` format:** `[{"source": str, "relation_type": str}, ...]`
+
+**Example:**
+```python
+nodes = builder.search_memory_nodes("auth flow notes", limit=5, repo_id="my-service")
+for n in nodes:
+    print(f"{n['name']} ({len(n['incoming_relations'])} incoming)")
 ```
 
 ---
@@ -1104,7 +1211,8 @@ def get_indexing_config(self) -> Dict[str, Any]
 {
     "name": str,              # Entity name
     "sig": str,               # Entity signature
-    "score": float,           # Similarity (0-1)
+    "score": float,           # Raw vector similarity (0–1)
+    "final_score": float,     # Reranked score: 0.9×score + structural_bonus (present when repo_id filtering is active)
     "text": str               # Code snippet
 }
 ```
@@ -1121,5 +1229,5 @@ def get_indexing_config(self) -> Dict[str, Any]
 
 ---
 
-**API Version:** 1.0.0
-**Last Updated:** 2025-02-09
+**API Version:** 1.1.0
+**Last Updated:** 2026-04-05

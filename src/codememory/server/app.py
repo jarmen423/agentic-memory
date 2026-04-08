@@ -173,6 +173,7 @@ def init_graph():
         user=user,
         password=password,
         openai_key=openai_key,
+        repo_root=repo_root,
     )
     graph.setup_memory_schema()
     logger.info(f"✅ Connected to Neo4j at {uri}")
@@ -365,17 +366,23 @@ def _format_memory_entity_results(results: List[Dict[str, Any]]) -> str:
         entity_type = result.get("entity_type", "concept")
         score = float(result.get("score", 0.0) or 0.0)
         observations = result.get("observations", []) or []
-        relations = result.get("outgoing_relations", []) or []
+        out_relations = result.get("outgoing_relations", []) or []
+        in_relations = result.get("incoming_relations", []) or []
 
         output += f"{index}. **{name}** [{entity_type}] (Score: {score:.2f})\n"
         if observations:
             preview = "; ".join(observations[:3])
             output += f"   - Observations: {preview}\n"
-        if relations:
+        if out_relations:
             rel_preview = ", ".join(
-                f"{rel.get('relation_type')} -> {rel.get('target')}" for rel in relations[:5]
+                f"{rel.get('relation_type')} -> {rel.get('target')}" for rel in out_relations[:5]
             )
-            output += f"   - Relations: {rel_preview}\n"
+            output += f"   - Outgoing: {rel_preview}\n"
+        if in_relations:
+            rel_preview = ", ".join(
+                f"{rel.get('source')} -> {rel.get('relation_type')}" for rel in in_relations[:5]
+            )
+            output += f"   - Incoming: {rel_preview}\n"
         output += "\n"
 
     return output.strip()

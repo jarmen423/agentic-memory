@@ -1,7 +1,9 @@
 """Tests for the KnowledgeGraphBuilder module."""
 
-import pytest
+from pathlib import Path
 from unittest.mock import Mock, patch
+
+import pytest
 
 # Skip if neo4j is not available
 pytestmark = [
@@ -36,6 +38,28 @@ class TestKnowledgeGraphBuilder:
                 user="neo4j",
                 password="test",
                 openai_key="sk-test"
+            )
+            builder.driver = driver
+            return builder
+
+    @pytest.fixture
+    def repo_builder(self, mock_driver, tmp_path):
+        """Create a repo-scoped KnowledgeGraphBuilder with mocked dependencies."""
+        from codememory.ingestion.graph import KnowledgeGraphBuilder
+
+        driver, session = mock_driver
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        with patch('neo4j.GraphDatabase.driver', return_value=driver), \
+             patch.object(KnowledgeGraphBuilder, '_init_parsers'), \
+             patch('codememory.ingestion.graph.OpenAI'):
+
+            builder = KnowledgeGraphBuilder(
+                uri="bolt://localhost:7687",
+                user="neo4j",
+                password="test",
+                openai_key="sk-test",
+                repo_root=repo_root,
             )
             builder.driver = driver
             return builder
@@ -197,6 +221,131 @@ const lazy = import("./lazy-module");
 
         assert result["count"] == 1
         assert result["remaining_without_embeddings"] == 0
+
+    def test_pass_2_entity_definition_fetches_files_for_active_repo(self, repo_builder, mock_driver):
+        """Pass 2 should only seed files from the active repo when repo_id is set."""
+        driver, session = mock_driver
+        session.run.return_value = []
+
+        repo_builder.pass_2_entity_definition(repo_builder.repo_root)
+
+        first_query = session.run.call_args_list[0]
+        assert "WHERE f.repo_id = $repo_id" in first_query.args[0]
+        assert first_query.kwargs["repo_id"] == repo_builder.repo_id
+
+    def test_get_file_dependencies_scopes_by_repo(self, repo_builder, mock_driver):
+        """Dependency lookup should match the source File by (repo_id, path)."""
+        driver, session = mock_driver
+        session.run.return_value.single.return_value = {"imports": ["a.py"], "imported_by": ["b.py"]}
+
+        result = repo_builder.get_file_dependencies("src/main.py")
+
+        assert result["imports"] == ["a.py"]
+        query = session.run.call_args.args[0]
+        kwargs = session.run.call_args.kwargs
+        assert "repo_id: $repo_id" in query
+        assert kwargs["repo_id"] == repo_builder.repo_id
+        assert kwargs["path"] == "src/main.py"
+
+    def test_identify_impact_scopes_by_repo(self, repo_builder, mock_driver):
+        """Impact analysis should anchor traversal to the active repo only."""
+        driver, session = mock_driver
+        session.run.return_value = [
+            {"path": "src/caller.py", "depth": 1, "impact_type": "dependents"}
+        ]
+
+        result = repo_builder.identify_impact("src/main.py", max_depth=2)
+
+        assert result["total_count"] == 1
+        query = session.run.call_args.args[0]
+        kwargs = session.run.call_args.kwargs
+        assert "repo_id: $repo_id" in query
+        assert kwargs["repo_id"] == repo_builder.repo_id
+
+    def test_read_memory_graph_scopes_to_active_repo(self, repo_builder, mock_driver):
+        """Memory graph reads should filter entities and relation counts by repo_id."""
+        driver, session = mock_driver
+        session.run.side_effect = [
+            Mock(),
+            Mock(),
+            Mock(),
+            Mock(),
+            [
+                {
+                    "name": "auth-flow",
+                    "entity_type": "concept",
+                    "observations": ["Uses refresh token"],
+                    "outgoing_relations": [],
+                }
+            ],
+            Mock(single=Mock(return_value={"count": 0})),
+        ]
+
+        snapshot = repo_builder.read_memory_graph()
+
+        assert snapshot["entity_count"] == 1
+        query_args = session.run.call_args_list
+        assert "WHERE m.repo_id = $repo_id" in query_args[4].args[0]
+        assert query_args[4].kwargs["repo_id"] == repo_builder.repo_id
+        assert "source.repo_id = $repo_id AND target.repo_id = $repo_id" in query_args[5].args[0]
+
+    def test_backfill_memory_embeddings_scopes_to_active_repo(self, repo_builder, mock_driver):
+        """Memory backfill should only select and count nodes for the active repo."""
+        driver, session = mock_driver
+        session.run.side_effect = [
+            Mock(),
+            Mock(),
+            Mock(),
+            Mock(),
+            [
+                {
+                    "name": "auth-flow",
+                    "entity_type": "project",
+                    "observations": ["Used in login"],
+                }
+            ],
+            Mock(),
+            Mock(single=Mock(return_value={"remaining": 0})),
+        ]
+
+        with patch.object(repo_builder, "get_embedding", return_value=[0.1] * repo_builder.VECTOR_DIMENSIONS):
+            result = repo_builder.backfill_memory_embeddings(limit=10, only_missing=True)
+
+        assert result["count"] == 1
+        query_args = session.run.call_args_list
+        assert "m.embedding IS NULL AND m.repo_id = $repo_id" in query_args[4].args[0]
+        assert query_args[4].kwargs["repo_id"] == repo_builder.repo_id
+        assert "{name: $name, repo_id: $repo_id}" in query_args[5].args[0]
+        assert "m.embedding IS NULL AND m.repo_id = $repo_id" in query_args[6].args[0]
+
+    def test_search_memory_nodes_falls_back_when_query_vector_invalid(self, builder, mock_driver):
+        """Memory search should fall back to fulltext when embedding generation fails."""
+        driver, session = mock_driver
+        session.run.side_effect = [
+            Mock(),
+            Mock(),
+            Mock(),
+            [
+                {
+                    "name": "auth-flow",
+                    "entity_type": "concept",
+                    "observations": ["Uses refresh token"],
+                    "metadata_json": "{}",
+                    "score": 0.5,
+                    "sources": ["fulltext"],
+                    "outgoing_relations": [],
+                    "incoming_relations": [],
+                }
+            ],
+        ]
+
+        with patch.object(builder, "get_embedding", return_value=[0.0] * builder.VECTOR_DIMENSIONS):
+            results = builder.search_memory_nodes("auth", limit=5)
+
+        assert len(results) == 1
+        query = session.run.call_args_list[3].args[0]
+        assert "db.index.fulltext.queryNodes('memory_search'" in query
+        assert "db.index.vector.queryNodes('memory_embeddings'" not in query
 
 
 class TestCypherQueries:

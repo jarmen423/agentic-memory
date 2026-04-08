@@ -21,13 +21,19 @@ class TestToolkit:
         return Toolkit(graph=mock_graph)
 
     def test_semantic_search(self, toolkit, mock_graph):
-        """Test semantic search returns formatted results."""
+        """Test semantic search returns graph-enriched formatted results."""
         mock_results = [
             {
                 "text": "def test(): pass",
                 "score": 0.95,
                 "name": "test",
                 "sig": "test.py:test",
+                "file_path": "test.py",
+                "calls_out": ["helper"],
+                "called_by": ["main"],
+                "methods": [],
+                "file_imports": ["utils.py"],
+                "siblings": ["setup", "teardown"],
             }
         ]
         mock_graph.semantic_search.return_value = mock_results
@@ -36,6 +42,10 @@ class TestToolkit:
 
         assert "test" in result
         assert "0.95" in result
+        assert "test.py" in result
+        assert "helper" in result
+        assert "main" in result
+        assert "utils.py" in result
         mock_graph.semantic_search.assert_called_once_with("test function", 5)
 
     def test_semantic_search_empty_results(self, toolkit, mock_graph):
@@ -168,7 +178,11 @@ class TestSearchCodebase:
         """Test successful search."""
         mock_graph = Mock()
         mock_graph.semantic_search.return_value = [
-            {"name": "fn", "score": 0.9, "text": "def fn(): pass", "sig": "a.py:fn"}
+            {
+                "name": "fn", "score": 0.9, "text": "def fn(): pass", "sig": "a.py:fn",
+                "file_path": "a.py", "calls_out": [], "called_by": [],
+                "methods": [], "file_imports": [], "siblings": [],
+            }
         ]
 
         with patch("codememory.server.app.graph", mock_graph):

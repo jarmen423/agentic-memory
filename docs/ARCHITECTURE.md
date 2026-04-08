@@ -235,6 +235,35 @@ FOR (n:Function|Class|File) ON EACH [n.name, n.docstring, n.path]
 
 ---
 
+## Multi-Repo Partitioning (repo_id)
+
+CodeMemory supports multiple repositories in a single Neo4j database using `repo_id` partitioning.
+
+### Identity Model
+
+| Node | Old identity | New identity |
+|------|-------------|--------------|
+| File | `path` (global) | `(repo_id, path)` (composite) |
+| Function | `signature` (global) | `(repo_id, signature)` (composite) |
+| Class | `qualified_name` (global) | `(repo_id, qualified_name)` (composite) |
+| Memory | `name` (global) | `(repo_id, name)` (composite) |
+
+A `Repository` anchor node (`{repo_id, root_path}`) is also created per repo.
+
+### Backward Compatibility
+
+When `CODEMEMORY_REPO` is not set, `repo_id` is `None` and all queries omit the repo filter — identical to the pre-partitioning behavior.
+
+### Retrieval Model
+
+When `repo_id` is active, `semantic_search()` over-fetches by 3x, filters by `entity.repo_id`, then applies structural reranking (`_rerank_results()`) before returning the final result set. This prevents worktree pollution (multiple indexed copies of the same function appearing in results).
+
+### GDS Upgrade Path
+
+When Aura API credentials are available (`gds.aura.api.credentials(clientId, clientSecret)`), replace the heuristic structural bonus in `_rerank_results()` with GDS-computed `entity.pagerank`. See comments in `graph.py` near `_rerank_results()`.
+
+---
+
 ## 4-Pass Ingestion Pipeline
 
 The ingestion pipeline processes code in 4 sequential passes to build the complete graph.

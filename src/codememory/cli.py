@@ -370,18 +370,45 @@ def cmd_status(args):
 
         with builder.driver.session() as session:
             # Get stats
-            files = session.run("MATCH (f:File) RETURN count(f) as count").single()["count"]
-            functions = session.run("MATCH (fn:Function) RETURN count(fn) as count").single()[
-                "count"
-            ]
-            classes = session.run("MATCH (c:Class) RETURN count(c) as count").single()["count"]
-            chunks = session.run("MATCH (ch:Chunk) RETURN count(ch) as count").single()["count"]
+            repo_params = {"repo_id": builder.repo_id} if builder.repo_id else {}
+            files = session.run(
+                "MATCH (f:File) "
+                + ("WHERE f.repo_id = $repo_id " if builder.repo_id else "")
+                + "RETURN count(f) as count",
+                **repo_params,
+            ).single()["count"]
+            functions = session.run(
+                "MATCH (fn:Function) "
+                + ("WHERE fn.repo_id = $repo_id " if builder.repo_id else "")
+                + "RETURN count(fn) as count",
+                **repo_params,
+            ).single()["count"]
+            classes = session.run(
+                "MATCH (c:Class) "
+                + ("WHERE c.repo_id = $repo_id " if builder.repo_id else "")
+                + "RETURN count(c) as count",
+                **repo_params,
+            ).single()["count"]
+            chunks = session.run(
+                """
+                MATCH (ch:Chunk)-[:DESCRIBES]->(entity)
+                """
+                + ("WHERE entity.repo_id = $repo_id " if builder.repo_id else "")
+                + "RETURN count(DISTINCT ch) as count",
+                **repo_params,
+            ).single()["count"]
 
             # Get last update
-            last_update = session.run("""
+            last_update = session.run(
+                """
                 MATCH (f:File)
+                """
+                + ("WHERE f.repo_id = $repo_id " if builder.repo_id else "")
+                + """
                 RETURN max(f.last_updated) as last_updated
-            """).single()["last_updated"]
+                """,
+                **repo_params,
+            ).single()["last_updated"]
 
             stats = {
                 "files": files,
@@ -549,6 +576,7 @@ def cmd_search(args):
         user=neo4j_cfg["user"],
         password=neo4j_cfg["password"],
         openai_key=openai_key,
+        repo_root=repo_root,
     )
 
     try:
@@ -598,6 +626,7 @@ def cmd_deps(args):
         user=neo4j_cfg["user"],
         password=neo4j_cfg["password"],
         openai_key=openai_key,
+        repo_root=repo_root,
     )
 
     try:
@@ -657,6 +686,7 @@ def cmd_impact(args):
         user=neo4j_cfg["user"],
         password=neo4j_cfg["password"],
         openai_key=openai_key,
+        repo_root=repo_root,
     )
 
     try:

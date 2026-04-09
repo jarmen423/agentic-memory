@@ -1,4 +1,19 @@
-"""Persistent local product-state store used by CLI and desktop control surfaces."""
+"""Persistent local product-state store used by CLI and desktop control surfaces.
+
+This file now also stores OpenClaw project state, because the product model has
+shifted away from a static setup-time ``project_id``. Instead:
+
+- ``workspace_id`` remains the stable OpenClaw home-base boundary.
+- ``agent_id`` identifies the OpenClaw agent within that workspace.
+- ``session_id`` scopes an active project binding so one agent can work on
+  multiple unrelated tasks without every memory inheriting the same tag.
+- ``project_id`` becomes an optional active work label, not a permanent install
+  choice.
+
+Keeping this state local and explicit lets future agents recover the current
+project semantics directly from code and stored JSON rather than from chat
+history.
+"""
 
 from __future__ import annotations
 
@@ -31,6 +46,7 @@ DEFAULT_COMPONENTS = {
     "openclaw_memory": "unknown",
     "openclaw_context_engine": "unknown",
 }
+DEFAULT_PROJECT_AUTOMATION_KIND = "research_ingestion"
 
 
 def _utc_now() -> str:
@@ -68,6 +84,9 @@ class ProductStateStore:
             },
             "repos": [],
             "integrations": [],
+            "projects": [],
+            "active_projects": [],
+            "project_automations": [],
             "events": [],
             "runtime": {
                 "components": {
@@ -113,6 +132,8 @@ class ProductStateStore:
             "updated_at": _utc_now(),
         }
 
+        # Inner closure: upsert the repo record into the state dict in-place.
+        # _update() calls this with the current loaded state and then writes it back.
         def mutate(state: dict[str, Any]) -> dict[str, Any]:
             repos = state["repos"]
             for index, existing in enumerate(repos):
@@ -151,6 +172,7 @@ class ProductStateStore:
             "updated_at": _utc_now(),
         }
 
+        # Inner closure: upsert the integration record, keyed on (surface, target).
         def mutate(state: dict[str, Any]) -> dict[str, Any]:
             integrations = state["integrations"]
             for index, existing in enumerate(integrations):
@@ -161,6 +183,199 @@ class ProductStateStore:
 
             integrations.append(record)
             integrations.sort(key=lambda item: (item["surface"], item["target"]))
+            self._touch_state(state)
+            return record
+
+        return self._update(mutate)
+
+    def upsert_project(
+        self,
+        *,
+        project_id: str,
+        title: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create or update a reusable project definition.
+
+        Project definitions are intentionally lightweight. They are reusable
+        across many OpenClaw workspaces and agents, so they do not encode the
+        active binding themselves.
+        """
+
+        normalized_project_id = project_id.strip()
+        if not normalized_project_id:
+            raise ValueError("project_id is required")
+
+        record = {
+            "project_id": normalized_project_id,
+            "title": (title or normalized_project_id).strip(),
+            "metadata": metadata or {},
+            "updated_at": _utc_now(),
+        }
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            projects = state["projects"]
+            for index, existing in enumerate(projects):
+                if existing["project_id"] == normalized_project_id:
+                    projects[index] = {**existing, **record}
+                    self._touch_state(state)
+                    return projects[index]
+
+            projects.append(record)
+            projects.sort(key=lambda item: item["project_id"])
+            self._touch_state(state)
+            return record
+
+        return self._update(mutate)
+
+    def activate_project_for_openclaw_identity(
+        self,
+        *,
+        workspace_id: str,
+        agent_id: str,
+        session_id: str,
+        project_id: str,
+        device_id: str | None = None,
+        title: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Bind a project to one OpenClaw workspace/agent/session tuple.
+
+        This is the core state transition behind "start working on project X".
+        The binding is session-scoped so the same agent can later work on a
+        different task without unrelated turns inheriting the old tag.
+        """
+
+        project = self.upsert_project(
+            project_id=project_id,
+            title=title,
+            metadata=metadata or {},
+        )
+        binding = {
+            "workspace_id": workspace_id.strip(),
+            "agent_id": agent_id.strip(),
+            "session_id": session_id.strip(),
+            "device_id": device_id.strip() if device_id else None,
+            "project_id": project["project_id"],
+            "activated_at": _utc_now(),
+            "updated_at": _utc_now(),
+            "metadata": metadata or {},
+        }
+        if not binding["workspace_id"] or not binding["agent_id"] or not binding["session_id"]:
+            raise ValueError("workspace_id, agent_id, and session_id are required")
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            active_projects = state["active_projects"]
+            for index, existing in enumerate(active_projects):
+                if (
+                    existing["workspace_id"] == binding["workspace_id"]
+                    and existing["agent_id"] == binding["agent_id"]
+                    and existing["session_id"] == binding["session_id"]
+                ):
+                    binding["activated_at"] = existing.get("activated_at", binding["activated_at"])
+                    active_projects[index] = {**existing, **binding}
+                    self._touch_state(state)
+                    return active_projects[index]
+
+            active_projects.append(binding)
+            active_projects.sort(
+                key=lambda item: (item["workspace_id"], item["agent_id"], item["session_id"])
+            )
+            self._touch_state(state)
+            return binding
+
+        return self._update(mutate)
+
+    def deactivate_project_for_openclaw_identity(
+        self,
+        *,
+        workspace_id: str,
+        agent_id: str,
+        session_id: str,
+    ) -> dict[str, Any] | None:
+        """Remove the active project binding for one OpenClaw session."""
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any] | None:
+            active_projects = state["active_projects"]
+            for index, existing in enumerate(active_projects):
+                if (
+                    existing["workspace_id"] == workspace_id
+                    and existing["agent_id"] == agent_id
+                    and existing["session_id"] == session_id
+                ):
+                    removed = active_projects.pop(index)
+                    self._touch_state(state)
+                    return removed
+            return None
+
+        return self._update(mutate)
+
+    def get_active_project_for_openclaw_identity(
+        self,
+        *,
+        workspace_id: str,
+        agent_id: str,
+        session_id: str,
+    ) -> dict[str, Any] | None:
+        """Return the active project binding for one OpenClaw session if any."""
+
+        state = self.load()
+        for binding in state["active_projects"]:
+            if (
+                binding["workspace_id"] == workspace_id
+                and binding["agent_id"] == agent_id
+                and binding["session_id"] == session_id
+            ):
+                return binding
+        return None
+
+    def upsert_project_automation(
+        self,
+        *,
+        workspace_id: str,
+        project_id: str,
+        enabled: bool = True,
+        automation_kind: str = DEFAULT_PROJECT_AUTOMATION_KIND,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create or update a workspace-scoped automation for a project."""
+
+        normalized_workspace_id = workspace_id.strip()
+        normalized_project_id = project_id.strip()
+        normalized_kind = automation_kind.strip()
+        if not normalized_workspace_id or not normalized_project_id or not normalized_kind:
+            raise ValueError("workspace_id, project_id, and automation_kind are required")
+
+        self.upsert_project(project_id=normalized_project_id, metadata=metadata or {})
+        record = {
+            "workspace_id": normalized_workspace_id,
+            "project_id": normalized_project_id,
+            "automation_kind": normalized_kind,
+            "enabled": bool(enabled),
+            "metadata": metadata or {},
+            "updated_at": _utc_now(),
+        }
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            automations = state["project_automations"]
+            for index, existing in enumerate(automations):
+                if (
+                    existing["workspace_id"] == normalized_workspace_id
+                    and existing["project_id"] == normalized_project_id
+                    and existing["automation_kind"] == normalized_kind
+                ):
+                    automations[index] = {**existing, **record}
+                    self._touch_state(state)
+                    return automations[index]
+
+            automations.append(record)
+            automations.sort(
+                key=lambda item: (
+                    item["workspace_id"],
+                    item["project_id"],
+                    item["automation_kind"],
+                )
+            )
             self._touch_state(state)
             return record
 
@@ -177,6 +392,7 @@ class ProductStateStore:
         if component_name not in DEFAULT_COMPONENTS:
             raise ValueError(f"unsupported component: {component_name}")
 
+        # Inner closure: overwrite the component entry under runtime.components.
         def mutate(state: dict[str, Any]) -> dict[str, Any]:
             components = state["runtime"]["components"]
             components[component_name] = {
@@ -205,6 +421,7 @@ class ProductStateStore:
             "timestamp": _utc_now(),
         }
 
+        # Inner closure: append the event and trim the rolling buffer to DEFAULT_EVENT_CAP.
         def mutate(state: dict[str, Any]) -> dict[str, Any]:
             events = state["events"]
             events.append(event)
@@ -220,6 +437,7 @@ class ProductStateStore:
         if not step_name:
             raise ValueError("step is required")
 
+        # Inner closure: add or remove the step from the completed_steps set.
         def mutate(state: dict[str, Any]) -> dict[str, Any]:
             onboarding = state["app"]["onboarding"]
             completed_steps = set(onboarding.get("completed_steps", []))
@@ -246,11 +464,17 @@ class ProductStateStore:
             "app": state["app"],
             "repos": state["repos"],
             "integrations": state["integrations"],
+            "projects": state["projects"],
+            "active_projects": state["active_projects"],
+            "project_automations": state["project_automations"],
             "events": state["events"],
             "runtime": state["runtime"],
             "summary": {
                 "repo_count": len(state["repos"]),
                 "integration_count": len(state["integrations"]),
+                "project_count": len(state["projects"]),
+                "active_project_count": len(state["active_projects"]),
+                "project_automation_count": len(state["project_automations"]),
                 "event_count": len(state["events"]),
                 "component_count": len(state["runtime"]["components"]),
                 "onboarding_completed": bool(required_steps)
@@ -284,6 +508,9 @@ class ProductStateStore:
                 "app": {**state["app"], **payload.get("app", {})},
                 "repos": list(payload.get("repos", [])),
                 "integrations": list(payload.get("integrations", [])),
+                "projects": list(payload.get("projects", [])),
+                "active_projects": list(payload.get("active_projects", [])),
+                "project_automations": list(payload.get("project_automations", [])),
                 "events": list(payload.get("events", []))[-DEFAULT_EVENT_CAP:],
                 "runtime": {**state["runtime"], **payload.get("runtime", {})},
             }

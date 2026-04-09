@@ -10,6 +10,7 @@
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
 import { updateConfig } from "openclaw/plugin-sdk/config-runtime";
+import { AgenticMemoryBackendClient } from "./backend-client.js";
 import {
   asRecord,
   asString,
@@ -29,7 +30,9 @@ export type SetupCommandOptions = {
   workspaceId?: string;
   deviceId?: string;
   agentId?: string;
-  projectId?: string;
+  mode?: "capture_only" | "augment_context";
+  enableContextAugmentation?: boolean;
+  disableContextAugmentation?: boolean;
   enableContextEngine?: boolean;
   disableContextEngine?: boolean;
   json?: boolean;
@@ -42,7 +45,7 @@ export type ResolvedSetupValues = {
   deviceId: string;
   agentId: string;
   projectId: string | null;
-  enableContextEngine: boolean;
+  mode: "capture_only" | "augment_context";
 };
 
 export type AgenticMemoryCliContext = {
@@ -63,10 +66,9 @@ function resolveExistingPluginConfig(config: OpenClawConfig): Record<string, unk
   return asRecord(pluginEntry.config);
 }
 
-function resolveExistingContextEngineSelection(config: OpenClawConfig): boolean {
-  const plugins = asRecord(config.plugins);
-  const slots = asRecord(plugins.slots);
-  return asString(slots.contextEngine) === DEFAULT_CONTEXT_ENGINE_ID;
+function resolveExistingMode(config: OpenClawConfig): "capture_only" | "augment_context" {
+  const existing = resolveExistingPluginConfig(config);
+  return existing.mode === "augment_context" ? "augment_context" : "capture_only";
 }
 
 /**
@@ -92,11 +94,12 @@ export function mergeAgenticMemoryPluginConfigIntoOpenClawConfig(
       agentId: values.agentId,
       ...(values.projectId ? { projectId: values.projectId } : {}),
       contextEngineId: DEFAULT_CONTEXT_ENGINE_ID,
+      mode: values.mode,
     },
   };
 
   nextSlots.memory = PLUGIN_ID;
-  nextSlots.contextEngine = values.enableContextEngine ? DEFAULT_CONTEXT_ENGINE_ID : "legacy";
+  nextSlots.contextEngine = DEFAULT_CONTEXT_ENGINE_ID;
 
   return {
     ...config,
@@ -142,6 +145,14 @@ async function promptYesNo(question: string, defaultValue: boolean): Promise<boo
 }
 
 function ensureSetupFlagCompatibility(options: SetupCommandOptions): void {
+  if (
+    options.enableContextAugmentation &&
+    options.disableContextAugmentation
+  ) {
+    throw new Error(
+      "Use either --enable-context-augmentation or --disable-context-augmentation, not both.",
+    );
+  }
   if (options.enableContextEngine && options.disableContextEngine) {
     throw new Error("Use either --enable-context-engine or --disable-context-engine, not both.");
   }
@@ -155,12 +166,13 @@ async function resolveSetupValues(
 
   const existing = resolveExistingPluginConfig(currentConfig);
   const interactive = isInteractiveTerminal();
-  const contextEngineDefault =
-    options.enableContextEngine === true
-      ? true
-      : options.disableContextEngine === true
-        ? false
-        : resolveExistingContextEngineSelection(currentConfig);
+  const modeDefault =
+    options.mode ??
+    (options.enableContextAugmentation || options.enableContextEngine
+      ? "augment_context"
+      : options.disableContextAugmentation || options.disableContextEngine
+        ? "capture_only"
+        : resolveExistingMode(currentConfig));
 
   const backendUrlDefault = options.backendUrl?.trim() || asString(existing.backendUrl) || DEFAULT_BACKEND_URL;
   const apiKeyDefault = options.apiKey?.trim() || asString(existing.apiKey) || "${AGENTIC_MEMORY_API_KEY}";
@@ -171,7 +183,6 @@ async function resolveSetupValues(
     "default-workspace";
   const deviceIdDefault = options.deviceId?.trim() || asString(existing.deviceId) || createDefaultDeviceId();
   const agentIdDefault = options.agentId?.trim() || asString(existing.agentId) || createDefaultAgentId();
-  const projectIdDefault = options.projectId?.trim() || asString(existing.projectId) || "";
 
   if (!interactive) {
     return {
@@ -180,22 +191,19 @@ async function resolveSetupValues(
       workspaceId: workspaceIdDefault,
       deviceId: deviceIdDefault,
       agentId: agentIdDefault,
-      projectId: projectIdDefault || null,
-      enableContextEngine: contextEngineDefault,
+      projectId: null,
+      mode: modeDefault,
     };
   }
 
   const backendUrl = await promptWithDefault("Agentic Memory backend URL", backendUrlDefault);
   const apiKey = await promptWithDefault("API key or interpolation template", apiKeyDefault);
-  const workspaceId = await promptWithDefault("OpenClaw workspace ID", workspaceIdDefault);
+  const workspaceId = await promptWithDefault("OpenClaw workspace (home base)", workspaceIdDefault);
   const deviceId = await promptWithDefault("Device ID", deviceIdDefault);
   const agentId = await promptWithDefault("Agent ID", agentIdDefault);
-  const projectId = await promptWithDefault("Project ID (optional)", projectIdDefault, {
-    allowEmpty: true,
-  });
-  const enableContextEngine = await promptYesNo(
-    "Enable Agentic Memory as the context engine too?",
-    contextEngineDefault,
+  const enableContextAugmentation = await promptYesNo(
+    "Enable Agentic Memory context augmentation now?",
+    modeDefault === "augment_context",
   );
 
   return {
@@ -204,8 +212,8 @@ async function resolveSetupValues(
     workspaceId,
     deviceId,
     agentId,
-    projectId: projectId.trim() || null,
-    enableContextEngine,
+    projectId: null,
+    mode: enableContextAugmentation ? "augment_context" : "capture_only",
   };
 }
 
@@ -222,7 +230,8 @@ function printSetupResult(
     deviceId: values.deviceId,
     agentId: values.agentId,
     projectId: values.projectId,
-    contextEngineEnabled: values.enableContextEngine,
+    mode: values.mode,
+    contextAugmentationEnabled: values.mode === "augment_context",
   };
 
   if (options.json) {
@@ -235,14 +244,50 @@ function printSetupResult(
   output.write(`Workspace: ${values.workspaceId}\n`);
   output.write(`Device: ${values.deviceId}\n`);
   output.write(`Agent: ${values.agentId}\n`);
-  if (values.projectId) {
-    output.write(`Project: ${values.projectId}\n`);
-  }
   output.write(`Memory slot: ${PLUGIN_ID}\n`);
+  output.write(`Capture mode: memory capture enabled\n`);
   output.write(
-    `Context engine: ${values.enableContextEngine ? DEFAULT_CONTEXT_ENGINE_ID : "legacy"}\n`,
+    `Context augmentation: ${values.mode === "augment_context" ? "enabled" : "disabled"}\n`,
   );
   ctx.logger.info?.("Agentic Memory plugin setup complete.");
+}
+
+type ProjectCommandOptions = {
+  sessionId: string;
+  workspace?: string;
+  workspaceId?: string;
+  deviceId?: string;
+  agentId?: string;
+  json?: boolean;
+  automation?: boolean;
+};
+
+type ProjectStopOptions = Omit<ProjectCommandOptions, "automation">;
+
+function resolveProjectCommandConfig(
+  currentConfig: OpenClawConfig,
+  options: ProjectCommandOptions | ProjectStopOptions,
+) {
+  const existing = resolveExistingPluginConfig(currentConfig);
+  return {
+    backendUrl: asString(existing.backendUrl) ?? DEFAULT_BACKEND_URL,
+    apiKey: asString(existing.apiKey) ?? null,
+    workspaceId:
+      options.workspace?.trim() ||
+      options.workspaceId?.trim() ||
+      asString(existing.workspaceId) ||
+      "default-workspace",
+    deviceId: options.deviceId?.trim() || asString(existing.deviceId) || createDefaultDeviceId(),
+    agentId: options.agentId?.trim() || asString(existing.agentId) || createDefaultAgentId(),
+  };
+}
+
+function printProjectPayload(payload: Record<string, unknown>, json = false): void {
+  if (json) {
+    output.write(`${JSON.stringify(payload, null, 2)}\n`);
+    return;
+  }
+  output.write(`${JSON.stringify(payload, null, 2)}\n`);
 }
 
 /**
@@ -266,17 +311,149 @@ export function registerAgenticMemoryCli(ctx: AgenticMemoryCliContext): void {
     .option("--workspace-id <id>", "OpenClaw workspace identifier")
     .option("--device-id <id>", "Device identifier")
     .option("--agent-id <id>", "Agent identifier")
-    .option("--project-id <id>", "Optional project label")
     .option(
-      "--enable-context-engine",
-      "Set plugins.slots.contextEngine to agentic-memory",
-      false,
+      "--mode <mode>",
+      "Plugin mode: capture_only or augment_context",
     )
-    .option("--disable-context-engine", "Restore the legacy context engine", false)
+    .option("--enable-context-augmentation", "Enable Agentic Memory context augmentation", false)
+    .option("--disable-context-augmentation", "Leave Agentic Memory in capture-only mode", false)
+    .option("--enable-context-engine", "Legacy alias for --enable-context-augmentation", false)
+    .option("--disable-context-engine", "Legacy alias for --disable-context-augmentation", false)
     .option("--json", "Print machine-readable JSON", false)
     .action(async (options: SetupCommandOptions) => {
       const values = await resolveSetupValues(ctx.config, options);
       await updateConfig((config) => mergeAgenticMemoryPluginConfigIntoOpenClawConfig(config, values));
       printSetupResult(ctx, values, options);
+    });
+
+  const project = root.command("project").description("Manage the active Agentic Memory project");
+
+  project
+    .command("start <projectId>")
+    .description("Activate a project for the current OpenClaw session")
+    .requiredOption("--session-id <id>", "Session identifier to scope the active project")
+    .option("--workspace <id>", "Workspace identifier (friendly alias for --workspace-id)")
+    .option("--workspace-id <id>", "Workspace identifier")
+    .option("--device-id <id>", "Device identifier")
+    .option("--agent-id <id>", "Agent identifier")
+    .option("--automation", "Also enable project automation for this workspace", false)
+    .option("--json", "Print machine-readable JSON", false)
+    .action(async (projectId: string, options: ProjectCommandOptions) => {
+      const config = resolveProjectCommandConfig(ctx.config, options);
+      const client = new AgenticMemoryBackendClient(
+        {
+          ...config,
+          projectId: null,
+          contextEngineId: DEFAULT_CONTEXT_ENGINE_ID,
+          mode: resolveExistingMode(ctx.config),
+        },
+        ctx.logger,
+      );
+      const activation = await client.post("/openclaw/project/activate", {
+        workspace_id: config.workspaceId,
+        device_id: config.deviceId,
+        agent_id: config.agentId,
+        session_id: options.sessionId,
+        project_id: projectId,
+        title: projectId,
+        metadata: { plugin: PLUGIN_ID },
+      });
+      let automation: unknown = null;
+      if (options.automation) {
+        automation = await client.post("/openclaw/project/automation", {
+          workspace_id: config.workspaceId,
+          project_id: projectId,
+          automation_kind: "research_ingestion",
+          enabled: true,
+          metadata: { plugin: PLUGIN_ID },
+        });
+      }
+      printProjectPayload(
+        {
+          ok: true,
+          action: "project_start",
+          projectId,
+          sessionId: options.sessionId,
+          activation,
+          automation,
+        },
+        options.json,
+      );
+    });
+
+  project
+    .command("stop")
+    .description("Deactivate the current project for one OpenClaw session")
+    .requiredOption("--session-id <id>", "Session identifier to clear")
+    .option("--workspace <id>", "Workspace identifier (friendly alias for --workspace-id)")
+    .option("--workspace-id <id>", "Workspace identifier")
+    .option("--device-id <id>", "Device identifier")
+    .option("--agent-id <id>", "Agent identifier")
+    .option("--json", "Print machine-readable JSON", false)
+    .action(async (options: ProjectStopOptions) => {
+      const config = resolveProjectCommandConfig(ctx.config, options);
+      const client = new AgenticMemoryBackendClient(
+        {
+          ...config,
+          projectId: null,
+          contextEngineId: DEFAULT_CONTEXT_ENGINE_ID,
+          mode: resolveExistingMode(ctx.config),
+        },
+        ctx.logger,
+      );
+      const response = await client.post("/openclaw/project/deactivate", {
+        workspace_id: config.workspaceId,
+        device_id: config.deviceId,
+        agent_id: config.agentId,
+        session_id: options.sessionId,
+        metadata: { plugin: PLUGIN_ID },
+      });
+      printProjectPayload(
+        {
+          ok: true,
+          action: "project_stop",
+          sessionId: options.sessionId,
+          response,
+        },
+        options.json,
+      );
+    });
+
+  project
+    .command("status")
+    .description("Show the active project for one OpenClaw session")
+    .requiredOption("--session-id <id>", "Session identifier to inspect")
+    .option("--workspace <id>", "Workspace identifier (friendly alias for --workspace-id)")
+    .option("--workspace-id <id>", "Workspace identifier")
+    .option("--device-id <id>", "Device identifier")
+    .option("--agent-id <id>", "Agent identifier")
+    .option("--json", "Print machine-readable JSON", false)
+    .action(async (options: ProjectStopOptions) => {
+      const config = resolveProjectCommandConfig(ctx.config, options);
+      const client = new AgenticMemoryBackendClient(
+        {
+          ...config,
+          projectId: null,
+          contextEngineId: DEFAULT_CONTEXT_ENGINE_ID,
+          mode: resolveExistingMode(ctx.config),
+        },
+        ctx.logger,
+      );
+      const response = await client.post("/openclaw/project/status", {
+        workspace_id: config.workspaceId,
+        device_id: config.deviceId,
+        agent_id: config.agentId,
+        session_id: options.sessionId,
+        metadata: { plugin: PLUGIN_ID },
+      });
+      printProjectPayload(
+        {
+          ok: true,
+          action: "project_status",
+          sessionId: options.sessionId,
+          response,
+        },
+        options.json,
+      );
     });
 }

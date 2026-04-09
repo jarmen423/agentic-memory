@@ -1,3 +1,36 @@
+"""
+AST-based source code parser for the codememory ingestion pipeline.
+
+Extended:
+    This module provides ``CodeParser``, the first stage of the code ingestion
+    pipeline. It uses tree-sitter to parse source files into concrete syntax
+    trees and then extracts structured metadata — classes, functions, imports,
+    function call sites, and environment variable reads — which are later
+    written to Neo4j by ``KnowledgeGraphBuilder``.
+
+    tree-sitter is chosen because it is language-agnostic, fault-tolerant
+    (produces partial trees on syntax errors), and fast enough to process an
+    entire repo in seconds. Language grammars are loaded from the
+    ``tree_sitter_python`` and ``tree_sitter_javascript`` packages.
+
+Role:
+    Called by ``KnowledgeGraphBuilder._process_file`` during repo ingestion
+    (``am index`` CLI command). The parser output dict is the contract between
+    parsing and graph construction — each key maps to a Neo4j node type or
+    relationship.
+
+Dependencies:
+    - tree-sitter (``pip install tree-sitter``)
+    - tree-sitter-python (Python grammar bindings)
+    - tree-sitter-javascript (JS/TS grammar bindings)
+
+Key Technologies:
+    - tree-sitter CST queries (S-expression pattern language)
+    - Supported extensions: .py, .js, .jsx, .ts, .tsx
+    - Import extraction: Python only (JS/TS imports not yet wired)
+    - Env var extraction: Python only (os.getenv / os.environ.get)
+"""
+
 import logging
 from typing import Dict, List, Any
 from tree_sitter import Language, Parser, Query, QueryCursor, Node, Tree
@@ -7,6 +40,23 @@ import tree_sitter_javascript
 logger = logging.getLogger(__name__)
 
 class CodeParser:
+    """tree-sitter-based parser that extracts structured metadata from source files.
+
+    Instantiate once per process (parsers are stateless after initialisation)
+    and call ``parse_file`` for each source file during ingestion. The returned
+    dict is consumed by ``KnowledgeGraphBuilder`` to create Neo4j nodes and
+    relationships for the code knowledge graph.
+
+    Supported file extensions: ``.py``, ``.js``, ``.jsx``, ``.ts``, ``.tsx``.
+    Files with unsupported extensions return the default empty-result dict so
+    that callers never need to branch on parser availability.
+
+    Attributes:
+        parsers: Dict mapping file extension -> tree-sitter ``Parser`` instance.
+        languages: Dict mapping file extension -> tree-sitter ``Language``
+            grammar object (used to compile S-expression queries).
+    """
+
     def __init__(self):
         self.parsers = {}
         self.languages = {}
@@ -28,6 +78,36 @@ class CodeParser:
             logger.error(f"Failed to initialize parsers: {e}")
 
     def parse_file(self, code: str, extension: str) -> Dict[str, Any]:
+        """Parse source code and return structured metadata for graph ingestion.
+
+        Builds a tree-sitter CST from ``code``, then runs five focused S-expression
+        queries to extract different structural elements. Returns a consistent
+        dict shape regardless of language or whether parsing succeeds, so
+        callers never need to guard against missing keys.
+
+        Args:
+            code: Raw source code as a string (any encoding is transcoded to
+                UTF-8 internally before passing to tree-sitter).
+            extension: File extension including the leading dot (e.g., ".py",
+                ".ts"). Controls which grammar and query patterns are used.
+
+        Returns:
+            Dict with five keys:
+              - ``classes``: List of dicts ``{name, code, start_line}`` for
+                each class definition found in the file.
+              - ``functions``: List of dicts ``{name, code, parent_class,
+                start_line}`` for each function/method definition.
+              - ``imports``: List of module name strings (Python only; empty
+                list for JS/TS files in the current implementation).
+              - ``calls``: List of called function name strings (bare
+                identifiers only — method calls on objects are not captured).
+              - ``env_vars``: List of dicts ``{type, name, line}`` for
+                ``os.getenv`` / ``os.environ.get`` reads and ``load_dotenv``
+                invocations (Python only).
+
+            Returns the default empty-list dict on unsupported extensions or
+            parse errors so the pipeline can continue without crashing.
+        """
         default_result = {
             "classes": [],
             "functions": [],

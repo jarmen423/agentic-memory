@@ -1,7 +1,47 @@
 """
-MCP Server for Agentic Memory.
+MCP server entry point for the codememory memory system.
 
-Exposes high-level skills to AI agents via the Model Context Protocol.
+Extended:
+    This module is the main FastMCP server for codememory. It creates the
+    ``mcp`` FastMCP instance, registers all MCP tools (code search, git
+    queries, unified memory search, and conversation/research tools via
+    ``tools.py``), and manages the global ``KnowledgeGraphBuilder`` singleton
+    that backs all code and git queries.
+
+    At startup the server:
+      1. Calls ``init_graph()`` to connect to Neo4j (config file or env vars).
+      2. Calls ``_init_telemetry()`` to open (or skip) the SQLite telemetry DB.
+      3. Registers code/git tools directly on ``mcp`` using ``@mcp.tool``.
+      4. Delegates conversation and research tool registration to
+         ``register_conversation_tools`` and ``register_schedule_tools``
+         from ``tools.py``.
+
+    Tool decorators applied in this file:
+      - ``@rate_limit`` — per-tool sliding-window request counter (in-memory).
+      - ``@log_tool_call`` — structured timing log + SQLite telemetry write.
+
+    The server process is launched by ``am server`` CLI (``codememory/cli.py``)
+    or directly via ``python -m codememory.server.app``.
+
+Role:
+    This is the single process boundary between AI agents and the Neo4j memory
+    graph. All agent reads and writes flow through the ``@mcp.tool`` functions
+    defined here and in ``tools.py``.
+
+Dependencies:
+    - FastMCP (``mcp.server.fastmcp``)
+    - codememory.ingestion.graph.KnowledgeGraphBuilder
+    - codememory.telemetry.TelemetryStore
+    - codememory.server.tools (conversation + research + schedule tools)
+    - codememory.server.unified_search (cross-domain search)
+    - Neo4j (bolt connection via KnowledgeGraphBuilder)
+    - OpenAI API (embedding service inside KnowledgeGraphBuilder)
+
+Key Technologies:
+    - Model Context Protocol (MCP) via FastMCP
+    - Neo4j vector index ``code_embeddings`` for semantic code search
+    - SQLite telemetry store at ``.codememory/telemetry.sqlite3``
+    - Sliding-window in-memory rate limiter (per tool, per process)
 """
 
 import os
@@ -52,35 +92,84 @@ SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
 
 def rate_limit(func):
-    """Rate limiting decorator for MCP tools."""
+    """Decorator that enforces a per-tool sliding-window request rate limit.
+
+    Wraps the decorated MCP tool function with an in-memory sliding-window
+    counter stored in the module-level ``_request_log`` dict. Each tool name
+    gets its own counter, so limits are enforced independently per tool.
+
+    The inner ``wrapper`` function, on each call:
+      1. Purges timestamps from ``_request_log[key]`` that fall outside the
+         current ``RATE_LIMIT_WINDOW`` (default 60 s).
+      2. Checks whether the remaining count has reached ``RATE_LIMIT_REQUESTS``
+         (default 100). If so, returns an error string instead of calling the
+         wrapped function — no exception is raised so MCP clients receive a
+         readable message rather than a protocol error.
+      3. Appends the current timestamp and calls through to the tool.
+
+    Note: This is a single-process in-memory counter and resets on server
+    restart. It is intended to protect against runaway agent loops, not as a
+    multi-tenant quota system.
+
+    Args:
+        func: The MCP tool function to wrap.
+
+    Returns:
+        Wrapped function with rate-limiting applied.
+    """
     @wraps(func)
     def wrapper(*args, **kwargs):
         # Use function name as key
         key = func.__name__
         now = datetime.now()
-        
+
         # Initialize or clean old requests
         if key not in _request_log:
             _request_log[key] = []
-        
+
         # Remove requests outside the window
         window_start = now - timedelta(seconds=RATE_LIMIT_WINDOW)
         _request_log[key] = [t for t in _request_log[key] if t > window_start]
-        
+
         # Check if rate limit exceeded
         if len(_request_log[key]) >= RATE_LIMIT_REQUESTS:
             logger.warning(f"Rate limit exceeded for {key}")
             return "❌ Rate limit exceeded. Please try again later."
-        
+
         # Log this request
         _request_log[key].append(now)
-        
+
         return func(*args, **kwargs)
     return wrapper
 
 
 def log_tool_call(func):
-    """Decorator to log tool calls for debugging."""
+    """Decorator that logs MCP tool calls and writes telemetry records.
+
+    Wraps an MCP tool function with structured timing and telemetry. The inner
+    ``wrapper`` function:
+      - Records the wall-clock start time.
+      - Calls the original function, catching all exceptions.
+      - On success: logs an INFO completion line and writes a success row via
+        ``TelemetryStore.record_tool_call`` if telemetry is enabled.
+      - On failure: logs an ERROR line, writes a failure row to telemetry
+        (with ``error_type`` set to the exception class name), then re-raises
+        so the MCP protocol layer can return the error to the client.
+
+    The ``client_id`` is read from the ``CODEMEMORY_CLIENT`` environment
+    variable at call time so it reflects the actual calling agent/IDE plugin.
+    The ``repo_root`` is read from the module-level ``_repo_override`` at call
+    time, which is set during server startup.
+
+    Telemetry writes are best-effort: failures to write to SQLite are logged
+    as warnings but never propagate to the caller.
+
+    Args:
+        func: The MCP tool function to wrap.
+
+    Returns:
+        Wrapped function with logging and telemetry applied.
+    """
     @wraps(func)
     def wrapper(*args, **kwargs):
         start_time = time.time()

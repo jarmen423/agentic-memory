@@ -1,3 +1,47 @@
+"""
+MCP tool definitions and code-graph query logic for the codememory server.
+
+Extended:
+    This module defines the public API surface that AI agents see when they
+    connect to the codememory MCP server. It contains two distinct layers:
+
+    1. Toolkit class — A pure-Python helper that wraps KnowledgeGraphBuilder
+       queries and formats results as human/LLM-readable Markdown strings.
+       Used by app.py MCP tool registrations for code and git queries.
+
+    2. register_* functions — Functions that register MCP tool handlers onto a
+       FastMCP instance at server startup. Each decorated inner function becomes
+       a callable tool visible to agents over the MCP protocol.
+
+    Search strategy for conversation tools:
+      - Primary path: vector search via Neo4j ``chat_embeddings`` index.
+      - Temporal path: if a ``TemporalBridge`` is available and seed entities
+        can be extracted, results are enriched via the temporal knowledge graph.
+      - Fallback: deterministic ``toLower CONTAINS`` text search when embedding
+        or the temporal layer is unavailable.
+
+Role:
+    This file IS the MCP tool contract. Any tool an agent can call is
+    registered here or in app.py using the same pattern. Changes here directly
+    affect what agents can do with memory.
+
+Dependencies:
+    - codememory.ingestion.graph.KnowledgeGraphBuilder (code/git graph ops)
+    - codememory.chat.pipeline.ConversationIngestionPipeline (conversation R/W)
+    - codememory.web.pipeline.ResearchIngestionPipeline (web research R/W)
+    - codememory.core.scheduler.ResearchScheduler (APScheduler-backed cron jobs)
+    - codememory.temporal.bridge.TemporalBridge (temporal knowledge graph)
+    - Neo4j vector index ``chat_embeddings`` (conversation semantic search)
+    - Environment variables: NEO4J_URI, NEO4J_USER/NEO4J_USERNAME,
+      NEO4J_PASSWORD, BRAVE_SEARCH_API_KEY
+
+Key Technologies:
+    - Model Context Protocol (MCP) via FastMCP ``@mcp.tool`` decorator
+    - Neo4j CALL db.index.vector.queryNodes for ANN vector search
+    - lru_cache singletons for pipeline and scheduler instances (one per process)
+    - asyncio + run_in_executor to make synchronous Neo4j calls non-blocking
+"""
+
 from typing import Any, Dict, List, Optional
 import asyncio
 import json
@@ -228,7 +272,40 @@ def search_conversation_turns_sync(
     as_of: str | None,
     log_prefix: str,
 ) -> list[dict[str, Any]]:
-    """Temporal-first conversation search with deterministic fallback."""
+    """Temporal-first conversation search with deterministic fallback.
+
+    This is the core search logic shared by both ``search_conversations`` and
+    ``get_conversation_context`` MCP tools. It implements a three-tier strategy:
+
+    1. Vector search via the ``chat_embeddings`` Neo4j index (primary).
+    2. Temporal enrichment: if project_id is set and a TemporalBridge is
+       available, seed entities are extracted from vector results (or from the
+       query itself) and passed to the temporal layer for relationship-aware
+       re-ranking.
+    3. Text fallback: if the embedding call fails entirely, falls back to a
+       case-insensitive ``CONTAINS`` substring match in Neo4j.
+
+    The ``as_of`` timestamp gates all returned rows — any turn with an
+    ``ingested_at`` value later than ``as_of`` is excluded, supporting
+    point-in-time memory reads (Phase 7 feature).
+
+    Args:
+        pipeline: Initialized ConversationIngestionPipeline supplying the
+            Neo4j connection, embedder, and entity extractor.
+        query: Natural language query string.
+        project_id: Optional project scope. Required for temporal enrichment;
+            when None, only the vector path runs (no temporal layer).
+        role: Optional role filter — "user", "assistant", "system", or "tool".
+        limit: Maximum number of turns to return.
+        as_of: ISO-8601 timestamp upper bound for ``ingested_at`` filtering.
+            Pass None to return all ingested turns regardless of time.
+        log_prefix: String prepended to warning/info log lines for traceability.
+
+    Returns:
+        List of conversation turn dicts, each containing at minimum:
+        session_id, turn_index, role, content, source_agent, timestamp,
+        ingested_at, entities, and a float ``score`` field.
+    """
     conn = pipeline._conn  # type: ignore[attr-defined]
     embedder = pipeline._embedder  # type: ignore[attr-defined]
     extractor = pipeline._extractor  # type: ignore[attr-defined]
@@ -428,16 +505,45 @@ def _get_mcp_research_scheduler() -> ResearchScheduler | None:
     )
 
 class Toolkit:
-    """
-    The 'Brain' logic.
-    Separated from the Server so it can be tested or used in CLI/Scripts directly.
+    """Code and git query logic for the codememory MCP server.
+
+    Wraps ``KnowledgeGraphBuilder`` to provide MCP-friendly, formatted string
+    responses for code and git tools registered in ``app.py``. By keeping this
+    logic separate from the FastMCP tool decorators it can also be exercised
+    directly in tests or CLI scripts without starting the MCP server.
+
+    The class covers four query types:
+      - Semantic code search (hybrid vector + graph traversal).
+      - File dependency analysis (import graph edges in Neo4j).
+      - Git file history (commit -> file MODIFIED edges).
+      - Commit context (metadata + diff stats for a single commit SHA).
+
+    All methods return Markdown-formatted strings because the primary consumer
+    is an LLM reading tool output inside a context window.
+
+    Attributes:
+        graph: The KnowledgeGraphBuilder instance connected to Neo4j.
     """
     def __init__(self, graph: KnowledgeGraphBuilder):
         self.graph = graph
 
     def semantic_search(self, query: str, limit: int = 5) -> str:
-        """
-        Performs hybrid search and formats the result as a readable string for the Agent.
+        """Hybrid semantic search over the code graph, returning Markdown.
+
+        Delegates to ``KnowledgeGraphBuilder.semantic_search``, which queries
+        the Neo4j ``code_embeddings`` vector index and then traverses the graph
+        to surface related nodes. Results are formatted as a Markdown report
+        suitable for direct injection into an LLM context window.
+
+        Args:
+            query: Natural language description of the code being searched for
+                (e.g., "function that handles OAuth token refresh").
+            limit: Maximum number of code snippets to return (default 5).
+
+        Returns:
+            Markdown string with a header and one section per result showing
+            the node name, vector similarity score, and function signature.
+            Returns a plain-text error or "not found" message on failure.
         """
         try:
             results = self.graph.semantic_search(query, limit)
@@ -455,8 +561,20 @@ class Toolkit:
             return f"Error executing search: {str(e)}"
     
     def get_file_dependencies(self, file_path: str) -> str:
-        """
-        Returns what this file imports and what calls it.
+        """Return import and reverse-import edges for a file as Markdown.
+
+        Queries the Neo4j code graph for ``IMPORTS`` edges originating from
+        ``file_path`` (outgoing — what this file depends on) and ``IMPORTS``
+        edges pointing to it (incoming — what depends on this file). This
+        gives agents an instant picture of a file's coupling in the codebase.
+
+        Args:
+            file_path: Repo-relative or absolute path to the file, matching
+                the ``path`` property stored during code ingestion.
+
+        Returns:
+            Markdown dependency report with two sections: "Imports (outgoing)"
+            and "Used By (incoming)". Returns an error string on Neo4j failure.
         """
         try:
             deps = self.graph.get_file_dependencies(file_path)
@@ -472,8 +590,22 @@ class Toolkit:
             return f"Error analyzing dependencies: {str(e)}"
 
     def get_git_file_history(self, file_path: str, limit: int = 20) -> str:
-        """
-        Return git commit history for a specific file.
+        """Return the git commit history for a specific file as Markdown.
+
+        Queries the Neo4j git graph for ``Commit`` nodes connected to
+        ``file_path`` via ``MODIFIED`` relationships. Requires that git
+        ingestion has been run (i.e., ``has_git_graph_data()`` returns True).
+
+        Args:
+            file_path: Repo-relative path to the file (e.g., "src/foo/bar.py").
+                Must match the path stored during git ingestion.
+            limit: Maximum number of commits to return (default 20, most
+                recent first).
+
+        Returns:
+            Markdown string listing commits as ``short_sha subject`` lines.
+            Returns a descriptive message if git data is absent or no history
+            is found, and an error string on Neo4j failure.
         """
         try:
             if not self.graph.has_git_graph_data():
@@ -495,8 +627,21 @@ class Toolkit:
             return f"Error getting git file history: {str(e)}"
 
     def get_commit_context(self, sha: str, include_diff_stats: bool = True) -> str:
-        """
-        Return metadata and optional diff stats for a commit.
+        """Return metadata and optional diff stats for a commit as Markdown.
+
+        Looks up a ``Commit`` node in the Neo4j git graph by SHA (full or
+        abbreviated). Requires that git ingestion has been run first.
+
+        Args:
+            sha: Full or short (7-40 char) commit SHA.
+            include_diff_stats: If True, include a summary line showing
+                files changed, lines added, and lines deleted (default True).
+
+        Returns:
+            Markdown string with commit subject, author, timestamp, and
+            optionally diff stats. Returns a descriptive message if the SHA
+            is not found or git data is absent, and an error string on
+            Neo4j failure.
         """
         try:
             if not self.graph.has_git_graph_data():
@@ -768,7 +913,34 @@ def register_schedule_tools(
     brave_api_key: str | None = None,
     pipeline: ResearchIngestionPipeline | None = None,
 ) -> None:
-    """Register recurring research scheduling tools on the provided MCP instance."""
+    """Register recurring research scheduling tools on the provided MCP instance.
+
+    Registers three MCP tools: ``schedule_research``, ``run_research_session``,
+    and ``list_research_schedules``. These tools allow agents to create and
+    trigger APScheduler-backed cron jobs that automatically fetch web research,
+    extract entities, and persist results to Neo4j.
+
+    Scheduler initialization uses a two-tier priority:
+      1. Explicit arguments (``connection_manager``, ``pipeline``, API keys) —
+         used when called from test harnesses or custom server startup code.
+      2. MCP singleton fallback via ``_get_mcp_research_scheduler()`` — reads
+         from environment variables (BRAVE_SEARCH_API_KEY, NEO4J_*, etc.) and
+         is the normal production path.
+
+    If neither path can build a scheduler (missing keys or pipeline), all three
+    registered tools return a JSON error payload rather than raising.
+
+    Args:
+        mcp: The FastMCP instance to register tools on. Must support the
+            ``@mcp.tool(description=...)`` decorator pattern.
+        connection_manager: Optional pre-built Neo4j ConnectionManager.
+            When provided, takes precedence over environment variables.
+        groq_api_key: Optional API key for the extraction LLM (Groq by default).
+            When provided alongside ``connection_manager``, used directly.
+        brave_api_key: Optional Brave Search API key for web research fetching.
+        pipeline: Optional pre-built ResearchIngestionPipeline. When provided,
+            the scheduler reuses it rather than constructing a new one.
+    """
 
     scheduler_singleton: ResearchScheduler | None = None
 
@@ -808,7 +980,29 @@ def register_schedule_tools(
         project_id: str,
         max_runs_per_day: int = 5,
     ) -> str:
-        """Create and persist a recurring research schedule."""
+        """Create and persist a recurring research schedule in Neo4j.
+
+        Schedules an APScheduler cron job that periodically runs web research
+        using the provided template and variable substitutions. The schedule is
+        stored as a ``ResearchSchedule`` node in Neo4j so it survives server
+        restarts.
+
+        Args:
+            template: Prompt template string for the research query, with
+                ``{variable}`` placeholders (e.g., "Latest news on {topic}").
+            variables: List of substitution values for template placeholders
+                (e.g., ["machine learning", "LLM agents"]).
+            cron_expr: Cron expression controlling run frequency
+                (e.g., "0 9 * * 1-5" for weekdays at 9 AM).
+            project_id: Project scope for persisted research results.
+            max_runs_per_day: Safety cap on daily executions to prevent
+                runaway API costs (default 5).
+
+        Returns:
+            JSON string: ``{"status": "ok", "schedule_id": "<id>"}`` on
+            success, or ``{"status": "error", "error": "<message>"}`` if the
+            scheduler is not configured.
+        """
         scheduler = _get_scheduler()
         if scheduler is None:
             return json.dumps(
@@ -841,7 +1035,32 @@ def register_schedule_tools(
         template: str | None = None,
         variables: list[str] | None = None,
     ) -> str:
-        """Trigger one scheduled or ad hoc research session."""
+        """Trigger one scheduled or ad hoc research session immediately.
+
+        Executes a research session right now, outside the normal cron schedule.
+        Accepts either an existing ``schedule_id`` (to reuse a stored schedule's
+        template/variables) or an ad hoc combination of ``project_id``,
+        ``template``, and ``variables`` for a one-off run.
+
+        Results are fetched via Brave Search, entity-extracted, embedded, and
+        written to Neo4j as ``Memory:Web:Page`` nodes under the given project.
+
+        Args:
+            schedule_id: ID of an existing ``ResearchSchedule`` node to
+                re-execute. If provided, ``project_id``/``template`` are
+                optional overrides.
+            project_id: Project scope for the research results. Required when
+                ``schedule_id`` is not provided.
+            template: Research prompt template. Required when ``schedule_id``
+                is not provided.
+            variables: Substitution values for template placeholders. Required
+                when ``schedule_id`` is not provided.
+
+        Returns:
+            JSON string with session results from ``ResearchScheduler``, or
+            a JSON error payload if arguments are missing or the scheduler is
+            not configured.
+        """
         if not schedule_id and not (project_id and template):
             return json.dumps(
                 {
@@ -875,7 +1094,20 @@ def register_schedule_tools(
         )
     )
     async def list_research_schedules(project_id: str) -> str:
-        """List recurring research schedules for a project."""
+        """List all recurring research schedules stored for a project.
+
+        Queries Neo4j for ``ResearchSchedule`` nodes associated with the given
+        project and returns their metadata (schedule_id, template, cron_expr,
+        max_runs_per_day, last_run, next_run, etc.).
+
+        Args:
+            project_id: Project whose schedules should be listed.
+
+        Returns:
+            JSON string: ``{"status": "ok", "schedules": [...]}`` where each
+            entry is a dict of schedule metadata, or a JSON error payload if
+            the scheduler is not configured.
+        """
         scheduler = _get_scheduler()
         if scheduler is None:
             return json.dumps(

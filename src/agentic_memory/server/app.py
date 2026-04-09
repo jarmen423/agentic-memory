@@ -80,7 +80,30 @@ def rate_limit(func):
 
 
 def log_tool_call(func):
-    """Decorator to log tool calls for debugging."""
+    """Decorator that logs timing and records telemetry for every MCP tool call.
+
+    Applied to all ``@mcp.tool`` handler functions in ``app.py``.  On each
+    invocation the inner wrapper:
+    1. Records the wall-clock start time.
+    2. Calls the wrapped tool function.
+    3. On success: logs duration and writes a success row to ``TelemetryStore``
+       (if telemetry is enabled via ``CODEMEMORY_TELEMETRY_ENABLED``).
+    4. On exception: logs the failure, writes a failure row with the exception
+       class name as ``error_type``, then re-raises so the MCP framework can
+       return an error response.
+
+    Telemetry writes are best-effort — a failure to write to SQLite is logged as
+    a warning but does not suppress the tool result.
+
+    The ``rate_limit`` decorator should be applied *outside* this decorator so
+    rate-limited rejections are not recorded as tool-call failures.
+
+    Args:
+        func: The MCP tool function to wrap.
+
+    Returns:
+        The wrapped function with identical signature.
+    """
     @wraps(func)
     def wrapper(*args, **kwargs):
         start_time = time.time()

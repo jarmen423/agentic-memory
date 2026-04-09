@@ -1,4 +1,15 @@
-"""OpenClaw-facing endpoints for shared memory and context assembly."""
+"""OpenClaw-facing endpoints for shared memory, project state, and context.
+
+This router now models the product split explicitly:
+
+- memory owns session registration, turn capture, search, and canonical reads
+- project state decides whether a given session currently has an active
+  ``project_id`` label
+- context resolution is optional and sits downstream of memory capture
+
+The OpenClaw plugin can therefore send turn-ingest events through a
+memory-specific route even when it is running in "capture only" mode.
+"""
 
 from __future__ import annotations
 
@@ -10,10 +21,16 @@ from fastapi import APIRouter, Depends, HTTPException
 from am_server.auth import require_auth
 from am_server.dependencies import get_conversation_pipeline, get_pipeline, get_product_store
 from am_server.models import (
+    ConversationIngestRequest,
+    OpenClawProjectActivationRequest,
+    OpenClawProjectAutomationRequest,
+    OpenClawProjectDeactivationRequest,
+    OpenClawProjectStatusRequest,
     OpenClawContextResolveRequest,
     OpenClawMemoryReadRequest,
     OpenClawMemorySearchRequest,
     OpenClawSessionRegisterRequest,
+    OpenClawTurnIngestRequest,
 )
 from agentic_memory.server.app import get_graph
 from agentic_memory.server.unified_search import search_all_memory_sync
@@ -31,6 +48,32 @@ def _serialize(value: object) -> object:
     if isinstance(value, dict):
         return {key: _serialize(item) for key, item in value.items()}
     return value
+
+
+def _resolve_active_project_id(
+    *,
+    workspace_id: str,
+    agent_id: str,
+    session_id: str,
+    explicit_project_id: str | None,
+) -> str | None:
+    """Resolve the effective project id for this OpenClaw request.
+
+    Request-time explicit project ids win. When omitted, the local product
+    store is treated as the source of truth for the session's current active
+    project binding.
+    """
+
+    if explicit_project_id:
+        return explicit_project_id
+
+    store = get_product_store()
+    binding = store.get_active_project_for_openclaw_identity(
+        workspace_id=workspace_id,
+        agent_id=agent_id,
+        session_id=session_id,
+    )
+    return binding["project_id"] if binding else None
 
 
 def _format_context_blocks(hits: Iterable[object]) -> list[dict[str, object]]:
@@ -196,6 +239,7 @@ async def register_openclaw_session(body: OpenClawSessionRegisterRequest) -> dic
             "agent_id": body.agent_id,
             "project_id": body.project_id,
             "context_engine": body.context_engine,
+            "mode": body.mode,
             "metadata": body.metadata,
         },
     )
@@ -209,6 +253,7 @@ async def register_openclaw_session(body: OpenClawSessionRegisterRequest) -> dic
             "session_id": body.session_id,
             "project_id": body.project_id,
             "context_engine": body.context_engine,
+            "mode": body.mode,
             "metadata": body.metadata,
         },
     )
@@ -220,16 +265,166 @@ async def register_openclaw_session(body: OpenClawSessionRegisterRequest) -> dic
     }
 
 
+@router.post("/openclaw/project/activate")
+async def activate_openclaw_project(body: OpenClawProjectActivationRequest) -> dict:
+    """Activate a reusable project label for one OpenClaw session."""
+
+    store = get_product_store()
+    binding = store.activate_project_for_openclaw_identity(
+        workspace_id=body.workspace_id,
+        agent_id=body.agent_id,
+        session_id=body.session_id,
+        device_id=body.device_id,
+        project_id=body.project_id,
+        title=body.title,
+        metadata=body.metadata,
+    )
+    event = store.record_event(
+        event_type="openclaw_project_activated",
+        actor="openclaw",
+        details={
+            "workspace_id": body.workspace_id,
+            "device_id": body.device_id,
+            "agent_id": body.agent_id,
+            "session_id": body.session_id,
+            "project_id": body.project_id,
+        },
+    )
+    return {"status": "ok", "identity": body.model_dump(), "binding": binding, "event": event}
+
+
+@router.post("/openclaw/project/deactivate")
+async def deactivate_openclaw_project(body: OpenClawProjectDeactivationRequest) -> dict:
+    """Clear the active project for one OpenClaw session."""
+
+    store = get_product_store()
+    removed = store.deactivate_project_for_openclaw_identity(
+        workspace_id=body.workspace_id,
+        agent_id=body.agent_id,
+        session_id=body.session_id,
+    )
+    event = store.record_event(
+        event_type="openclaw_project_deactivated",
+        actor="openclaw",
+        details={
+            "workspace_id": body.workspace_id,
+            "device_id": body.device_id,
+            "agent_id": body.agent_id,
+            "session_id": body.session_id,
+            "project_id": removed["project_id"] if removed else None,
+        },
+    )
+    return {
+        "status": "ok",
+        "identity": body.model_dump(),
+        "binding": removed,
+        "event": event,
+    }
+
+
+@router.post("/openclaw/project/status")
+async def status_openclaw_project(body: OpenClawProjectStatusRequest) -> dict:
+    """Return the current active project binding for one OpenClaw session."""
+
+    store = get_product_store()
+    binding = store.get_active_project_for_openclaw_identity(
+        workspace_id=body.workspace_id,
+        agent_id=body.agent_id,
+        session_id=body.session_id,
+    )
+    return {
+        "status": "ok",
+        "identity": body.model_dump(),
+        "active_project": binding,
+    }
+
+
+@router.post("/openclaw/project/automation")
+async def automate_openclaw_project(body: OpenClawProjectAutomationRequest) -> dict:
+    """Create or update a workspace-scoped project automation record."""
+
+    store = get_product_store()
+    automation = store.upsert_project_automation(
+        workspace_id=body.workspace_id,
+        project_id=body.project_id,
+        automation_kind=body.automation_kind,
+        enabled=body.enabled,
+        metadata=body.metadata,
+    )
+    event = store.record_event(
+        event_type="openclaw_project_automation_updated",
+        actor="openclaw",
+        details=automation,
+    )
+    return {"status": "ok", "automation": automation, "event": event}
+
+
+@router.post("/openclaw/memory/ingest-turn", status_code=202)
+async def ingest_openclaw_turn(body: OpenClawTurnIngestRequest) -> dict:
+    """Ingest one OpenClaw conversation turn through the memory contract.
+
+    This route keeps project resolution on the server side. The plugin can
+    therefore capture memory continuously without baking a static project tag
+    into install-time config.
+    """
+
+    effective_project_id = _resolve_active_project_id(
+        workspace_id=body.workspace_id,
+        agent_id=body.agent_id,
+        session_id=body.session_id,
+        explicit_project_id=body.project_id,
+    )
+
+    pipeline = get_conversation_pipeline()
+    conversation_payload = ConversationIngestRequest(
+        role=body.role,
+        content=body.content,
+        session_id=body.session_id,
+        project_id=effective_project_id,
+        turn_index=body.turn_index,
+        workspace_id=body.workspace_id,
+        device_id=body.device_id,
+        agent_id=body.agent_id,
+        source_agent=body.source_agent,
+        model=body.model,
+        tool_name=body.tool_name,
+        tool_call_id=body.tool_call_id,
+        tokens_input=body.tokens_input,
+        tokens_output=body.tokens_output,
+        timestamp=body.timestamp,
+        ingestion_mode=body.ingestion_mode,
+        source_key=body.source_key,
+    )
+
+    try:
+        result = pipeline.ingest(conversation_payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return {
+        "status": "ok",
+        "identity": body.model_dump(),
+        "effective_project_id": effective_project_id,
+        "result": result,
+    }
+
+
 @router.post("/openclaw/memory/search")
 async def search_openclaw_memory(body: OpenClawMemorySearchRequest) -> dict:
     """Search shared memory for an OpenClaw workspace/session."""
+    effective_project_id = _resolve_active_project_id(
+        workspace_id=body.workspace_id,
+        agent_id=body.agent_id,
+        session_id=body.session_id,
+        explicit_project_id=body.project_id,
+    )
     graph = get_graph()
     research_pipeline = get_pipeline()
     conversation_pipeline = get_conversation_pipeline()
     response = search_all_memory_sync(
         query=body.query,
         limit=body.limit,
-        project_id=body.project_id,
+        project_id=effective_project_id,
         as_of=body.as_of,
         modules=body.modules,
         graph=graph,
@@ -239,7 +434,7 @@ async def search_openclaw_memory(body: OpenClawMemorySearchRequest) -> dict:
     payload = _serialize(response)
     return {
         "status": "ok",
-        "identity": body.model_dump(),
+        "identity": {**body.model_dump(), "project_id": effective_project_id},
         "results": [
             _normalize_openclaw_hit(hit) for hit in payload.get("results", [])
         ],
@@ -299,13 +494,19 @@ async def read_openclaw_memory(body: OpenClawMemoryReadRequest) -> dict:
 @router.post("/openclaw/context/resolve")
 async def resolve_openclaw_context(body: OpenClawContextResolveRequest) -> dict:
     """Resolve context blocks for OpenClaw using current shared memory search."""
+    effective_project_id = _resolve_active_project_id(
+        workspace_id=body.workspace_id,
+        agent_id=body.agent_id,
+        session_id=body.session_id,
+        explicit_project_id=body.project_id,
+    )
     search_response = await search_openclaw_memory(
         OpenClawMemorySearchRequest(
             workspace_id=body.workspace_id,
             device_id=body.device_id,
             agent_id=body.agent_id,
             session_id=body.session_id,
-            project_id=body.project_id,
+            project_id=effective_project_id,
             metadata=body.metadata,
             query=body.query,
             limit=body.limit,
@@ -322,7 +523,7 @@ async def resolve_openclaw_context(body: OpenClawContextResolveRequest) -> dict:
         )
     return {
         "status": "ok",
-        "identity": body.model_dump(),
+        "identity": {**body.model_dump(), "project_id": effective_project_id},
         "context_engine": body.context_engine,
         "context_budget_tokens": body.context_budget_tokens,
         "system_prompt_addition": prompt_addition,

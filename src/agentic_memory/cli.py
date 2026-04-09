@@ -1,3 +1,40 @@
+"""
+CLI entry point for the agentic_memory package.
+
+Provides the ``agentic-memory`` (and legacy ``codememory``) command-line interface
+that operators, developers, and automation scripts use to configure, index, and
+serve the Agentic Memory system.
+
+Extended:
+    All user-facing operations that don't require an AI agent are surfaced here:
+    initializing the system in a repository, running one-time or continuous code
+    indexing, querying the Neo4j knowledge graph, managing git-graph sync, ingesting
+    conversation turns, scheduling web research, and annotating MCP tool-call
+    telemetry for prompted/unprompted labeling.
+
+    The MCP server itself is started via ``cmd_serve``, which delegates to
+    ``agentic_memory.server.app``.
+
+Role:
+    User-facing control plane — not imported by any server or library code.
+    All commands read configuration from ``.codememory/config.json`` (or environment
+    variables as fallback) and talk directly to Neo4j and OpenAI.
+
+Dependencies:
+    - Neo4j 5.18+ (graph + vector index storage)
+    - OpenAI (embeddings for semantic search)
+    - agentic_memory.config (Config, find_repo_root)
+    - agentic_memory.ingestion.graph (KnowledgeGraphBuilder)
+    - agentic_memory.ingestion.git_graph (GitGraphIngestor)
+    - agentic_memory.ingestion.watcher (continuous file watch)
+    - agentic_memory.product.state (ProductStateStore)
+    - agentic_memory.telemetry (TelemetryStore)
+
+Key Technologies:
+    argparse (subcommand routing), python-dotenv (.env loading),
+    Neo4j Python driver, tree-sitter (via ingestion pipeline).
+"""
+
 # Load .env BEFORE any other imports that might need environment variables
 from dotenv import load_dotenv
 
@@ -1019,22 +1056,27 @@ def cmd_openclaw_setup(args: argparse.Namespace) -> None:
     config_path = Path(args.config_path).expanduser().resolve()
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
-    session_id = (
-        args.session_id
-        or f"{args.workspace_id}:{args.device_id}:{args.agent_id}:bootstrap"
+    device_id = args.device_id or os.environ.get("COMPUTERNAME") or "default-device"
+    username = (os.environ.get("USERNAME") or "user").strip().lower().replace(" ", "-")
+    agent_id = args.agent_id or f"claw-{username}"
+    session_id = args.session_id or f"{args.workspace_id}:{device_id}:{agent_id}:bootstrap"
+    enable_context_augmentation = bool(
+        getattr(args, "enable_context_augmentation", False)
+        or getattr(args, "enable_context_engine", False)
     )
-    context_engine_slot = "agentic-memory" if args.enable_context_engine else "legacy"
+    mode = "augment_context" if enable_context_augmentation else "capture_only"
 
-    # Write the same config shape the OpenClaw runtime expects to load. This
-    # lets operators test the generated file immediately instead of relying on a
-    # future installer-specific adapter.
+    # Agentic Memory always occupies the OpenClaw context-engine slot today
+    # because the host's per-turn lifecycle callbacks currently arrive through
+    # that interface. In capture_only mode the plugin still captures turns, but
+    # it intentionally does not add custom context blocks to prompts.
     openclaw_config = {
         "generated_by": PRIMARY_CLI_NAME,
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "plugins": {
             "slots": {
                 "memory": "agentic-memory",
-                "contextEngine": context_engine_slot,
+                "contextEngine": "agentic-memory",
             },
             "entries": {
                 "agentic-memory": {
@@ -1043,10 +1085,10 @@ def cmd_openclaw_setup(args: argparse.Namespace) -> None:
                         "backendUrl": args.backend_url,
                         "apiKey": f"${{{args.api_key_env}}}",
                         "workspaceId": args.workspace_id,
-                        "deviceId": args.device_id,
-                        "agentId": args.agent_id,
-                        "projectId": args.project_id,
+                        "deviceId": device_id,
+                        "agentId": agent_id,
                         "contextEngineId": "agentic-memory",
+                        "mode": mode,
                     },
                 },
             },
@@ -1060,11 +1102,12 @@ def cmd_openclaw_setup(args: argparse.Namespace) -> None:
         status="configured",
         config={
             "workspace_id": args.workspace_id,
-            "device_id": args.device_id,
-            "agent_id": args.agent_id,
+            "device_id": device_id,
+            "agent_id": agent_id,
             "session_id": session_id,
             "backend_url": args.backend_url,
             "config_path": str(config_path),
+            "mode": mode,
         },
     )
     memory_component = store.set_component_status(
@@ -1072,36 +1115,38 @@ def cmd_openclaw_setup(args: argparse.Namespace) -> None:
         status="healthy",
         details={
             "workspace_id": args.workspace_id,
-            "device_id": args.device_id,
-            "agent_id": args.agent_id,
+            "device_id": device_id,
+            "agent_id": agent_id,
             "config_path": str(config_path),
+            "mode": mode,
         },
     )
 
     context_integration = None
-    context_component = None
-    if args.enable_context_engine:
+    context_component = store.set_component_status(
+        "openclaw_context_engine",
+        status="healthy" if mode == "augment_context" else "available",
+        details={
+            "workspace_id": args.workspace_id,
+            "device_id": device_id,
+            "agent_id": agent_id,
+            "config_path": str(config_path),
+            "mode": mode,
+        },
+    )
+    if mode == "augment_context":
         context_integration = store.upsert_integration(
             surface="openclaw_context_engine",
             target="workspace",
             status="configured",
             config={
                 "workspace_id": args.workspace_id,
-                "device_id": args.device_id,
-                "agent_id": args.agent_id,
+                "device_id": device_id,
+                "agent_id": agent_id,
                 "session_id": session_id,
                 "backend_url": args.backend_url,
                 "config_path": str(config_path),
-            },
-        )
-        context_component = store.set_component_status(
-            "openclaw_context_engine",
-            status="healthy",
-            details={
-                "workspace_id": args.workspace_id,
-                "device_id": args.device_id,
-                "agent_id": args.agent_id,
-                "config_path": str(config_path),
+                "mode": mode,
             },
         )
 
@@ -1111,12 +1156,13 @@ def cmd_openclaw_setup(args: argparse.Namespace) -> None:
         status="ok",
         details={
             "workspace_id": args.workspace_id,
-            "device_id": args.device_id,
-            "agent_id": args.agent_id,
+            "device_id": device_id,
+            "agent_id": agent_id,
             "session_id": session_id,
             "backend_url": args.backend_url,
             "config_path": str(config_path),
-            "context_engine_enabled": args.enable_context_engine,
+            "mode": mode,
+            "context_augmentation_enabled": mode == "augment_context",
         },
     )
 
@@ -1135,7 +1181,7 @@ def cmd_openclaw_setup(args: argparse.Namespace) -> None:
         args,
         data=payload,
         metrics={
-            "context_engine_enabled": args.enable_context_engine,
+            "context_augmentation_enabled": mode == "augment_context",
             "config_written": True,
         },
     ):
@@ -1144,7 +1190,8 @@ def cmd_openclaw_setup(args: argparse.Namespace) -> None:
     print(f"🪄 OpenClaw setup written: {config_path}")
     print(f"🔗 Backend URL: {args.backend_url}")
     print(f"🧠 Memory slot: agentic-memory")
-    print(f"🧩 Context engine slot: {context_engine_slot}")
+    print("🪝 Capture hook: agentic-memory context engine slot")
+    print(f"🧩 Context augmentation: {'enabled' if mode == 'augment_context' else 'disabled'}")
     print(f"🪪 Session bootstrap: {session_id}")
 
 
@@ -1959,6 +2006,28 @@ def cmd_migrate_temporal(args: argparse.Namespace) -> None:
 
 
 def main():
+    """Parse CLI arguments and dispatch to the appropriate command handler.
+
+    This is the setuptools entry point registered as ``agentic-memory`` (and the
+    legacy alias ``codememory``) in ``pyproject.toml``.  It builds the full
+    argparse tree — global flags plus every subcommand — then routes to the
+    matching ``cmd_*`` function.
+
+    Top-level global flags (``--prompted``, ``--unprompted``, etc.) support
+    telemetry annotation workflows that run *outside* of a subcommand context.
+    All subcommands accept ``--repo`` and ``--env-file`` to override the default
+    repository root and .env file discovery.
+
+    Typical invocations:
+        ``agentic-memory init``            — interactive setup wizard
+        ``agentic-memory serve --port 8080`` — start MCP server
+        ``agentic-memory index --quiet``   — one-shot indexing (CI-friendly)
+        ``agentic-memory search "auth flow"`` — ad hoc semantic query
+
+    Side effects:
+        Calls sys.exit() on unrecoverable errors via _exit_with_error().
+        Prints human-readable or JSON output to stdout depending on ``--json``.
+    """
     primary_name = PRIMARY_CLI_NAME
     parser = argparse.ArgumentParser(
         description="Agentic Memory: Structural Memory Layer for AI agents",
@@ -2302,17 +2371,18 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
         help="Generate OpenClaw config and register local product state",
     )
     openclaw_setup_parser.add_argument("--workspace-id", required=True, help="Shared OpenClaw workspace identifier")
-    openclaw_setup_parser.add_argument("--device-id", required=True, help="Current device identifier")
-    openclaw_setup_parser.add_argument("--agent-id", required=True, help="OpenClaw agent identifier")
+    openclaw_setup_parser.add_argument(
+        "--device-id",
+        help="Current device identifier. Defaults to COMPUTERNAME when omitted.",
+    )
+    openclaw_setup_parser.add_argument(
+        "--agent-id",
+        help="OpenClaw agent identifier. Defaults to a username-derived id when omitted.",
+    )
     openclaw_setup_parser.add_argument(
         "--session-id",
         type=str,
         help="Optional setup session identifier. Defaults to a deterministic bootstrap id.",
-    )
-    openclaw_setup_parser.add_argument(
-        "--project-id",
-        type=str,
-        help="Optional project identifier used to bias shared-memory retrieval",
     )
     openclaw_setup_parser.add_argument(
         "--backend-url",
@@ -2333,9 +2403,14 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
         help="Where to write the generated OpenClaw config artifact",
     )
     openclaw_setup_parser.add_argument(
+        "--enable-context-augmentation",
+        action="store_true",
+        help="Enable Agentic Memory context augmentation in addition to memory capture",
+    )
+    openclaw_setup_parser.add_argument(
         "--enable-context-engine",
         action="store_true",
-        help="Configure Agentic Memory as the OpenClaw context engine instead of leaving legacy enabled",
+        help="Legacy alias for --enable-context-augmentation",
     )
     openclaw_setup_parser.add_argument(
         "--json",

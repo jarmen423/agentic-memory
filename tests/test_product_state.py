@@ -83,3 +83,79 @@ def test_product_state_rejects_unknown_component(tmp_path):
 
     with pytest.raises(ValueError):
         store.set_component_status("unsupported", status="healthy")
+
+
+def test_product_state_tracks_openclaw_active_project_by_session(tmp_path):
+    """Active projects are session-scoped so one agent can switch tasks cleanly."""
+
+    store = ProductStateStore(tmp_path / "state.json")
+    binding = store.activate_project_for_openclaw_identity(
+        workspace_id="work-home",
+        agent_id="claw-main",
+        session_id="sess-1",
+        device_id="laptop-01",
+        project_id="project-alpha",
+        metadata={"source": "test"},
+    )
+
+    assert binding["project_id"] == "project-alpha"
+    assert (
+        store.get_active_project_for_openclaw_identity(
+            workspace_id="work-home",
+            agent_id="claw-main",
+            session_id="sess-1",
+        )["project_id"]
+        == "project-alpha"
+    )
+    assert (
+        store.get_active_project_for_openclaw_identity(
+            workspace_id="work-home",
+            agent_id="claw-main",
+            session_id="sess-2",
+        )
+        is None
+    )
+
+
+def test_product_state_can_clear_active_project_binding(tmp_path):
+    """Deactivation removes only the requested session binding."""
+
+    store = ProductStateStore(tmp_path / "state.json")
+    store.activate_project_for_openclaw_identity(
+        workspace_id="work-home",
+        agent_id="claw-main",
+        session_id="sess-1",
+        project_id="project-alpha",
+    )
+    removed = store.deactivate_project_for_openclaw_identity(
+        workspace_id="work-home",
+        agent_id="claw-main",
+        session_id="sess-1",
+    )
+
+    assert removed["project_id"] == "project-alpha"
+    assert (
+        store.get_active_project_for_openclaw_identity(
+            workspace_id="work-home",
+            agent_id="claw-main",
+            session_id="sess-1",
+        )
+        is None
+    )
+
+
+def test_product_state_tracks_workspace_scoped_project_automation(tmp_path):
+    """Project automation records are keyed by workspace and reusable project id."""
+
+    store = ProductStateStore(tmp_path / "state.json")
+    automation = store.upsert_project_automation(
+        workspace_id="work-home",
+        project_id="project-alpha",
+        enabled=True,
+        metadata={"schedule": "daily"},
+    )
+
+    payload = store.load()
+    assert automation["automation_kind"] == "research_ingestion"
+    assert payload["project_automations"][0]["workspace_id"] == "work-home"
+    assert payload["projects"][0]["project_id"] == "project-alpha"

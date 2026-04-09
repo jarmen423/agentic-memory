@@ -1,5 +1,40 @@
 """
-SQLite telemetry utilities for MCP tool-call tracking and manual annotation.
+SQLite-backed telemetry store for MCP tool-call tracking and manual annotation.
+
+Provides lightweight, local observability for the Agentic Memory MCP server:
+every tool invocation is recorded with timing, success/failure, and client
+identity so usage can be audited and annotated for prompted/unprompted labeling.
+
+Extended:
+    Two SQLite tables power the telemetry system:
+    - ``tool_calls``: One row per MCP tool invocation with duration, success flag,
+      error type, and an optional back-reference to a ``manual_annotations`` row.
+    - ``manual_annotations``: Records user-driven annotations that classify a burst
+      of tool calls as "prompted" (user asked for it) or "unprompted" (agent acted
+      autonomously).  Annotations move from status ``pending`` → ``applied`` once
+      they are matched to actual call rows.
+
+    The annotation workflow is:
+    1. User runs ``agentic-memory --prompted "my prompt"`` immediately after an
+       agent response.
+    2. ``create_pending_annotation`` records the intent.
+    3. ``get_latest_unannotated_burst`` identifies the contiguous block of recent
+       tool calls that belong to this interaction.
+    4. ``apply_annotation_to_calls`` back-fills the annotation onto those rows and
+       marks the annotation as ``applied``.
+
+Role:
+    Used by ``server/app.py`` (``log_tool_call`` decorator) to record every tool
+    invocation at runtime, and by ``cli.py`` (``cmd_annotate_interaction``) to
+    apply manual annotations.
+
+Dependencies:
+    - sqlite3 (stdlib — no external database required)
+    - CODEMEMORY_TELEMETRY_DB environment variable (optional path override)
+    - CODEMEMORY_TELEMETRY_ENABLED (set to "0" to disable)
+
+Key Technologies:
+    SQLite with WAL journal mode, threading.Lock for write serialization.
 """
 
 from __future__ import annotations
@@ -50,6 +85,12 @@ class TelemetryStore:
 
     @staticmethod
     def new_annotation_id() -> str:
+        """Generate a short random annotation identifier.
+
+        Returns:
+            A 12-character lowercase hex string derived from a UUID4, suitable
+            as a human-readable but collision-resistant annotation key.
+        """
         return uuid.uuid4().hex[:12]
 
     def _connect(self) -> sqlite3.Connection:
@@ -114,6 +155,26 @@ class TelemetryStore:
         client_id: str,
         repo_root: Optional[str],
     ) -> int:
+        """Insert one tool-call record into the ``tool_calls`` table.
+
+        Called by the ``log_tool_call`` decorator in ``server/app.py`` on both
+        successful and failed tool invocations.  The inserted row starts with
+        ``annotation_id = NULL``; it is back-filled later by
+        ``apply_annotation_to_calls`` when a user runs the annotation workflow.
+
+        Args:
+            tool_name: The MCP tool function name (e.g. ``"search_code"``).
+            duration_ms: Wall-clock duration of the call in milliseconds.
+            success: True if the tool returned normally; False if it raised.
+            error_type: Exception class name on failure, or None on success.
+            client_id: Value of the ``CODEMEMORY_CLIENT`` env var at call time,
+                used to associate calls with a specific agent/session.
+            repo_root: Absolute path of the repository root at call time, or None.
+
+        Returns:
+            The SQLite rowid of the newly inserted row (useful for direct
+            reference in ``apply_annotation_to_calls``).
+        """
         with self._lock:
             with self._connect() as conn:
                 cur = conn.execute(
@@ -144,6 +205,25 @@ class TelemetryStore:
         annotation_mode: str,
         client_id: Optional[str],
     ) -> None:
+        """Insert a pending annotation intent into ``manual_annotations``.
+
+        Called at the start of the annotation workflow (``cmd_annotate_interaction``
+        in cli.py) before the system waits for a tool-use burst to settle.  The
+        row starts in ``status='pending'`` and transitions to ``status='applied'``
+        via ``apply_annotation_to_calls``, or is deleted by
+        ``delete_pending_annotation`` if no matching burst is found.
+
+        This two-phase design (create-then-match) ensures the annotation intent is
+        persisted even if the process is interrupted before the burst is matched.
+
+        Args:
+            annotation_id: Unique identifier for this annotation (from
+                ``new_annotation_id()`` or a user-supplied value).
+            prompt_prefix: The start of the user's prompt text used to identify
+                the interaction window being annotated.
+            annotation_mode: ``"prompted"`` or ``"unprompted"``.
+            client_id: Optional client filter to scope the burst search.
+        """
         now_iso = _utc_now_iso()
         now_epoch = _epoch_ms_now()
         with self._lock:
@@ -167,6 +247,16 @@ class TelemetryStore:
                 )
 
     def delete_pending_annotation(self, annotation_id: str) -> None:
+        """Remove a pending annotation that could not be matched to any tool calls.
+
+        Called as a cleanup step when the annotation workflow times out without
+        finding a suitable burst, or when the burst changes between detection and
+        the final update attempt.  Only deletes rows with ``status='pending'`` to
+        avoid accidentally removing already-applied annotations.
+
+        Args:
+            annotation_id: The identifier of the pending annotation to remove.
+        """
         with self._lock:
             with self._connect() as conn:
                 conn.execute(
@@ -258,6 +348,27 @@ class TelemetryStore:
         annotation_mode: str,
         call_ids: List[int],
     ) -> int:
+        """Back-fill annotation fields onto matched tool-call rows (atomic).
+
+        Updates the ``tool_calls`` rows identified by ``call_ids`` with the
+        annotation identity and mode, then marks the corresponding
+        ``manual_annotations`` row as ``status='applied'``.  Both updates run
+        in a single SQLite transaction under the write lock.
+
+        If none of the provided ``call_ids`` match existing rows (e.g., they were
+        already annotated or deleted), the pending annotation is cleaned up rather
+        than left in a dangling ``pending`` state.
+
+        Args:
+            annotation_id: The identifier created by ``create_pending_annotation``.
+            prompt_prefix: User's prompt text to persist alongside each call row.
+            annotation_mode: ``"prompted"`` or ``"unprompted"``.
+            call_ids: List of ``tool_calls.id`` primary keys to annotate.
+
+        Returns:
+            Number of ``tool_calls`` rows actually updated.  Returns 0 if no
+            rows matched (caller should handle the no-op case).
+        """
         if not call_ids:
             return 0
 

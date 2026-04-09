@@ -85,12 +85,34 @@ class CircuitBreaker:
 
 
 def retry_on_openai_error(max_retries=3, delay=1.0):
-    """
-    Decorator to retry OpenAI API calls on transient errors.
-    
+    """Decorator factory that retries a function on transient OpenAI API errors.
+
+    Wraps the decorated function with exponential-backoff retry logic for the
+    three OpenAI error classes that indicate a transient condition: rate limits,
+    connection failures, and request timeouts. Non-retryable exceptions
+    (e.g., ``AuthenticationError``, ``InvalidRequestError``) propagate
+    immediately without retrying.
+
+    Implemented as a two-level closure:
+      - ``decorator(func)`` — receives the function being decorated and returns
+        ``wrapper``.
+      - ``wrapper(*args, **kwargs)`` — the actual retry loop. On each attempt
+        it calls the original function; if a transient error occurs and retries
+        remain it sleeps ``delay * 2**attempt`` seconds before retrying.
+
+    Used by ``KnowledgeGraphBuilder`` to guard its embedding calls against
+    the OpenAI rate limiter when indexing large repos.
+
     Args:
-        max_retries: Maximum number of retry attempts
-        delay: Delay between retries in seconds (with exponential backoff)
+        max_retries: Maximum number of total attempts (including the first).
+            Defaults to 3.
+        delay: Base delay in seconds between attempts. Doubles on each retry
+            (exponential backoff). Defaults to 1.0 s.
+
+    Returns:
+        A decorator that, when applied to a function, adds retry behaviour for
+        ``openai.RateLimitError``, ``openai.APIConnectionError``, and
+        ``openai.APITimeoutError``.
     """
     def decorator(func):
         @wraps(func)

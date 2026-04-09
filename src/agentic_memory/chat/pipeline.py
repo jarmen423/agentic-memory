@@ -4,6 +4,10 @@ ConversationIngestionPipeline subclasses BaseIngestionPipeline to ingest
 conversation turns as :Memory:Conversation:Turn nodes. Each turn is one
 atomic ingest call — no chunking. Session grouping is handled by the
 companion :Memory:Conversation:Session node written per-turn.
+
+Project tagging is now optional. That matters for OpenClaw because a workspace
+may capture general memory with no active project at all, then temporarily
+activate a project only while working on a specific task.
 """
 
 import hashlib
@@ -79,8 +83,9 @@ class ConversationIngestionPipeline(BaseIngestionPipeline):
 
         Args:
             source: Dict matching the turn schema. Required keys:
-                role, content, session_id, project_id, turn_index.
+                role, content, session_id, turn_index.
                 Optional identity fields: workspace_id, device_id, agent_id.
+                Optional project tag: project_id.
                 Optional: source_agent, model, tool_name, tool_call_id,
                 tokens_input, tokens_output, timestamp, ingestion_mode,
                 source_key.
@@ -94,7 +99,7 @@ class ConversationIngestionPipeline(BaseIngestionPipeline):
                 ["user", "assistant", "system", "tool"].
         """
         # 1. Validate required fields
-        for field in ("role", "content", "session_id", "project_id", "turn_index"):
+        for field in ("role", "content", "session_id", "turn_index"):
             if field not in source or source[field] is None:
                 raise ValueError(f"Missing required turn field: {field!r}")
 
@@ -125,7 +130,7 @@ class ConversationIngestionPipeline(BaseIngestionPipeline):
         role = source["role"]
         content = source["content"]
         session_id = source["session_id"]
-        project_id = source["project_id"]
+        project_id = source.get("project_id")
         turn_index = source["turn_index"]
         workspace_id = source.get("workspace_id")
         device_id = source.get("device_id")
@@ -239,15 +244,16 @@ class ConversationIngestionPipeline(BaseIngestionPipeline):
                     valid_from=now,
                     confidence=1.0,
                 )
-                self._shadow_write_entity_relation(
-                    project_id=project_id,
-                    session_id=session_id,
-                    turn_index=turn_index,
-                    timestamp=timestamp,
-                    content=content,
-                    entity=entity,
-                    predicate=rel_type,
-                )
+                if project_id:
+                    self._shadow_write_entity_relation(
+                        project_id=project_id,
+                        session_id=session_id,
+                        turn_index=turn_index,
+                        timestamp=timestamp,
+                        content=content,
+                        entity=entity,
+                        predicate=rel_type,
+                    )
 
         logger.info(
             "Turn ingested: session_id=%s turn_index=%d role=%s embedded=%s entities=%d",

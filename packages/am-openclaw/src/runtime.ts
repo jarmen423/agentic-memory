@@ -5,6 +5,16 @@
  * OpenClaw calls during a live session. It deliberately does not implement raw
  * HTTP itself; instead it depends on `AgenticMemoryBackendClient` so the code
  * remains easier to audit and reason about.
+ *
+ * Product semantics:
+ *
+ * - memory owns session registration, turn capture, search, and read
+ * - context augmentation is optional and only affects `assemble()`
+ *
+ * Current OpenClaw host lifecycle hooks arrive through the ContextEngine
+ * interface, so this implementation still uses those callbacks as the event
+ * source for capture. That is an implementation detail rather than the
+ * user-facing mental model.
  */
 
 import type {
@@ -76,6 +86,7 @@ export class AgenticMemorySearchManager {
       project_id: this.config.projectId,
       metadata: {
         plugin: PLUGIN_ID,
+        mode: this.config.mode,
       },
     };
   }
@@ -184,6 +195,7 @@ export class AgenticMemorySearchManager {
         deviceId: this.config.deviceId,
         agentId: this.config.agentId,
         projectId: this.config.projectId,
+        mode: this.config.mode,
         cachedFiles: this.cachedFiles.size,
       },
     };
@@ -222,6 +234,7 @@ export class AgenticMemoryContextEngine implements ContextEngine {
       project_id: this.config.projectId,
       metadata: {
         plugin: PLUGIN_ID,
+        mode: this.config.mode,
       },
     };
   }
@@ -238,15 +251,11 @@ export class AgenticMemoryContextEngine implements ContextEngine {
       return;
     }
 
-    await this.client.post("/ingest/conversation", {
+    await this.client.post("/openclaw/memory/ingest-turn", {
+      ...this.identityPayload(sessionId),
       role: getRole(message),
       content,
-      project_id: this.config.projectId ?? "openclaw",
-      session_id: sessionId,
       turn_index: this.nextTurnIndex(sessionId),
-      workspace_id: this.config.workspaceId,
-      device_id: this.config.deviceId,
-      agent_id: this.config.agentId,
       source_key: "chat_openclaw",
       ingestion_mode: "active",
     });
@@ -260,6 +269,7 @@ export class AgenticMemoryContextEngine implements ContextEngine {
     await this.client.post("/openclaw/session/register", {
       ...this.identityPayload(params.sessionId),
       context_engine: this.config.contextEngineId,
+      mode: this.config.mode,
       metadata: {
         plugin: PLUGIN_ID,
         session_file: params.sessionFile,
@@ -329,6 +339,13 @@ export class AgenticMemoryContextEngine implements ContextEngine {
     model?: string;
     prompt?: string;
   }): Promise<AssembleResult> {
+    if (this.config.mode !== "augment_context") {
+      return {
+        messages: params.messages,
+        estimatedTokens: 0,
+      };
+    }
+
     const query =
       params.prompt ??
       normalizeMessageText(params.messages.at(-1)?.content) ??

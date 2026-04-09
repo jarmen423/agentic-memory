@@ -1,3 +1,50 @@
+"""
+MCP tool registration and the Toolkit class — the primary API surface of Agentic Memory.
+
+Defines every capability that AI agents can invoke through the Model Context Protocol:
+conversation memory search and ingestion, web research scheduling, and structural
+code graph queries (semantic search, dependency analysis, git history).
+
+Extended:
+    This module is divided into three logical layers:
+
+    1. **Private search helpers** (``_vector_conversation_search``,
+       ``_text_conversation_search``, ``_fetch_conversation_*``, etc.):
+       Low-level Neo4j query functions that implement the retrieval strategies
+       (vector search → temporal graph → text fallback) used by the public tools.
+
+    2. **MCP tool registration functions** (``register_conversation_tools``,
+       ``register_schedule_tools``):
+       Functions called once at server startup that attach async tool handlers to
+       a FastMCP instance.  Each handler runs its blocking Neo4j/OpenAI work in a
+       thread executor so the MCP event loop stays unblocked.
+
+    3. **Toolkit class**:
+       A synchronous, framework-agnostic class that wraps KnowledgeGraphBuilder
+       methods into LLM-readable string reports.  Used by the MCP server tools and
+       can also be instantiated directly in scripts or tests without a running MCP
+       server.
+
+Role:
+    Imported by ``server/app.py`` which calls the ``register_*`` functions during
+    server startup.  The ``Toolkit`` class is instantiated there with the shared
+    ``KnowledgeGraphBuilder`` singleton.
+
+Dependencies:
+    - agentic_memory.chat.pipeline (ConversationIngestionPipeline)
+    - agentic_memory.core.connection (ConnectionManager)
+    - agentic_memory.core.embedding (EmbeddingService)
+    - agentic_memory.core.entity_extraction (EntityExtractionService)
+    - agentic_memory.core.scheduler (ResearchScheduler)
+    - agentic_memory.temporal.bridge (TemporalBridge — optional, degrades gracefully)
+    - Neo4j (vector index ``chat_embeddings``, label ``Memory:Conversation:Turn``)
+    - OpenAI (embeddings via EmbeddingService)
+
+Key Technologies:
+    FastMCP tool decorator pattern, Neo4j vector search (``db.index.vector.queryNodes``),
+    asyncio thread executor, lru_cache for singleton pipelines, temporal graph bridge.
+"""
+
 from typing import Any, Dict, List, Optional
 import asyncio
 import json
@@ -228,7 +275,36 @@ def search_conversation_turns_sync(
     as_of: str | None,
     log_prefix: str,
 ) -> list[dict[str, Any]]:
-    """Temporal-first conversation search with deterministic fallback."""
+    """Temporal-first conversation search with deterministic text fallback.
+
+    Implements a three-tier retrieval strategy:
+    1. Vector search via ``chat_embeddings`` Neo4j index.
+    2. Temporal graph enrichment via ``TemporalBridge`` (if available and
+       ``project_id`` is provided), which resolves entity-relationship paths
+       through the knowledge graph for more contextually relevant results.
+    3. Full-text keyword fallback if vector search fails completely.
+
+    The ``as_of`` cutoff is applied at each tier to support time-bounded
+    memory retrieval (e.g., "what did we know before this date?").
+
+    Args:
+        pipeline: A ``ConversationIngestionPipeline`` instance that provides
+            ``_conn`` (ConnectionManager), ``_embedder`` (EmbeddingService),
+            and ``_extractor`` (EntityExtractionService) attributes.
+        query: Natural language search string.
+        project_id: If provided, restricts search to this project and enables
+            temporal graph enrichment.  Pass ``None`` to search all projects
+            (temporal enrichment is skipped when project_id is absent).
+        role: Optional speaker role filter ("user" | "assistant").
+        limit: Maximum number of turns to return.
+        as_of: Optional ISO-8601 timestamp ceiling for ``ingested_at`` filtering.
+        log_prefix: Label for log messages (caller identity, e.g. tool name).
+
+    Returns:
+        List of conversation turn dicts ordered by relevance score descending.
+        Each dict contains: session_id, turn_index, role, content, source_agent,
+        timestamp, ingested_at, entities, score.
+    """
     conn = pipeline._conn  # type: ignore[attr-defined]
     embedder = pipeline._embedder  # type: ignore[attr-defined]
     extractor = pipeline._extractor  # type: ignore[attr-defined]
@@ -428,11 +504,29 @@ def _get_mcp_research_scheduler() -> ResearchScheduler | None:
     )
 
 class Toolkit:
+    """Synchronous code-graph query layer for the MCP server and CLI scripts.
+
+    Wraps ``KnowledgeGraphBuilder`` methods to format results as LLM-readable
+    Markdown strings rather than raw Neo4j data.  This separation keeps the
+    server's tool handlers thin and makes Toolkit independently testable and
+    usable from scripts that don't need a running MCP server.
+
+    The Toolkit handles code-domain queries only (structural code graph, git
+    history).  Conversation-domain queries are handled by the async
+    ``register_conversation_tools`` path via ``ConversationIngestionPipeline``.
+
+    Attributes:
+        graph: The shared ``KnowledgeGraphBuilder`` instance that holds the live
+            Neo4j driver and OpenAI client.
     """
-    The 'Brain' logic.
-    Separated from the Server so it can be tested or used in CLI/Scripts directly.
-    """
+
     def __init__(self, graph: KnowledgeGraphBuilder):
+        """Initialize Toolkit with a pre-connected graph builder.
+
+        Args:
+            graph: An initialized ``KnowledgeGraphBuilder`` instance.  The caller
+                is responsible for its lifecycle (``graph.close()`` on shutdown).
+        """
         self.graph = graph
 
     def semantic_search(self, query: str, limit: int = 5) -> str:
@@ -768,7 +862,29 @@ def register_schedule_tools(
     brave_api_key: str | None = None,
     pipeline: ResearchIngestionPipeline | None = None,
 ) -> None:
-    """Register recurring research scheduling tools on the provided MCP instance."""
+    """Register recurring web-research scheduling tools on the MCP instance.
+
+    Registers three MCP tools: ``schedule_research``, ``run_research_session``,
+    and ``list_research_schedules``.  These allow AI agents to create persistent
+    research schedules backed by APScheduler and Neo4j, trigger ad hoc research
+    sessions, and inspect what schedules are active.
+
+    A lazy scheduler singleton is created on first tool invocation.  If the
+    caller provides explicit ``connection_manager``, ``groq_api_key``,
+    ``brave_api_key``, and ``pipeline``, those are used; otherwise the function
+    falls back to ``_get_mcp_research_scheduler()`` which reads from environment
+    variables.  If either the embedding service or Brave Search API key is
+    unavailable, all three tools return an error string rather than raising.
+
+    Call this once during MCP server startup, after the FastMCP instance is created.
+
+    Args:
+        mcp: The FastMCP instance to register tools on.
+        connection_manager: Optional pre-built Neo4j ConnectionManager.
+        groq_api_key: Optional Groq API key for the extraction LLM.
+        brave_api_key: Optional Brave Search API key for web research.
+        pipeline: Optional pre-built ResearchIngestionPipeline.
+    """
 
     scheduler_singleton: ResearchScheduler | None = None
 

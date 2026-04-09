@@ -1,4 +1,12 @@
-"""Pydantic request/response models for am_server endpoints."""
+"""Pydantic request/response models for am_server endpoints.
+
+The OpenClaw-facing models intentionally separate three concerns:
+
+- stable identity: workspace / device / agent / session
+- active project state: an optional server-resolved project binding
+- context augmentation mode: whether Agentic Memory should only capture turns
+  or also assemble custom context for the host
+"""
 
 from __future__ import annotations
 
@@ -52,7 +60,7 @@ class ConversationIngestRequest(BaseModel):
     role: str  # "user" | "assistant" | "system" | "tool"
     content: str
     session_id: str  # REQUIRED — caller owns session identity
-    project_id: str
+    project_id: str | None = None
     turn_index: int
     workspace_id: str | None = None
     device_id: str | None = None
@@ -120,13 +128,52 @@ class OpenClawIdentityModel(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class OpenClawProjectScopedIdentityModel(OpenClawIdentityModel):
+    """OpenClaw identity that may resolve an active project server-side.
+
+    Clients can still send an explicit ``project_id`` when they want a one-off
+    override. When omitted, the backend may fill it from the active project
+    binding for this workspace/agent/session tuple.
+    """
+
+
+class OpenClawProjectActivationRequest(OpenClawIdentityModel):
+    """Request body for activating a project for the current OpenClaw session."""
+
+    project_id: str
+    title: str | None = None
+
+
+class OpenClawProjectDeactivationRequest(OpenClawIdentityModel):
+    """Request body for clearing the active project for the current session."""
+
+
+class OpenClawProjectStatusRequest(OpenClawIdentityModel):
+    """Request body for querying the active project for the current session."""
+
+
+class OpenClawProjectAutomationRequest(BaseModel):
+    """Request body for configuring project automation.
+
+    Automations are workspace/project scoped because a shared project can have
+    different automation policies in different home-base workspaces.
+    """
+
+    workspace_id: str
+    project_id: str
+    automation_kind: str = "research_ingestion"
+    enabled: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class OpenClawSessionRegisterRequest(OpenClawIdentityModel):
     """Request body for registering an OpenClaw agent session."""
 
     context_engine: str = "agentic-memory"
+    mode: str = "capture_only"
 
 
-class OpenClawMemorySearchRequest(OpenClawIdentityModel):
+class OpenClawMemorySearchRequest(OpenClawProjectScopedIdentityModel):
     """Request body for OpenClaw memory search."""
 
     query: str
@@ -148,7 +195,7 @@ class OpenClawMemoryReadRequest(OpenClawIdentityModel):
     lines: int | None = None
 
 
-class OpenClawContextResolveRequest(OpenClawIdentityModel):
+class OpenClawContextResolveRequest(OpenClawProjectScopedIdentityModel):
     """Request body for OpenClaw context resolution."""
 
     query: str
@@ -158,3 +205,25 @@ class OpenClawContextResolveRequest(OpenClawIdentityModel):
     context_budget_tokens: int = 8000
     include_system_prompt: bool = True
     context_engine: str = "agentic-memory"
+
+
+class OpenClawTurnIngestRequest(OpenClawProjectScopedIdentityModel):
+    """Request body for the OpenClaw-native turn-ingestion contract.
+
+    This route exists so the plugin can treat memory capture as its own domain.
+    The backend resolves the active project when present and then forwards the
+    normalized turn to the existing conversation ingestion pipeline.
+    """
+
+    role: str
+    content: str
+    turn_index: int
+    source_agent: str | None = None
+    model: str | None = None
+    tool_name: str | None = None
+    tool_call_id: str | None = None
+    tokens_input: int | None = None
+    tokens_output: int | None = None
+    timestamp: str | None = None
+    ingestion_mode: str = "active"
+    source_key: str = "chat_openclaw"

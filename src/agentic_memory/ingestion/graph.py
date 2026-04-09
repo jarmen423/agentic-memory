@@ -85,12 +85,27 @@ class CircuitBreaker:
 
 
 def retry_on_openai_error(max_retries=3, delay=1.0):
-    """
-    Decorator to retry OpenAI API calls on transient errors.
-    
+    """Decorator factory that retries OpenAI API calls on transient errors.
+
+    Wraps embedding and completion calls inside ``KnowledgeGraphBuilder`` to
+    handle rate limits and transient connectivity failures without surfacing them
+    to callers.  Uses exponential backoff: each retry waits ``delay * 2^attempt``
+    seconds.  After ``max_retries`` exhausted attempts, the last exception is
+    re-raised so the caller can decide how to handle the failure.
+
+    Applied to: any method that calls OpenAI APIs (embeddings, completions).
+    Not applied to: Neo4j calls — those use the ``CircuitBreaker`` instead.
+
     Args:
-        max_retries: Maximum number of retry attempts
-        delay: Delay between retries in seconds (with exponential backoff)
+        max_retries: Maximum number of retry attempts before re-raising.
+        delay: Base delay in seconds between retries (doubles each attempt).
+
+    Returns:
+        A decorator that wraps the target function with retry logic.
+
+    Example:
+        @retry_on_openai_error(max_retries=5, delay=0.5)
+        def embed(self, text: str) -> list[float]: ...
     """
     def decorator(func):
         @wraps(func)

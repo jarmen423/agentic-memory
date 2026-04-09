@@ -727,23 +727,25 @@ def test_product_integration_set_json_updates_record(monkeypatch, capsys, tmp_pa
 
 
 def test_openclaw_setup_writes_config_and_updates_product_state(monkeypatch, capsys, tmp_path):
-    """openclaw-setup creates a config artifact and registers product state."""
+    """openclaw-setup writes capture-first config with lightweight defaults."""
     state_path = tmp_path / "product-state.json"
     config_path = tmp_path / ".openclaw" / "agentic-memory.json"
     monkeypatch.setenv("CODEMEMORY_PRODUCT_STATE", str(state_path))
+    monkeypatch.setenv("COMPUTERNAME", "TEST-LAPTOP")
+    monkeypatch.setenv("USERNAME", "Jordan")
 
     cli.cmd_openclaw_setup(
         argparse.Namespace(
             json=True,
             workspace_id="workspace-acme",
-            device_id="laptop-01",
-            agent_id="openclaw-agent-a",
+            device_id=None,
+            agent_id=None,
             session_id=None,
-            project_id="project-neo",
             backend_url="http://127.0.0.1:8765",
             api_key_env="AGENTIC_MEMORY_API_KEY",
             config_path=str(config_path),
-            enable_context_engine=True,
+            enable_context_augmentation=False,
+            enable_context_engine=False,
         )
     )
 
@@ -757,18 +759,19 @@ def test_openclaw_setup_writes_config_and_updates_product_state(monkeypatch, cap
         == "${AGENTIC_MEMORY_API_KEY}"
     )
     assert (
-        payload["data"]["config"]["plugins"]["entries"]["agentic-memory"]["config"]["projectId"]
-        == "project-neo"
+        payload["data"]["config"]["plugins"]["entries"]["agentic-memory"]["config"]["mode"]
+        == "capture_only"
     )
+    assert "projectId" not in payload["data"]["config"]["plugins"]["entries"]["agentic-memory"]["config"]
     assert payload["data"]["memory_integration"]["surface"] == "openclaw_memory"
-    assert payload["data"]["context_integration"]["surface"] == "openclaw_context_engine"
+    assert payload["data"]["context_integration"] is None
     assert payload["data"]["event"]["event_type"] == "openclaw_setup_completed"
     assert payload["metrics"]["config_written"] is True
+    assert payload["metrics"]["context_augmentation_enabled"] is False
+    assert payload["data"]["memory_integration"]["config"]["device_id"] == "TEST-LAPTOP"
+    assert payload["data"]["memory_integration"]["config"]["agent_id"] == "claw-jordan"
     saved_config = json.loads(config_path.read_text(encoding="utf-8"))
-    assert (
-        saved_config["plugins"]["entries"]["agentic-memory"]["config"]["projectId"]
-        == "project-neo"
-    )
+    assert saved_config["plugins"]["entries"]["agentic-memory"]["config"]["mode"] == "capture_only"
 
 
 def test_help_uses_agentic_memory_as_primary_command(capsys):

@@ -1,3 +1,36 @@
+"""
+Tree-sitter-based source code parser for the Agentic Memory ingestion pipeline.
+
+Extracts structural elements from Python and JavaScript/TypeScript source files —
+classes, functions, imports, function calls, and environment variable references —
+using the tree-sitter incremental parsing library.  Results feed the Neo4j
+knowledge graph via ``KnowledgeGraphBuilder``.
+
+Extended:
+    The parser is language-aware: Python and JS/TS use different tree-sitter
+    grammars and query patterns.  Unsupported extensions are handled gracefully
+    (empty result dict returned with a warning log rather than raising).
+
+    Extracted data flows:
+    - ``classes`` and ``functions`` → ``Class`` and ``Function`` Neo4j nodes
+    - ``imports`` → ``IMPORTS`` relationships between ``File`` nodes
+    - ``calls`` → ``CALLS`` relationships between ``Function`` nodes
+    - ``env_vars`` → ``EnvVar`` nodes (documents runtime configuration surface)
+
+Role:
+    Instantiated once per ``KnowledgeGraphBuilder`` instance.  The ``parse_file``
+    method is called for every source file encountered during indexing and
+    incremental watch-mode updates.
+
+Dependencies:
+    - tree-sitter >= 0.22 (``Language``, ``Parser``, ``Query``, ``QueryCursor``)
+    - tree-sitter-python (Python grammar)
+    - tree-sitter-javascript (JS/TS grammar — used for .js, .jsx, .ts, .tsx)
+
+Key Technologies:
+    tree-sitter (incremental concrete syntax tree parsing), S-expression query DSL.
+"""
+
 import logging
 from typing import Dict, List, Any
 from tree_sitter import Language, Parser, Query, QueryCursor, Node, Tree
@@ -7,7 +40,25 @@ import tree_sitter_javascript
 logger = logging.getLogger(__name__)
 
 class CodeParser:
+    """Tree-sitter parser that extracts structural code elements from source files.
+
+    Maintains one tree-sitter ``Parser`` and ``Language`` instance per supported
+    file extension.  Parsers are initialized once at construction time; subsequent
+    calls to ``parse_file`` reuse those instances for efficiency.
+
+    Supported extensions:
+        - ``.py`` — Python (tree-sitter-python grammar)
+        - ``.js``, ``.jsx``, ``.ts``, ``.tsx`` — JavaScript/TypeScript
+          (tree-sitter-javascript grammar; TypeScript-specific syntax is parsed
+          on a best-effort basis since a separate grammar is not loaded)
+
+    Note:
+        This class is not thread-safe.  The ``KnowledgeGraphBuilder`` that owns
+        it should not share an instance across threads.
+    """
+
     def __init__(self):
+        """Initialize tree-sitter parsers for all supported languages."""
         self.parsers = {}
         self.languages = {}
         self._init_parsers()
@@ -28,6 +79,28 @@ class CodeParser:
             logger.error(f"Failed to initialize parsers: {e}")
 
     def parse_file(self, code: str, extension: str) -> Dict[str, Any]:
+        """Parse source code and return a dict of extracted structural elements.
+
+        Runs the tree-sitter parser for the given extension, then applies
+        language-specific S-expression queries to extract classes, functions,
+        imports, function calls, and environment variable reads.
+
+        Args:
+            code: Raw source code text to parse.
+            extension: File extension including the leading dot (e.g. ``".py"``).
+                Must be one of the extensions registered during ``__init__``.
+
+        Returns:
+            Dict with keys:
+                - ``classes``: List of ``{name, code, start_line}`` dicts.
+                - ``functions``: List of ``{name, code, parent_class, start_line}`` dicts.
+                - ``imports``: List of module name strings (Python only).
+                - ``calls``: List of called function name strings.
+                - ``env_vars``: List of ``{type, name, line}`` dicts for env reads
+                  (Python only; ``type`` is ``"read"`` or ``"load"``).
+            Returns the empty-list default dict on unsupported extension or
+            any parsing error.
+        """
         default_result = {
             "classes": [],
             "functions": [],

@@ -29,6 +29,7 @@ export interface AgenticMemoryPluginConfig extends Partial<OpenClawIdentity> {
   apiKey?: string | null;
   projectId?: string | null;
   contextEngineId?: string | null;
+  mode?: "capture_only" | "augment_context";
 }
 
 export type PluginLogger = {
@@ -56,6 +57,7 @@ export type ResolvedPluginConfig = Required<OpenClawIdentity> & {
   apiKey: string | null;
   projectId: string | null;
   contextEngineId: string;
+  mode: "capture_only" | "augment_context";
 };
 
 export const DEFAULT_BACKEND_URL = "http://127.0.0.1:8765";
@@ -70,8 +72,8 @@ export const OPENCLAW_PACKAGE_INFO = {
   pluginId: PLUGIN_ID,
   contextEngineId: DEFAULT_CONTEXT_ENGINE_ID,
   productName: "Agentic Memory OpenClaw Integration",
-  defaultMode: "memory",
-  supportedModes: ["memory", "context-engine"] as const,
+  defaultMode: "capture_only",
+  supportedModes: ["capture_only", "augment_context"] as const,
 } as const;
 
 export const CONTEXT_ENGINE_INFO = {
@@ -92,6 +94,7 @@ export const PLUGIN_CONFIG_SCHEMA = {
     agentId: { type: "string" },
     projectId: { type: "string" },
     contextEngineId: { type: "string" },
+    mode: { enum: ["capture_only", "augment_context"] },
   },
 } as const;
 
@@ -123,7 +126,7 @@ export function buildOpenClawBootstrapConfig(
     backendApiKey?: string | null;
     apiKeyTemplateVar?: string | null;
     projectId?: string | null;
-    enableContextEngine?: boolean;
+    mode?: "capture_only" | "augment_context";
   },
 ) {
   const identity = normalizeOpenClawIdentity(options);
@@ -132,7 +135,11 @@ export function buildOpenClawBootstrapConfig(
     plugins: {
       slots: {
         memory: PLUGIN_ID,
-        contextEngine: options.enableContextEngine ? DEFAULT_CONTEXT_ENGINE_ID : "legacy",
+        // Agentic Memory always occupies the ContextEngine slot because current
+        // OpenClaw lifecycle hooks arrive through that surface. In
+        // `capture_only` mode the engine captures turns but intentionally does
+        // not assemble custom context.
+        contextEngine: DEFAULT_CONTEXT_ENGINE_ID,
       },
       entries: {
         [PLUGIN_ID]: {
@@ -147,6 +154,7 @@ export function buildOpenClawBootstrapConfig(
             agentId: identity.agentId,
             projectId: options.projectId?.trim() || undefined,
             contextEngineId: DEFAULT_CONTEXT_ENGINE_ID,
+            mode: options.mode ?? "capture_only",
           },
         },
       },
@@ -185,6 +193,8 @@ export function resolveAgenticMemoryPluginConfig(
   pluginConfig: Record<string, unknown>,
   agentIdFromHost?: string,
 ): ResolvedPluginConfig {
+  const mode: "capture_only" | "augment_context" =
+    pluginConfig.mode === "augment_context" ? "augment_context" : "capture_only";
   const resolved = {
     backendUrl: asString(pluginConfig.backendUrl) ?? DEFAULT_BACKEND_URL,
     apiKey: asString(pluginConfig.apiKey) ?? null,
@@ -193,6 +203,7 @@ export function resolveAgenticMemoryPluginConfig(
     agentId: asString(pluginConfig.agentId) ?? agentIdFromHost ?? "default-agent",
     projectId: asString(pluginConfig.projectId) ?? null,
     contextEngineId: asString(pluginConfig.contextEngineId) ?? DEFAULT_CONTEXT_ENGINE_ID,
+    mode,
   };
 
   normalizeOpenClawIdentity({

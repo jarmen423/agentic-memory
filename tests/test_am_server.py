@@ -630,6 +630,8 @@ class _FakeOpenClawStore:
     def __init__(self) -> None:
         self.integrations: list[dict] = []
         self.events: list[dict] = []
+        self.bindings: dict[tuple[str, str, str], dict] = {}
+        self.automations: list[dict] = []
 
     def upsert_integration(self, *, surface, target, status, config, last_error=None):
         record = {
@@ -650,6 +652,54 @@ class _FakeOpenClawStore:
             "details": details or {},
         }
         self.events.append(record)
+        return record
+
+    def activate_project_for_openclaw_identity(
+        self,
+        *,
+        workspace_id,
+        agent_id,
+        session_id,
+        project_id,
+        device_id=None,
+        title=None,
+        metadata=None,
+    ):
+        record = {
+            "workspace_id": workspace_id,
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "device_id": device_id,
+            "project_id": project_id,
+            "title": title or project_id,
+            "metadata": metadata or {},
+        }
+        self.bindings[(workspace_id, agent_id, session_id)] = record
+        return record
+
+    def deactivate_project_for_openclaw_identity(self, *, workspace_id, agent_id, session_id):
+        return self.bindings.pop((workspace_id, agent_id, session_id), None)
+
+    def get_active_project_for_openclaw_identity(self, *, workspace_id, agent_id, session_id):
+        return self.bindings.get((workspace_id, agent_id, session_id))
+
+    def upsert_project_automation(
+        self,
+        *,
+        workspace_id,
+        project_id,
+        automation_kind,
+        enabled,
+        metadata=None,
+    ):
+        record = {
+            "workspace_id": workspace_id,
+            "project_id": project_id,
+            "automation_kind": automation_kind,
+            "enabled": enabled,
+            "metadata": metadata or {},
+        }
+        self.automations.append(record)
         return record
 
 
@@ -679,11 +729,108 @@ def test_openclaw_session_register_updates_store_and_echoes_identity(
     assert body["identity"]["workspace_id"] == "workspace-1"
     assert body["integration"]["target"] == "workspace-1:device-a:agent-x"
     assert body["event"]["event_type"] == "openclaw_session_registered"
+    assert body["integration"]["config"]["mode"] == "capture_only"
+
+
+def test_openclaw_project_endpoints_manage_session_scoped_binding(
+    client, auth_headers, monkeypatch
+):
+    """Project activation and status are scoped to one session identity."""
+
+    fake_store = _FakeOpenClawStore()
+    monkeypatch.setattr(openclaw, "get_product_store", lambda: fake_store)
+
+    activate = client.post(
+        "/openclaw/project/activate",
+        headers=auth_headers,
+        json={
+            "workspace_id": "workspace-1",
+            "device_id": "device-a",
+            "agent_id": "agent-x",
+            "session_id": "session-1",
+            "project_id": "project-1",
+            "metadata": {"source": "test"},
+        },
+    )
+    assert activate.status_code == 200
+    assert activate.json()["binding"]["project_id"] == "project-1"
+
+    status = client.post(
+        "/openclaw/project/status",
+        headers=auth_headers,
+        json={
+            "workspace_id": "workspace-1",
+            "device_id": "device-a",
+            "agent_id": "agent-x",
+            "session_id": "session-1",
+        },
+    )
+    assert status.status_code == 200
+    assert status.json()["active_project"]["project_id"] == "project-1"
+
+    deactivate = client.post(
+        "/openclaw/project/deactivate",
+        headers=auth_headers,
+        json={
+            "workspace_id": "workspace-1",
+            "device_id": "device-a",
+            "agent_id": "agent-x",
+            "session_id": "session-1",
+        },
+    )
+    assert deactivate.status_code == 200
+    assert deactivate.json()["binding"]["project_id"] == "project-1"
+
+
+def test_openclaw_memory_ingest_turn_resolves_active_project(client, auth_headers, monkeypatch):
+    """Turn ingest resolves the active session project server-side when omitted."""
+
+    fake_store = _FakeOpenClawStore()
+    fake_store.activate_project_for_openclaw_identity(
+        workspace_id="workspace-1",
+        agent_id="agent-x",
+        session_id="session-1",
+        device_id="device-a",
+        project_id="project-1",
+    )
+    monkeypatch.setattr(openclaw, "get_product_store", lambda: fake_store)
+
+    pipeline = dependencies.get_conversation_pipeline()
+    pipeline.ingest.return_value = {"stored": True}
+
+    resp = client.post(
+        "/openclaw/memory/ingest-turn",
+        headers=auth_headers,
+        json={
+            "workspace_id": "workspace-1",
+            "device_id": "device-a",
+            "agent_id": "agent-x",
+            "session_id": "session-1",
+            "role": "user",
+            "content": "remember this under the active project",
+            "turn_index": 4,
+        },
+    )
+
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["effective_project_id"] == "project-1"
+    passed = pipeline.ingest.call_args[0][0]
+    assert passed["project_id"] == "project-1"
+    assert passed["source_key"] == "chat_openclaw"
 
 
 def test_openclaw_memory_search_uses_unified_search_contract(client, auth_headers, monkeypatch):
     """POST /openclaw/memory/search forwards the unified search inputs."""
     captured = {}
+    fake_store = _FakeOpenClawStore()
+    fake_store.activate_project_for_openclaw_identity(
+        workspace_id="workspace-1",
+        agent_id="agent-x",
+        session_id="session-1",
+        project_id="project-server-side",
+    )
+    monkeypatch.setattr(openclaw, "get_product_store", lambda: fake_store)
 
     monkeypatch.setattr(openclaw, "get_graph", lambda: object())
     monkeypatch.setattr(openclaw, "get_pipeline", lambda: "research-pipeline")
@@ -715,7 +862,6 @@ def test_openclaw_memory_search_uses_unified_search_contract(client, auth_header
             "device_id": "device-a",
             "agent_id": "agent-x",
             "session_id": "session-1",
-            "project_id": "project-1",
             "query": "where did we leave off?",
             "limit": 7,
         },
@@ -729,7 +875,7 @@ def test_openclaw_memory_search_uses_unified_search_contract(client, auth_header
     assert body["results"][0]["citation"] == "session-1:4#L5"
     assert captured["query"] == "where did we leave off?"
     assert captured["limit"] == 7
-    assert captured["project_id"] == "project-1"
+    assert captured["project_id"] == "project-server-side"
 
 
 def test_openclaw_context_resolve_formats_context_blocks(client, auth_headers, monkeypatch):

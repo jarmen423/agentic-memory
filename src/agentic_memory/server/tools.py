@@ -16,8 +16,8 @@ Extended:
     2. **MCP tool registration functions** (``register_conversation_tools``,
        ``register_schedule_tools``):
        Functions called once at server startup that attach async tool handlers to
-       a FastMCP instance.  Each handler runs its blocking Neo4j/OpenAI work in a
-       thread executor so the MCP event loop stays unblocked.
+       a FastMCP instance.  Each handler runs its blocking Neo4j / embedding-provider
+       work in a thread executor so the MCP event loop stays unblocked.
 
     3. **Toolkit class**:
        A synchronous, framework-agnostic class that wraps KnowledgeGraphBuilder
@@ -38,7 +38,7 @@ Dependencies:
     - agentic_memory.core.scheduler (ResearchScheduler)
     - agentic_memory.temporal.bridge (TemporalBridge — optional, degrades gracefully)
     - Neo4j (vector index ``chat_embeddings``, label ``Memory:Conversation:Turn``)
-    - OpenAI (embeddings via EmbeddingService)
+    - Configured embedding providers resolved through ``EmbeddingService``
 
 Key Technologies:
     FastMCP tool decorator pattern, Neo4j vector search (``db.index.vector.queryNodes``),
@@ -71,6 +71,7 @@ from agentic_memory.temporal.seeds import (
 )
 from agentic_memory.web.pipeline import ResearchIngestionPipeline
 from agentic_memory.ingestion.graph import KnowledgeGraphBuilder
+from agentic_memory.server.code_search import is_code_ppr_enabled, search_code
 
 logger = logging.getLogger(__name__)
 
@@ -517,7 +518,7 @@ class Toolkit:
 
     Attributes:
         graph: The shared ``KnowledgeGraphBuilder`` instance that holds the live
-            Neo4j driver and OpenAI client.
+            Neo4j driver and provider-aware embedding runtime.
     """
 
     def __init__(self, graph: KnowledgeGraphBuilder):
@@ -529,12 +530,29 @@ class Toolkit:
         """
         self.graph = graph
 
-    def semantic_search(self, query: str, limit: int = 5) -> str:
+    def semantic_search(
+        self,
+        query: str,
+        limit: int = 5,
+        repo_id: str | None = None,
+    ) -> str:
         """
         Performs hybrid search and formats the result as a readable string for the Agent.
         """
         try:
-            results = self.graph.semantic_search(query, limit)
+            # Preserve the legacy direct-call behavior for the baseline path so
+            # existing MCP formatting and tests remain stable. Route through the
+            # new code-search module only when repo-scoped lookup is requested
+            # or the code-PPR feature flag is active.
+            if repo_id is None and not is_code_ppr_enabled():
+                results = self.graph.semantic_search(query, limit)
+            else:
+                results = search_code(
+                    self.graph,
+                    query=query,
+                    limit=limit,
+                    repo_id=repo_id,
+                )
             if not results:
                 return "No relevant code found in the graph."
 
@@ -548,12 +566,15 @@ class Toolkit:
             logger.error(f"search failed:{e}")
             return f"Error executing search: {str(e)}"
     
-    def get_file_dependencies(self, file_path: str) -> str:
+    def get_file_dependencies(self, file_path: str, repo_id: str | None = None) -> str:
         """
         Returns what this file imports and what calls it.
         """
         try:
-            deps = self.graph.get_file_dependencies(file_path)
+            deps = self.graph.get_file_dependencies(
+                file_path,
+                repo_id=repo_id,
+            )
             dep_list = deps.get("imports", [])
             caller_list = deps.get("imported_by", [])
 

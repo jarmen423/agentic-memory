@@ -46,6 +46,7 @@ def _mock_config(
     openai_key="test-openai-key",
     indexing=None,
     git_config=None,
+    code_provider="gemini",
 ):
     """Create a mock Config object for CLI tests."""
     config = Mock()
@@ -71,6 +72,34 @@ def _mock_config(
     }
     config.save_git_config = Mock()
     config.get_graphignore_patterns.return_value = []
+    code_model = (
+        "text-embedding-3-large" if code_provider == "openai" else "gemini-embedding-2-preview"
+    )
+    provider_keys = {
+        "openai": {"api_key": openai_key if code_provider == "openai" else None},
+        "gemini": {"api_key": openai_key if code_provider == "gemini" else None},
+        "nemotron": {"api_key": openai_key if code_provider == "nemotron" else None},
+    }
+    config.get_module_config.side_effect = lambda module_name: {
+        "code": {
+            "embedding_provider": code_provider,
+            "embedding_model": code_model,
+            "embedding_dimensions": 3072,
+        },
+        "web": {
+            "embedding_provider": "gemini",
+            "embedding_model": "gemini-embedding-2-preview",
+            "embedding_dimensions": 3072,
+        },
+        "chat": {
+            "embedding_provider": "gemini",
+            "embedding_model": "gemini-embedding-2-preview",
+            "embedding_dimensions": 3072,
+        },
+    }[module_name]
+    config.get_embedding_provider_config.side_effect = (
+        lambda provider_name: provider_keys.get(provider_name.strip().lower(), {})
+    )
     return config
 
 
@@ -163,11 +192,11 @@ def test_index_json_success_envelope(monkeypatch, capsys, tmp_path):
     }
 
 
-def test_index_loads_openai_key_from_repo_dotenv(monkeypatch, tmp_path):
-    """Index loads OPENAI_API_KEY from <repo>/.env before building the graph."""
+def test_index_loads_gemini_key_from_repo_dotenv(monkeypatch, tmp_path):
+    """Index loads GEMINI_API_KEY from <repo>/.env before building the graph."""
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    (repo_root / ".env").write_text("OPENAI_API_KEY=from-index-dotenv\n", encoding="utf-8")
+    (repo_root / ".env").write_text("GEMINI_API_KEY=from-index-dotenv\n", encoding="utf-8")
 
     mock_cfg = Mock()
     mock_cfg.exists.return_value = True
@@ -176,7 +205,18 @@ def test_index_loads_openai_key_from_repo_dotenv(monkeypatch, tmp_path):
         "user": "neo4j",
         "password": "password",
     }
-    mock_cfg.get_openai_key.side_effect = lambda: os.getenv("OPENAI_API_KEY")
+    mock_cfg.get_module_config.side_effect = lambda module_name: {
+        "code": {
+            "embedding_provider": "gemini",
+            "embedding_model": "gemini-embedding-2-preview",
+            "embedding_dimensions": 3072,
+        }
+    }[module_name]
+    mock_cfg.get_embedding_provider_config.side_effect = (
+        lambda provider_name: {"api_key": os.getenv("GEMINI_API_KEY")}
+        if provider_name == "gemini"
+        else {}
+    )
     mock_cfg.get_indexing_config.return_value = {
         "ignore_dirs": [],
         "ignore_files": [],
@@ -193,16 +233,17 @@ def test_index_loads_openai_key_from_repo_dotenv(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "find_repo_root", Mock(return_value=repo_root))
     monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
     monkeypatch.setattr(cli, "KnowledgeGraphBuilder", Mock(return_value=mock_builder))
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
 
     cli.cmd_index(argparse.Namespace(json=False, quiet=True))
 
-    assert os.environ.get("OPENAI_API_KEY") == "from-index-dotenv"
+    assert os.environ.get("GEMINI_API_KEY") == "from-index-dotenv"
     cli.KnowledgeGraphBuilder.assert_called_once_with(
         uri="bolt://localhost:7687",
         user="neo4j",
         password="password",
-        openai_key="from-index-dotenv",
+        openai_key=None,
+        config=mock_cfg,
         repo_root=repo_root,
         ignore_dirs=set(),
         ignore_files=set(),
@@ -235,11 +276,11 @@ def test_search_json_success_envelope(monkeypatch, capsys, tmp_path):
     assert payload["metrics"] == {"result_count": 1}
 
 
-def test_search_loads_openai_key_from_repo_dotenv(monkeypatch, tmp_path):
-    """Search loads OPENAI_API_KEY from <repo>/.env before validating config."""
+def test_search_loads_gemini_key_from_repo_dotenv(monkeypatch, tmp_path):
+    """Search loads GEMINI_API_KEY from <repo>/.env before validating config."""
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    (repo_root / ".env").write_text("OPENAI_API_KEY=from-search-dotenv\n", encoding="utf-8")
+    (repo_root / ".env").write_text("GEMINI_API_KEY=from-search-dotenv\n", encoding="utf-8")
 
     mock_cfg = Mock()
     mock_cfg.exists.return_value = True
@@ -248,7 +289,18 @@ def test_search_loads_openai_key_from_repo_dotenv(monkeypatch, tmp_path):
         "user": "neo4j",
         "password": "password",
     }
-    mock_cfg.get_openai_key.side_effect = lambda: os.getenv("OPENAI_API_KEY")
+    mock_cfg.get_module_config.side_effect = lambda module_name: {
+        "code": {
+            "embedding_provider": "gemini",
+            "embedding_model": "gemini-embedding-2-preview",
+            "embedding_dimensions": 3072,
+        }
+    }[module_name]
+    mock_cfg.get_embedding_provider_config.side_effect = (
+        lambda provider_name: {"api_key": os.getenv("GEMINI_API_KEY")}
+        if provider_name == "gemini"
+        else {}
+    )
 
     mock_builder = Mock()
     mock_builder.semantic_search.return_value = []
@@ -256,22 +308,27 @@ def test_search_loads_openai_key_from_repo_dotenv(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "find_repo_root", Mock(return_value=repo_root))
     monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
     monkeypatch.setattr(cli, "KnowledgeGraphBuilder", Mock(return_value=mock_builder))
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
 
     cli.cmd_search(argparse.Namespace(json=False, query="auth", limit=5))
 
-    assert os.environ.get("OPENAI_API_KEY") == "from-search-dotenv"
+    assert os.environ.get("GEMINI_API_KEY") == "from-search-dotenv"
     cli.KnowledgeGraphBuilder.assert_called_once_with(
         uri="bolt://localhost:7687",
         user="neo4j",
         password="password",
-        openai_key="from-search-dotenv",
+        openai_key=None,
+        config=mock_cfg,
+        repo_root=repo_root,
+        ignore_dirs=None,
+        ignore_files=None,
+        ignore_patterns=None,
     )
     mock_builder.semantic_search.assert_called_once_with("auth", limit=5)
 
 
-def test_search_json_missing_openai_exits_nonzero(monkeypatch, capsys, tmp_path):
-    """Search command exits non-zero when OpenAI key is unavailable."""
+def test_search_json_missing_code_provider_key_exits_nonzero(monkeypatch, capsys, tmp_path):
+    """Search command exits non-zero when the configured code provider key is unavailable."""
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
 
@@ -279,6 +336,9 @@ def test_search_json_missing_openai_exits_nonzero(monkeypatch, capsys, tmp_path)
 
     monkeypatch.setattr(cli, "find_repo_root", Mock(return_value=repo_root))
     monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     with pytest.raises(SystemExit) as exc:
         cli.cmd_search(argparse.Namespace(json=True, query="auth", limit=5))
@@ -288,7 +348,7 @@ def test_search_json_missing_openai_exits_nonzero(monkeypatch, capsys, tmp_path)
     assert payload["ok"] is False
     assert payload["data"] is None
     assert payload["metrics"] == {}
-    assert "openai" in payload["error"].lower()
+    assert "code embedding api key" in payload["error"].lower()
 
 
 def test_deps_json_success_uses_graph_method(monkeypatch, capsys, tmp_path):
@@ -442,11 +502,11 @@ def test_serve_loads_openai_key_from_repo_dotenv(monkeypatch, tmp_path):
     run_server.assert_called_once_with(port=8000, repo_root=repo_root.resolve())
 
 
-def test_watch_loads_openai_key_from_repo_dotenv(monkeypatch, tmp_path):
-    """Watch defaults to <repo>/.env when OPENAI_API_KEY is not already exported."""
+def test_watch_loads_gemini_key_from_repo_dotenv(monkeypatch, tmp_path):
+    """Watch defaults to <repo>/.env when GEMINI_API_KEY is not already exported."""
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    (repo_root / ".env").write_text("OPENAI_API_KEY=from-watch-dotenv\n", encoding="utf-8")
+    (repo_root / ".env").write_text("GEMINI_API_KEY=from-watch-dotenv\n", encoding="utf-8")
 
     mock_cfg = Mock()
     mock_cfg.exists.return_value = True
@@ -455,7 +515,18 @@ def test_watch_loads_openai_key_from_repo_dotenv(monkeypatch, tmp_path):
         "user": "neo4j",
         "password": "password",
     }
-    mock_cfg.get_openai_key.side_effect = lambda: os.getenv("OPENAI_API_KEY")
+    mock_cfg.get_module_config.side_effect = lambda module_name: {
+        "code": {
+            "embedding_provider": "gemini",
+            "embedding_model": "gemini-embedding-2-preview",
+            "embedding_dimensions": 3072,
+        }
+    }[module_name]
+    mock_cfg.get_embedding_provider_config.side_effect = (
+        lambda provider_name: {"api_key": os.getenv("GEMINI_API_KEY")}
+        if provider_name == "gemini"
+        else {}
+    )
     mock_cfg.get_indexing_config.return_value = {
         "ignore_dirs": [],
         "ignore_files": [],
@@ -467,17 +538,14 @@ def test_watch_loads_openai_key_from_repo_dotenv(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "find_repo_root", Mock(return_value=repo_root))
     monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
     monkeypatch.setattr(cli, "start_continuous_watch", start_watch)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
 
     cli.cmd_watch(argparse.Namespace(no_scan=False, env_file=None))
 
-    assert os.environ.get("OPENAI_API_KEY") == "from-watch-dotenv"
+    assert os.environ.get("GEMINI_API_KEY") == "from-watch-dotenv"
     start_watch.assert_called_once_with(
         repo_path=repo_root,
-        neo4j_uri="bolt://localhost:7687",
-        neo4j_user="neo4j",
-        neo4j_password="password",
-        openai_key="from-watch-dotenv",
+        config=mock_cfg,
         ignore_dirs=set(),
         ignore_files=set(),
         ignore_patterns=set(),

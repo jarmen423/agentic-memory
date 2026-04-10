@@ -4,7 +4,6 @@ File Watcher for Agentic Memory.
 Monitors a codebase for file changes and incrementally updates the knowledge graph.
 """
 
-import os
 import time
 import logging
 from pathlib import Path
@@ -14,6 +13,7 @@ import neo4j
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
+from agentic_memory.config import Config
 from agentic_memory.ingestion.graph import KnowledgeGraphBuilder
 
 logging.basicConfig(level=logging.INFO)
@@ -78,13 +78,10 @@ class CodeChangeHandler(FileSystemEventHandler):
 
         try:
             rel_path = str(path.relative_to(self.repo_root))
+            rel_path = rel_path.replace("\\", "/")
             logger.info(f"♻️  Change detected: {rel_path}")
 
-            # Delete old entities for this file
-            self._delete_file_entities(rel_path)
-
-            # Process the updated file
-            self._process_single_file(path, rel_path)
+            self.builder.reindex_file(rel_path, repo_path=self.repo_root)
 
             logger.info(f"✅ Updated graph for: {rel_path}")
 
@@ -104,9 +101,10 @@ class CodeChangeHandler(FileSystemEventHandler):
 
         try:
             rel_path = str(path.relative_to(self.repo_root))
+            rel_path = rel_path.replace("\\", "/")
             logger.info(f"➕ New file detected: {rel_path}")
 
-            self._process_single_file(path, rel_path)
+            self.builder.reindex_file(rel_path, repo_path=self.repo_root)
             logger.info(f"✅ Indexed new file: {rel_path}")
 
         except (OSError, IOError, neo4j.exceptions.DatabaseError) as e:
@@ -125,13 +123,10 @@ class CodeChangeHandler(FileSystemEventHandler):
 
         try:
             rel_path = str(path.relative_to(self.repo_root))
+            rel_path = rel_path.replace("\\", "/")
             logger.info(f"🗑️  File deleted: {rel_path}")
 
-            self._delete_file_entities(rel_path)
-
-            # Also delete the file node
-            with self.builder.driver.session() as session:
-                session.run("MATCH (f:File {path: $path}) DETACH DELETE f", path=rel_path)
+            self.builder.delete_file(rel_path, repo_path=self.repo_root)
 
             logger.info(f"✅ Removed from graph: {rel_path}")
 
@@ -150,25 +145,7 @@ class CodeChangeHandler(FileSystemEventHandler):
 
         The file node itself is preserved and re-used.
         """
-        with self.builder.driver.session() as session:
-            # Delete chunks (they have DESCRIBES relationships)
-            session.run("""
-                MATCH (f:File {path: $path})-[:DEFINES]->(entity)
-                OPTIONAL MATCH (chunk)-[:DESCRIBES]->(entity)
-                DETACH DELETE chunk
-            """, path=rel_path)
-
-            # Delete functions and classes defined in this file
-            session.run("""
-                MATCH (f:File {path: $path})-[:DEFINES]->(entity)
-                DETACH DELETE entity
-            """, path=rel_path)
-
-            # Remove import relationships from this file
-            session.run("""
-                MATCH (f:File {path: $path})-[r:IMPORTS]->()
-                DELETE r
-            """, path=rel_path)
+        self.builder.delete_file(rel_path, repo_path=self.repo_root)
 
     def _process_single_file(self, full_path: Path, rel_path: str):
         """
@@ -177,156 +154,12 @@ class CodeChangeHandler(FileSystemEventHandler):
         This is a simplified version of Pass 2 for single files.
         It does NOT update the call graph (requires full repo scan).
         """
-        code_content = full_path.read_text(errors="ignore")
-        extension = full_path.suffix
-        parser = self.builder.parsers.get(extension)
-
-        if not parser:
-            return
-
-        # Calculate new hash
-        new_ohash = self.builder._calculate_ohash(full_path)
-
-        with self.builder.driver.session() as session:
-            # Update File node
-            session.run("""
-                MERGE (f:File {path: $path})
-                SET f.name = $name,
-                    f.ohash = $ohash,
-                    f.last_updated = datetime()
-            """, path=rel_path, name=full_path.name, ohash=new_ohash)
-
-            # Parse entities
-            tree = parser.parse(bytes(code_content, "utf8"))
-
-            # Language-specific query
-            if extension == ".py":
-                query_scm = """
-                (class_definition
-                    name: (identifier) @name
-                    body: (block) @body) @class
-                (function_definition
-                    name: (identifier) @name
-                    body: (block) @body) @function
-                """
-            else:
-                query_scm = """
-                (class_declaration name: (identifier) @name) @class
-                (function_declaration name: (identifier) @name) @function
-                """
-
-            from tree_sitter import Language, Query, QueryCursor
-            import tree_sitter_python
-            import tree_sitter_javascript
-
-            lang = (
-                Language(tree_sitter_python.language())
-                if extension == ".py"
-                else Language(tree_sitter_javascript.language())
-            )
-
-            query = Query(lang, query_scm)
-            cursor = QueryCursor(query)
-            captures = cursor.captures(tree.root_node)
-
-            # Process captures
-            for tag, nodes in captures.items():
-                for node in nodes:
-                    node_text = code_content[node.start_byte:node.end_byte]
-                    name = ""
-
-                    for child in node.children:
-                        if child.type == "identifier":
-                            name = code_content[child.start_byte:child.end_byte]
-                            break
-
-                    if not name:
-                        continue
-
-                    signature = f"{rel_path}:{name}"
-
-                    if tag == "class":
-                        # Create Class Node
-                        session.run("""
-                            MATCH (f:File {path: $path})
-                            MERGE (c:Class {qualified_name: $sig})
-                            SET c.name = $name, c.code = $code
-                            MERGE (f)-[:DEFINES]->(c)
-                        """, path=rel_path, sig=signature, name=name, code=node_text)
-
-                        # Create Chunk with embedding
-                        enriched_text = f"Context: File {rel_path} > Class {name}\n\n{node_text}"
-                        embedding = self.builder.get_embedding(enriched_text)
-
-                        session.run("""
-                            MATCH (c:Class {qualified_name: $sig})
-                            CREATE (ch:Chunk {id: randomUUID()})
-                            SET ch.text = $text,
-                                ch.embedding = $embedding,
-                                ch.created_at = datetime()
-                            MERGE (ch)-[:DESCRIBES]->(c)
-                        """, sig=signature, text=node_text, embedding=embedding)
-
-                    elif tag == "function":
-                        # Check for parent class
-                        parent_class = ""
-                        current = node.parent
-                        while current:
-                            if current.type == "class_definition":
-                                for child in current.children:
-                                    if child.type == "identifier":
-                                        parent_class = code_content[
-                                            child.start_byte:child.end_byte
-                                        ]
-                                        break
-                            current = current.parent
-
-                        qual_name = f"{parent_class}.{name}" if parent_class else name
-                        full_sig = f"{rel_path}:{qual_name}"
-
-                        # Create Function Node
-                        session.run("""
-                            MATCH (f:File {path: $path})
-                            MERGE (fn:Function {signature: $sig})
-                            SET fn.name = $name, fn.code = $code
-                            MERGE (f)-[:DEFINES]->(fn)
-                        """, path=rel_path, sig=full_sig, name=name, code=node_text)
-
-                        # Link to parent class
-                        if parent_class:
-                            class_sig = f"{rel_path}:{parent_class}"
-                            session.run("""
-                                MATCH (c:Class {qualified_name: $csig})
-                                MATCH (fn:Function {signature: $fsig})
-                                MERGE (c)-[:HAS_METHOD]->(fn)
-                            """, csig=class_sig, fsig=full_sig)
-
-                        # Create Chunk with embedding
-                        context_prefix = f"File: {rel_path}"
-                        if parent_class:
-                            context_prefix += f" > Class: {parent_class}"
-
-                        enriched_text = (
-                            f"Context: {context_prefix} > Method: {name}\n\n{node_text}"
-                        )
-                        embedding = self.builder.get_embedding(enriched_text)
-
-                        session.run("""
-                            MATCH (fn:Function {signature: $sig})
-                            CREATE (ch:Chunk {id: randomUUID()})
-                            SET ch.text = $text,
-                                ch.embedding = $embedding,
-                                ch.created_at = datetime()
-                            MERGE (ch)-[:DESCRIBES]->(fn)
-                        """, sig=full_sig, text=node_text, embedding=embedding)
+        self.builder.reindex_file(rel_path, repo_path=self.repo_root)
 
 
 def start_continuous_watch(
     repo_path: Path,
-    neo4j_uri: str,
-    neo4j_user: str,
-    neo4j_password: str,
-    openai_key: Optional[str] = None,
+    config: Config,
     ignore_dirs: Optional[Set[str]] = None,
     ignore_files: Optional[Set[str]] = None,
     ignore_patterns: Optional[Set[str]] = None,
@@ -338,22 +171,22 @@ def start_continuous_watch(
 
     Args:
         repo_path: Path to the repository to watch
-        neo4j_uri: Neo4j connection URI
-        neo4j_user: Neo4j username
-        neo4j_password: Neo4j password
-        openai_key: OpenAI key used for embeddings
+        config: Repo config used for Neo4j connection and code embedding resolution
         ignore_dirs: Directory names/patterns to ignore
         ignore_files: File names/patterns to ignore
         ignore_patterns: .graphignore-style patterns to ignore
         supported_extensions: File extensions to process
         initial_scan: Whether to run full pipeline before watching (default: True)
     """
+    neo4j_cfg = config.get_neo4j_config()
+
     # Init Builder
     builder = KnowledgeGraphBuilder(
-        uri=neo4j_uri,
-        user=neo4j_user,
-        password=neo4j_password,
-        openai_key=openai_key,
+        uri=neo4j_cfg["uri"],
+        user=neo4j_cfg["user"],
+        password=neo4j_cfg["password"],
+        openai_key=None,
+        config=config,
         repo_root=repo_path,
         ignore_dirs=ignore_dirs,
         ignore_files=ignore_files,

@@ -9,7 +9,7 @@ graph analysis steps (`deps`, `impact`).
 - `agentic-memory` CLI installed and available on `PATH`
 - Repo initialized (`.codememory/config.json` exists) when running indexing/search
 - Neo4j reachable from the machine running commands
-- Optional for semantic search: `OPENAI_API_KEY`
+- Optional for semantic search: `GEMINI_API_KEY` or `GOOGLE_API_KEY` by default, or `OPENAI_API_KEY` if `CODE_EMBEDDING_PROVIDER=openai`
 
 Helper scripts used below:
 - `skills/agentic-memory-adapter/scripts/run_codememory.sh`
@@ -123,7 +123,7 @@ Optional semantic check:
 |---|---|---|---|
 | `Could not connect to Neo4j` or endpoint unreachable | Neo4j not running or wrong URI | Start Neo4j, confirm `NEO4J_URI` host/port | `health_check.sh --repo "$REPO"` |
 | Neo4j auth error | Wrong `NEO4J_USER` / `NEO4J_PASSWORD` | Update shell env or repo config, then retry | `run_codememory.sh --repo "$REPO" -- status` |
-| `OpenAI API key not configured` on search | Missing key in env or `.env` | Set `OPENAI_API_KEY` in shell or repo `.env` | `run_codememory.sh --repo "$REPO" -- search "test"` |
+| `Configured code embedding API key not configured` on search | Missing provider key in env or `.env` | Set `GEMINI_API_KEY` / `GOOGLE_API_KEY`, or set `CODE_EMBEDDING_PROVIDER=openai` plus `OPENAI_API_KEY` | `run_codememory.sh --repo "$REPO" -- search "test"` |
 | Search/deps results look outdated | Stale graph after file moves/deletes | Re-run `index` to refresh and prune stale nodes | `status` plus a targeted `search`/MCP tool call |
 
 ## Notes

@@ -15,8 +15,8 @@ logger = logging.getLogger(__name__)
 # These match the Neo4j vector index definitions in ConnectionManager.setup_database().
 LABEL_DIMENSION_MAP: dict[str, int] = {
     "code": 3072,   # OpenAI text-embedding-3-large — :Memory:Code vector index
-    "web": 3072,    # Gemini gemini-embedding-2-preview @ 3072d — :Memory:Research vector index
-    "chat": 3072,   # Gemini gemini-embedding-2-preview @ 3072d — :Memory:Conversation vector index
+    "web": 3072,    # Gemini gemini-embedding-2-preview default — :Memory:Research vector index
+    "chat": 3072,   # Gemini gemini-embedding-2-preview default — :Memory:Conversation vector index
 }
 
 # Providers that support flexible output dimensionality (MRL / Matryoshka).

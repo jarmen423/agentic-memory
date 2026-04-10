@@ -29,6 +29,11 @@ agentic-memory init
 3. Offers to run initial indexing
 4. Tests Neo4j connection
 
+**Default code embedding provider:**
+- New repos default `modules.code` to Gemini (`gemini-embedding-2-preview`).
+- That keeps code memory aligned with the rest of the multimodal Agentic Memory system.
+- You can switch code to another text embedding model, such as OpenAI, if you want a separate code-memory lane.
+
 **Interactive prompts:**
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -68,7 +73,7 @@ Next steps:
 
 **Exit codes:**
 - `0` - Success
-- `1` - Already initialized (use --force to override)
+- `1` - Already initialized (edit or remove `.codememory/` to re-run setup)
 
 ---
 
@@ -152,7 +157,7 @@ $ agentic-memory index
 🔢 Embedding API Calls: 142
 📝 Total Tokens Used: 85,234
 💰 Estimated Cost: $0.0111 USD
-📦 Model: text-embedding-3-large
+📦 Model: gemini-embedding-2-preview
 ============================================================
 ✅ Graph is ready for Agent retrieval.
 ============================================================
@@ -167,7 +172,7 @@ $ agentic-memory index
 - `0` - Success
 - `1` - Not initialized
 - `2` - Neo4j connection failed
-- `3` - OpenAI API error
+- `3` - Configured code embedding provider API error
 
 ---
 
@@ -259,7 +264,7 @@ $ agentic-memory serve
 
 **Configuration priority:**
 1. `.codememory/config.json`
-2. Environment variables (NEO4J_URI, OPENAI_API_KEY, etc.)
+2. Environment variables (`NEO4J_URI`, `CODE_EMBEDDING_PROVIDER`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, etc.)
 3. Defaults
 
 **Testing the server:**
@@ -336,7 +341,7 @@ Found 3 result(s):
 **Exit codes:**
 - `0` - Success
 - `1` - Not initialized
-- `2` - OpenAI API key not configured
+- `2` - Configured code embedding API key not configured
 - `3` - No results found
 
 ---
@@ -391,7 +396,7 @@ Found 3 relevant code result(s):
 
 **Error cases:**
 - Graph not initialized: Returns "❌ Graph not initialized"
-- OpenAI key missing: Returns "❌ OpenAI API key not configured"
+- Code embedding key missing: Returns "❌ Configured code embedding API key not configured"
 - No results: Returns "No relevant code found"
 
 ---
@@ -553,8 +558,28 @@ Formatted Markdown string with file structure.
     "user": "neo4j",
     "password": "password"
   },
+  "gemini": {
+    "api_key": null
+  },
   "openai": {
     "api_key": null
+  },
+  "modules": {
+    "code": {
+      "embedding_provider": "gemini",
+      "embedding_model": "gemini-embedding-2-preview",
+      "embedding_dimensions": 3072
+    },
+    "web": {
+      "embedding_provider": "gemini",
+      "embedding_model": "gemini-embedding-2-preview",
+      "embedding_dimensions": 3072
+    },
+    "chat": {
+      "embedding_provider": "gemini",
+      "embedding_model": "gemini-embedding-2-preview",
+      "embedding_dimensions": 3072
+    }
   },
   "indexing": {
     "ignore_dirs": [
@@ -616,13 +641,28 @@ Neo4j password.
 
 ---
 
+#### `gemini.api_key`
+
+**Type:** string or null
+**Default:** `null`
+**Environment variables:** `GEMINI_API_KEY`, `GOOGLE_API_KEY`
+
+Gemini API key for the default code embedding provider.
+
+**Examples:**
+- In config: `"AIza..."`
+- Use env var: `null` (recommended)
+- No key: `null` (semantic code search disabled until a key is supplied)
+
+---
+
 #### `openai.api_key`
 
 **Type:** string or null
 **Default:** `null`
 **Environment variable:** `OPENAI_API_KEY`
 
-OpenAI API key for embeddings.
+Optional OpenAI API key when you intentionally switch the `code` module to OpenAI.
 
 **Examples:**
 - In config: `"sk-..."`
@@ -630,6 +670,28 @@ OpenAI API key for embeddings.
 - No key: `null` (semantic search disabled)
 
 **Get API key:** https://platform.openai.com/api-keys
+
+---
+
+#### `modules.code`
+
+**Type:** object
+
+Per-module embedding configuration for code memory.
+
+**Fields:**
+- `embedding_provider`
+- `embedding_model`
+- `embedding_dimensions`
+
+**Default:**
+```json
+{
+  "embedding_provider": "gemini",
+  "embedding_model": "gemini-embedding-2-preview",
+  "embedding_dimensions": 3072
+}
+```
 
 ---
 
@@ -706,7 +768,10 @@ File extensions to index.
 | `NEO4J_URI` | Neo4j connection URI | `bolt://localhost:7687` |
 | `NEO4J_USER` | Neo4j username | `neo4j` |
 | `NEO4J_PASSWORD` | Neo4j password | `your_password` |
-| `OPENAI_API_KEY` | OpenAI API key | `sk-...` |
+| `CODE_EMBEDDING_PROVIDER` | Code embedding provider override | `gemini`, `openai`, `nemotron` |
+| `GEMINI_API_KEY` | Default Gemini code embedding API key | `your-gemini-key` |
+| `GOOGLE_API_KEY` | Alternate Gemini auth env var | `your-gemini-key` |
+| `OPENAI_API_KEY` | Optional OpenAI key for code isolation | `sk-...` |
 | `LOG_LEVEL` | Logging verbosity | `DEBUG`, `INFO`, `WARNING` |
 
 **Example `.env` file:**
@@ -716,8 +781,12 @@ NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=secure_password
 
-# OpenAI Configuration
-OPENAI_API_KEY=sk-your-api-key-here
+# Default code embedding provider
+GEMINI_API_KEY=your-gemini-api-key-here
+
+# Optional: keep code memory separate on OpenAI instead
+# CODE_EMBEDDING_PROVIDER=openai
+# OPENAI_API_KEY=sk-your-api-key-here
 
 # Optional
 LOG_LEVEL=INFO
@@ -740,10 +809,17 @@ def __init__(
     uri: str,
     user: str,
     password: str,
-    openai_key: str,
+    openai_key: Optional[str],
     repo_root: Optional[Path] = None,
     ignore_dirs: Optional[Set[str]] = None,
-    ignore_files: Optional[Set[str]] = None
+    ignore_files: Optional[Set[str]] = None,
+    *,
+    config: Any | None = None,
+    embedding_provider: str | None = None,
+    embedding_model: str | None = None,
+    embedding_api_key: str | None = None,
+    embedding_base_url: str | None = None,
+    embedding_dimensions: int | None = None
 )
 ```
 
@@ -751,10 +827,16 @@ def __init__(
 - `uri` - Neo4j connection URI
 - `user` - Neo4j username
 - `password` - Neo4j password
-- `openai_key` - OpenAI API key
+- `openai_key` - Legacy OpenAI API key parameter for backward compatibility
 - `repo_root` - Repository path (optional)
 - `ignore_dirs` - Directories to ignore (optional)
 - `ignore_files` - Files to ignore (optional)
+- `config` - Repo config used to resolve the module's embedding provider/model
+- `embedding_provider` - Explicit provider override for code embeddings
+- `embedding_model` - Explicit model override
+- `embedding_api_key` - Explicit provider API key override
+- `embedding_base_url` - Optional provider base URL override
+- `embedding_dimensions` - Optional output dimension override
 
 **Example:**
 ```python
@@ -765,7 +847,7 @@ builder = KnowledgeGraphBuilder(
     uri="bolt://localhost:7687",
     user="neo4j",
     password="password",
-    openai_key="sk-...",
+    openai_key=None,
     repo_root=Path("/path/to/repo")
 )
 ```
@@ -995,12 +1077,22 @@ def get_neo4j_config(self) -> Dict[str, str]
 
 ---
 
-##### `get_openai_key()`
+##### `get_module_config()`
 
-Get OpenAI API key with env var fallback.
+Get per-module embedding configuration.
 
 ```python
-def get_openai_key(self) -> Optional[str]
+def get_module_config(self, module_name: str) -> Dict[str, Any]
+```
+
+---
+
+##### `get_embedding_provider_config()`
+
+Get provider-level config such as API keys and base URLs.
+
+```python
+def get_embedding_provider_config(self, provider_name: str) -> Dict[str, Any]
 ```
 
 ---
@@ -1024,7 +1116,7 @@ def get_indexing_config(self) -> Dict[str, Any]
 | 0 | Success | - |
 | 1 | General error | Not initialized, invalid config |
 | 2 | Connection failed | Neo4j unavailable, wrong credentials |
-| 3 | API error | OpenAI key invalid, rate limit |
+| 3 | API error | Code embedding provider key invalid, provider rate limit |
 | 130 | Interrupted | Ctrl+C pressed |
 
 ### MCP Tool Errors
@@ -1033,7 +1125,7 @@ def get_indexing_config(self) -> Dict[str, Any]
 |-------|---------|------------|
 | Graph not initialized | "❌ Graph not initialized" | Run `agentic-memory index` |
 | File not found | "❌ File not found in the graph" | Check file path, run indexing |
-| OpenAI key missing | "❌ OpenAI API key not configured" | Set `OPENAI_API_KEY` |
+| Code embedding key missing | "❌ Configured code embedding API key not configured" | Set `GEMINI_API_KEY` / `GOOGLE_API_KEY`, or switch provider and set that provider's key |
 | No results | "No relevant code found" | Try different query |
 | Connection failed | "❌ Failed to connect to Neo4j" | Check Neo4j is running |
 
@@ -1045,8 +1137,8 @@ def get_indexing_config(self) -> Dict[str, Any]
 |-----------|------|---------------|
 | `RuntimeError` | Config file corrupted | Re-run `agentic-memory init` |
 | `neo4j.ServiceUnavailable` | Neo4j not running | Start Neo4j |
-| `openai.AuthenticationError` | Invalid API key | Check `OPENAI_API_KEY` |
-| `openai.RateLimitError` | API rate limit | Wait and retry |
+| Provider-specific auth exception | Invalid embedding API key | Check the configured provider key |
+| Provider-specific rate-limit exception | Embedding API rate limit | Wait and retry |
 | `FileNotFoundError` | Repository not found | Check path is correct |
 
 ---

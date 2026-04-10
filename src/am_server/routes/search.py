@@ -17,6 +17,7 @@ async def search_all(
     q: str = Query(..., description="Unified search query string"),
     limit: int = Query(10, ge=1, le=50, description="Max results to return"),
     project_id: str | None = Query(None, description="Optional project filter"),
+    repo_id: str | None = Query(None, description="Optional repo filter for code search"),
     as_of: str | None = Query(None, description="Optional ISO-8601 temporal cutoff"),
     modules: str | None = Query(
         None,
@@ -32,6 +33,7 @@ async def search_all(
         query=q,
         limit=limit,
         project_id=project_id,
+        repo_id=repo_id,
         as_of=as_of,
         modules=requested_modules,
         graph=get_graph(),

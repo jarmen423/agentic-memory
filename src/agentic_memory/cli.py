@@ -18,11 +18,12 @@ Extended:
 Role:
     User-facing control plane — not imported by any server or library code.
     All commands read configuration from ``.codememory/config.json`` (or environment
-    variables as fallback) and talk directly to Neo4j and OpenAI.
+    variables as fallback) and talk directly to Neo4j plus the configured code
+    embedding provider.
 
 Dependencies:
     - Neo4j 5.18+ (graph + vector index storage)
-    - OpenAI (embeddings for semantic search)
+    - Configured code embedding provider (Gemini by default for code embeddings)
     - agentic_memory.config (Config, find_repo_root)
     - agentic_memory.ingestion.graph (KnowledgeGraphBuilder)
     - agentic_memory.ingestion.git_graph (GitGraphIngestor)
@@ -55,6 +56,7 @@ from agentic_memory.ingestion.graph import KnowledgeGraphBuilder
 from agentic_memory.ingestion.watcher import start_continuous_watch
 from agentic_memory.product.state import ProductStateStore
 from agentic_memory.config import Config, find_repo_root, DEFAULT_CONFIG
+from agentic_memory.core.runtime_embedding import resolve_embedding_runtime
 from agentic_memory.telemetry import TelemetryStore, resolve_telemetry_db_path
 
 PRIMARY_CLI_NAME = "agentic-memory"
@@ -214,6 +216,29 @@ def _resolve_repo_and_config(
     return repo_root, config
 
 
+def _build_code_graph_builder(
+    *,
+    repo_root: Path,
+    config: Config,
+    ignore_dirs: Optional[set[str]] = None,
+    ignore_files: Optional[set[str]] = None,
+    ignore_patterns: Optional[set[str]] = None,
+) -> KnowledgeGraphBuilder:
+    """Create a code-domain graph builder using repo-aware embedding config."""
+    neo4j_cfg = config.get_neo4j_config()
+    return KnowledgeGraphBuilder(
+        uri=neo4j_cfg["uri"],
+        user=neo4j_cfg["user"],
+        password=neo4j_cfg["password"],
+        openai_key=None,
+        config=config,
+        repo_root=repo_root,
+        ignore_dirs=ignore_dirs,
+        ignore_files=ignore_files,
+        ignore_patterns=ignore_patterns,
+    )
+
+
 def cmd_init(args):
     """Initialize Agentic Memory in the current repository."""
     repo_root = Path.cwd()
@@ -280,30 +305,65 @@ def cmd_init(args):
         print("   (These will override config file values)")
 
     # ============================================================
-    # Step 2: OpenAI Configuration
+    # Step 2: Code Embedding Provider
     # ============================================================
     print("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    print("Step 2: OpenAI API Configuration")
+    print("Step 2: Code Embedding Provider")
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 
-    print("OpenAI API is used for semantic search (embeddings).")
-    print("Without it, you can still use structural queries (dependencies, impact).")
+    print("By default, Agentic Memory uses Gemini for code embeddings.")
+    print(
+        "That keeps code memory in the same embedding family as the rest of the "
+        "multimodal Agentic Memory system."
+    )
+    print(
+        "If you want code memory completely separate, you can switch to another "
+        "text embedding model such as OpenAI."
+    )
     print("\nOptions:")
-    print("  1. Enter API key now (will be stored in .codememory/config.json)")
-    print("  2. Use environment variable OPENAI_API_KEY")
-    print("  3. Skip for now (semantic search won't work)")
+    print("  1. Gemini (recommended default)")
+    print("  2. OpenAI")
+    print("  3. Keep default provider but configure the API key later")
 
-    openai_choice = input("\nChoose option [1-3] (default: 2): ").strip() or "2"
+    provider_choice = input("\nChoose provider [1-3] (default: 1): ").strip() or "1"
 
     openai_config = DEFAULT_CONFIG["openai"].copy()
+    gemini_config = DEFAULT_CONFIG["gemini"].copy()
+    code_module_config = DEFAULT_CONFIG["modules"]["code"].copy()
 
-    if openai_choice == "1":
-        api_key = input("   Enter OpenAI API key (sk-...): ").strip()
-        openai_config["api_key"] = api_key
-    elif openai_choice == "2":
-        print("   ✅ Will use OPENAI_API_KEY environment variable")
+    if provider_choice == "2":
+        code_module_config = {
+            "embedding_provider": "openai",
+            "embedding_model": "text-embedding-3-large",
+            "embedding_dimensions": 3072,
+        }
+        print("\nOpenAI selected for code embeddings.")
+        print("Options:")
+        print("  1. Enter API key now (will be stored in .codememory/config.json)")
+        print("  2. Use environment variable OPENAI_API_KEY")
+        print("  3. Skip for now (semantic code search won't work)")
+        openai_choice = input("\nChoose option [1-3] (default: 2): ").strip() or "2"
+        if openai_choice == "1":
+            api_key = input("   Enter OpenAI API key (sk-...): ").strip()
+            openai_config["api_key"] = api_key
+        elif openai_choice == "2":
+            print("   ✅ Will use OPENAI_API_KEY environment variable")
+        else:
+            print("   ⚠️  Semantic code search will be disabled until a provider key is added")
     else:
-        print("   ⚠️  Semantic search will be disabled")
+        print("\nGemini selected for code embeddings.")
+        print("Options:")
+        print("  1. Enter API key now (will be stored in .codememory/config.json)")
+        print("  2. Use environment variable GEMINI_API_KEY or GOOGLE_API_KEY")
+        print("  3. Skip for now (semantic code search won't work)")
+        gemini_choice = input("\nChoose option [1-3] (default: 2): ").strip() or "2"
+        if gemini_choice == "1":
+            api_key = input("   Enter Gemini API key: ").strip()
+            gemini_config["api_key"] = api_key
+        elif gemini_choice == "2":
+            print("   ✅ Will use GEMINI_API_KEY or GOOGLE_API_KEY")
+        else:
+            print("   ⚠️  Semantic code search will be disabled until a provider key is added")
 
     # ============================================================
     # Step 3: Indexing Options
@@ -335,7 +395,11 @@ def cmd_init(args):
     final_config = {
         "neo4j": neo4j_config,
         "openai": openai_config,
+        "gemini": gemini_config,
         "indexing": indexing_config,
+        "modules": {
+            "code": code_module_config,
+        },
     }
 
     config.save(final_config)
@@ -354,8 +418,6 @@ def cmd_init(args):
     do_index = input("Run initial indexing now? [Y/n]: ").strip().lower()
     if do_index != "n":
         try:
-            neo4j_cfg = config.get_neo4j_config()
-            openai_key = config.get_openai_key()
             indexing_cfg = config.get_indexing_config()
             ignore_dirs = set(indexing_cfg.get("ignore_dirs", []))
             ignore_files = set(indexing_cfg.get("ignore_files", []))
@@ -363,12 +425,9 @@ def cmd_init(args):
             graphignore_patterns = set(config.get_graphignore_patterns())
 
             print("\n🔍 Testing Neo4j connection...")
-            builder = KnowledgeGraphBuilder(
-                uri=neo4j_cfg["uri"],
-                user=neo4j_cfg["user"],
-                password=neo4j_cfg["password"],
-                openai_key=openai_key,
+            builder = _build_code_graph_builder(
                 repo_root=repo_root,
+                config=config,
                 ignore_dirs=ignore_dirs,
                 ignore_files=ignore_files,
                 ignore_patterns=graphignore_patterns,
@@ -381,12 +440,9 @@ def cmd_init(args):
             builder.close()
 
             print("📂 Starting initial indexing...")
-            builder = KnowledgeGraphBuilder(
-                uri=neo4j_cfg["uri"],
-                user=neo4j_cfg["user"],
-                password=neo4j_cfg["password"],
-                openai_key=openai_key,
+            builder = _build_code_graph_builder(
                 repo_root=repo_root,
+                config=config,
                 ignore_dirs=ignore_dirs,
                 ignore_files=ignore_files,
                 ignore_patterns=graphignore_patterns,
@@ -432,16 +488,7 @@ def cmd_status(args):
     # Try to connect and get stats
     builder = None
     try:
-        neo4j_cfg = config.get_neo4j_config()
-        openai_key = config.get_openai_key()
-
-        builder = KnowledgeGraphBuilder(
-            uri=neo4j_cfg["uri"],
-            user=neo4j_cfg["user"],
-            password=neo4j_cfg["password"],
-            openai_key=openai_key,
-            repo_root=repo_root,
-        )
+        builder = _build_code_graph_builder(repo_root=repo_root, config=config)
 
         with builder.driver.session() as session:
             # Get stats
@@ -505,20 +552,15 @@ def cmd_index(args):
     if not args.quiet and not _is_json_mode(args):
         print(f"📂 Indexing repository: {repo_root}")
 
-    neo4j_cfg = config.get_neo4j_config()
-    openai_key = config.get_openai_key()
     indexing_cfg = config.get_indexing_config()
     ignore_dirs = set(indexing_cfg.get("ignore_dirs", []))
     ignore_files = set(indexing_cfg.get("ignore_files", []))
     extensions = set(indexing_cfg.get("extensions", []))
     graphignore_patterns = set(config.get_graphignore_patterns())
 
-    builder = KnowledgeGraphBuilder(
-        uri=neo4j_cfg["uri"],
-        user=neo4j_cfg["user"],
-        password=neo4j_cfg["password"],
-        openai_key=openai_key,
+    builder = _build_code_graph_builder(
         repo_root=repo_root,
+        config=config,
         ignore_dirs=ignore_dirs,
         ignore_files=ignore_files,
         ignore_patterns=graphignore_patterns,
@@ -552,17 +594,12 @@ def cmd_watch(args):
 
     print(f"👀 Starting Observer on: {repo_root}")
 
-    neo4j_cfg = config.get_neo4j_config()
-    openai_key = config.get_openai_key()
     indexing_cfg = config.get_indexing_config()
     graphignore_patterns = set(config.get_graphignore_patterns())
 
     start_continuous_watch(
         repo_path=repo_root,
-        neo4j_uri=neo4j_cfg["uri"],
-        neo4j_user=neo4j_cfg["user"],
-        neo4j_password=neo4j_cfg["password"],
-        openai_key=openai_key,
+        config=config,
         ignore_dirs=set(indexing_cfg.get("ignore_dirs", [])),
         ignore_files=set(indexing_cfg.get("ignore_files", [])),
         ignore_patterns=graphignore_patterns,
@@ -606,25 +643,27 @@ def cmd_search(args):
     """Run a semantic search query (for testing)."""
     repo_root, config = _resolve_repo_and_config(args, require_initialized=True)
 
-    neo4j_cfg = config.get_neo4j_config()
-    openai_key = config.get_openai_key()
-
-    if not openai_key:
+    code_runtime = resolve_embedding_runtime("code", config=config, repo_root=repo_root)
+    if not code_runtime.api_key:
         _exit_with_error(
             args,
-            error="OpenAI API key not configured.",
+            error=(
+                f"Code embedding API key not configured for provider "
+                f"'{code_runtime.provider}'."
+            ),
             human_lines=[
-                "❌ OpenAI API key not configured.",
-                "   Set OPENAI_API_KEY environment variable or add it to .codememory/config.json",
+                (
+                    f"❌ Code embedding API key not configured for provider "
+                    f"'{code_runtime.provider}'."
+                ),
+                (
+                    "   Add the provider key to .codememory/config.json or set the "
+                    "matching environment variable before running semantic search."
+                ),
             ],
         )
 
-    builder = KnowledgeGraphBuilder(
-        uri=neo4j_cfg["uri"],
-        user=neo4j_cfg["user"],
-        password=neo4j_cfg["password"],
-        openai_key=openai_key,
-    )
+    builder = _build_code_graph_builder(repo_root=repo_root, config=config)
 
     try:
         results = builder.semantic_search(args.query, limit=args.limit)
@@ -666,14 +705,7 @@ def cmd_deps(args):
     """Show direct dependency relationships for a file."""
     repo_root, config = _resolve_repo_and_config(args, require_initialized=True)
 
-    neo4j_cfg = config.get_neo4j_config()
-    openai_key = config.get_openai_key()
-    builder = KnowledgeGraphBuilder(
-        uri=neo4j_cfg["uri"],
-        user=neo4j_cfg["user"],
-        password=neo4j_cfg["password"],
-        openai_key=openai_key,
-    )
+    builder = _build_code_graph_builder(repo_root=repo_root, config=config)
 
     try:
         deps = builder.get_file_dependencies(args.path)
@@ -725,14 +757,7 @@ def cmd_impact(args):
     """Show transitive impact analysis for a file."""
     repo_root, config = _resolve_repo_and_config(args, require_initialized=True)
 
-    neo4j_cfg = config.get_neo4j_config()
-    openai_key = config.get_openai_key()
-    builder = KnowledgeGraphBuilder(
-        uri=neo4j_cfg["uri"],
-        user=neo4j_cfg["user"],
-        password=neo4j_cfg["password"],
-        openai_key=openai_key,
-    )
+    builder = _build_code_graph_builder(repo_root=repo_root, config=config)
 
     try:
         result = builder.identify_impact(args.path, max_depth=args.max_depth)
@@ -1323,7 +1348,12 @@ def cmd_annotate_interaction(
 
 
 def cmd_web_init(args: argparse.Namespace) -> None:
-    """Initialize web research vector indexes and constraints."""
+    """Initialize web research vector indexes and constraints.
+
+    Calls setup_database() for baseline schema creation, then
+    fix_vector_index_dimensions() so existing research/chat indexes are reset
+    to the documented Gemini default dimension of 3072 when needed.
+    """
     uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
     user = os.getenv("NEO4J_USER") or os.getenv("NEO4J_USERNAME", "neo4j")
     password = os.getenv("NEO4J_PASSWORD", "password")
@@ -1332,8 +1362,9 @@ def cmd_web_init(args: argparse.Namespace) -> None:
         from agentic_memory.core.connection import ConnectionManager
         conn = ConnectionManager(uri, user, password)
         conn.setup_database()
+        conn.fix_vector_index_dimensions()
         conn.driver.close()
-        print("web-init: research_embeddings vector index ready.")
+        print("web-init: research_embeddings vector index ready (3072d). chat_embeddings reset to 3072d.")
     except Exception as e:
         print(f"web-init failed: {e}")
         sys.exit(1)
@@ -1396,6 +1427,8 @@ def cmd_web_ingest(args: argparse.Namespace) -> None:
             print(f"web-ingest: Got {len(content_text)} chars of markdown.")
 
         conn = ConnectionManager(neo4j_uri, neo4j_user, password)
+        conn.setup_database()
+        conn.fix_vector_index_dimensions()
         embedder = build_embedding_service("web")
         extractor = EntityExtractionService(
             api_key=extraction_llm.api_key,
@@ -1559,7 +1592,7 @@ def cmd_chat_init(args: argparse.Namespace) -> None:
 
     Calls setup_database() to create indexes (if absent), then
     fix_vector_index_dimensions() to drop-and-recreate research_embeddings
-    and chat_embeddings at 768d in case they exist at the wrong 3072d.
+    and chat_embeddings at 3072d in case they exist at the wrong dimension.
     """
     from dotenv import load_dotenv  # noqa: PLC0415
 
@@ -1577,7 +1610,7 @@ def cmd_chat_init(args: argparse.Namespace) -> None:
         print("chat-init: Vector indexes and constraints created (or already exist).")
         conn.fix_vector_index_dimensions()
         print(
-            "chat-init: research_embeddings and chat_embeddings reset to 768d. Done."
+            "chat-init: research_embeddings and chat_embeddings reset to 3072d. Done."
         )
     finally:
         conn.driver.close()
@@ -1619,9 +1652,12 @@ def cmd_chat_ingest(args: argparse.Namespace) -> None:
     from agentic_memory.core.entity_extraction import EntityExtractionService  # noqa: PLC0415
     from agentic_memory.chat.pipeline import ConversationIngestionPipeline  # noqa: PLC0415
 
-    # Auto-initialize indexes (setup_database is idempotent, IF NOT EXISTS)
+    # Auto-initialize indexes, then force the research/chat index dimensions
+    # back to the documented Gemini default of 3072 in case an earlier run
+    # created them incorrectly.
     conn = ConnectionManager(neo4j_uri, neo4j_user, password)
     conn.setup_database()
+    conn.fix_vector_index_dimensions()
 
     embedder = build_embedding_service("chat")
     extractor = EntityExtractionService(
@@ -2022,7 +2058,7 @@ def main():
         ``agentic-memory init``            — interactive setup wizard
         ``agentic-memory serve --port 8080`` — start MCP server
         ``agentic-memory index --quiet``   — one-shot indexing (CI-friendly)
-        ``agentic-memory search "auth flow"`` — ad hoc semantic query
+        ``agentic-memory search "auth flow"`` — ad hoc code semantic query
 
     Side effects:
         Calls sys.exit() on unrecoverable errors via _exit_with_error().
@@ -2041,7 +2077,7 @@ Commands:
   {primary_name} index             # One-time full index
   {primary_name} watch             # Continuous monitoring
   {primary_name} serve             # Start MCP server
-  {primary_name} search <query>    # Test semantic search
+  {primary_name} search <query>    # Test code semantic search
   {primary_name} git-init          # Enable git graph integration
   {primary_name} git-sync          # Sync local git history into Neo4j
   {primary_name} git-status        # Show git graph sync status
@@ -2161,7 +2197,8 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
 
     # Command: search (test semantic search)
     search_parser = subparsers.add_parser(
-        "search", help="Test semantic search (requires OpenAI API key)"
+        "search",
+        help="Test code semantic search (requires the configured code embedding API key)",
     )
     search_parser.add_argument("query", help="Natural language search query")
     search_parser.add_argument(

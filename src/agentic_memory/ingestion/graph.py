@@ -1,8 +1,14 @@
-"""
-Knowledge Graph Builder for Agentic Memory.
+"""Knowledge Graph Builder for Agentic Memory code memory.
 
-Ported from legacy 4_pass_ingestion_with_prep_hybridgraphRAG.py
-This module orchestrates the creation of a hybrid GraphRAG system in Neo4j.
+This module is the code-domain ingestion and retrieval engine. It is still the
+same multi-pass GraphRAG builder conceptually, but it now resolves its
+embedding provider through the shared runtime embedding configuration so code
+memory can participate in the same provider strategy as the rest of Agentic
+Memory.
+
+That means the builder no longer assumes OpenAI for code embeddings. Instead it
+accepts the configured code-module provider (Gemini by default, or OpenAI /
+another supported provider when explicitly requested).
 """
 
 import os
@@ -17,18 +23,16 @@ from pathlib import Path
 from typing import Any, List, Dict, Optional, Tuple, Set
 from functools import wraps
 
-import openai
 import neo4j
-from openai import OpenAI
-from tree_sitter import Language, Parser, Query, QueryCursor
-
-# Import language bindings
-import tree_sitter_python
-import tree_sitter_javascript
+import openai
+from tree_sitter import Parser
 
 from agentic_memory.core.base import BaseIngestionPipeline
 from agentic_memory.core.connection import ConnectionManager
+from agentic_memory.core.embedding import EmbeddingService
 from agentic_memory.core.registry import register_source
+from agentic_memory.core.runtime_embedding import EmbeddingRuntimeConfig, resolve_embedding_runtime
+from agentic_memory.ingestion.parser import CodeParser
 
 logger = logging.getLogger(__name__)
 
@@ -134,15 +138,21 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
 
     Attributes:
         driver (neo4j.Driver): Database connection.
-        openai_client (OpenAI): Embedding client.
+        embedding_runtime (EmbeddingRuntimeConfig): Resolved provider/model settings
+            for code embeddings.
+        embedding_service (EmbeddingService | None): Provider-dispatching embedder.
+            When no API key is available, this remains None and semantic search
+            gracefully degrades to full-text fallback.
         parsers (Dict): Tree-sitter parsers for supported languages.
         repo_root (Path): Root path of the repository being indexed.
-        token_usage (Dict): Tracks OpenAI API token usage and costs.
+        token_usage (Dict): Tracks embedding calls and any provider-specific usage
+            metadata we can observe at runtime.
     """
 
-    # OpenAI Pricing (as of Dec 2024)
-    EMBEDDING_MODEL = "text-embedding-3-large"
-    COST_PER_1M_TOKENS = 0.13  # USD
+    # Class-level defaults remain for callers/tests that introspect these
+    # attributes before initialization, but __init__ resolves per-instance
+    # values from the repo config / environment.
+    EMBEDDING_MODEL = "gemini-embedding-2-preview"
     VECTOR_DIMENSIONS = 3072
     DOMAIN_LABEL = "Code"
 
@@ -156,6 +166,13 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         ignore_dirs: Optional[Set[str]] = None,
         ignore_files: Optional[Set[str]] = None,
         ignore_patterns: Optional[Set[str]] = None,
+        *,
+        config: Any | None = None,
+        embedding_provider: str | None = None,
+        embedding_model: str | None = None,
+        embedding_api_key: str | None = None,
+        embedding_base_url: str | None = None,
+        embedding_dimensions: int | None = None,
     ):
         """
         Initialize the KnowledgeGraphBuilder.
@@ -164,11 +181,20 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             uri: Neo4j connection URI (e.g., "bolt://localhost:7687")
             user: Neo4j username
             password: Neo4j password
-            openai_key: OpenAI API key for embeddings (optional; semantic search degrades without it)
+            openai_key: Legacy OpenAI API key parameter kept for backward
+                compatibility. New callers should prefer provider-aware code
+                embedding config via ``config`` or the explicit embedding_* args.
             repo_root: Root path of repository to index (optional, can be set per-method)
             ignore_dirs: Set of directory names to ignore during indexing
             ignore_files: Set of file patterns to ignore during indexing
             ignore_patterns: Set of .graphignore-style path/file patterns to skip
+            config: Optional Config object for provider-aware code embedding
+                resolution.
+            embedding_provider: Explicit provider override for code embeddings.
+            embedding_model: Explicit model override for code embeddings.
+            embedding_api_key: Explicit API key override for code embeddings.
+            embedding_base_url: Optional provider base URL override.
+            embedding_dimensions: Optional output dimensionality override.
         """
         # Create ConnectionManager internally — preserves existing caller interface
         conn = ConnectionManager(uri=uri, user=user, password=password)
@@ -179,9 +205,45 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         
         # Circuit breaker for Neo4j connection failures
         self.circuit_breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=30)
-        self.openai_client = OpenAI(api_key=openai_key) if openai_key else None
+        legacy_provider = embedding_provider
+        if legacy_provider is None and config is None and openai_key is not None:
+            # Backward compatibility: old callers passed only `openai_key=` and
+            # expected the code path to use OpenAI without consulting module config.
+            legacy_provider = "openai"
+
+        legacy_api_key = embedding_api_key
+        if legacy_api_key is None and legacy_provider == "openai":
+            legacy_api_key = openai_key
+        self.embedding_runtime: EmbeddingRuntimeConfig = resolve_embedding_runtime(
+            "code",
+            config=config,
+            repo_root=repo_root,
+            provider=legacy_provider,
+            model=embedding_model,
+            api_key=legacy_api_key,
+            base_url=embedding_base_url,
+            output_dimensions=embedding_dimensions,
+        )
+        self.embedding_service: EmbeddingService | None = None
+        if self.embedding_runtime.api_key:
+            self.embedding_service = EmbeddingService(
+                provider=self.embedding_runtime.provider,
+                api_key=self.embedding_runtime.api_key,
+                model=self.embedding_runtime.model,
+                base_url=self.embedding_runtime.base_url,
+                output_dimensions=self.embedding_runtime.dimensions,
+            )
+        self.EMBEDDING_MODEL = self.embedding_runtime.model
+        self.VECTOR_DIMENSIONS = self.embedding_runtime.dimensions
+        # Backward-compatible test hook for legacy OpenAI-specific unit tests.
+        self.openai_client = (
+            getattr(self.embedding_service, "_client", None)
+            if self.embedding_runtime.provider == "openai" and self.embedding_service is not None
+            else None
+        )
         self.parsers = self._init_parsers()
         self.repo_root = repo_root
+        self.repo_id = str(repo_root.resolve()) if repo_root else None
         self.token_usage = {
             "embedding_tokens": 0,
             "embedding_calls": 0,
@@ -236,6 +298,10 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                     return True
         return False
 
+    def _normalize_rel_path(self, rel_path: str) -> str:
+        """Store all repo-relative paths in Neo4j using forward slashes."""
+        return rel_path.replace("\\", "/").strip()
+
     def _should_prune_file(
         self, rel_path: str, repo_path: Path, supported_extensions: Set[str]
     ) -> bool:
@@ -254,33 +320,106 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
 
         return not (repo_path / rel_obj).exists()
 
-    def _delete_file_subgraph(self, session: neo4j.Session, rel_path: str):
+    def _delete_file_subgraph(self, session: neo4j.Session, repo_id: str, rel_path: str):
         """Delete one File node and all derived entities/chunks."""
         session.run(
             """
-            MATCH (f:File {path: $path})-[:DEFINES]->(entity)
+            MATCH (f:File {repo_id: $repo_id, path: $path})-[:DEFINES]->(entity)
             OPTIONAL MATCH (chunk:Chunk)-[:DESCRIBES]->(entity)
             DETACH DELETE chunk, entity
             """,
+            repo_id=repo_id,
             path=rel_path,
         )
-        session.run("MATCH (f:File {path: $path}) DETACH DELETE f", path=rel_path)
+        session.run(
+            "MATCH (f:File {repo_id: $repo_id, path: $path}) DETACH DELETE f",
+            repo_id=repo_id,
+            path=rel_path,
+        )
 
     def _init_parsers(self) -> Dict[str, Parser]:
-        """Initializes Tree-sitter parsers for Python and JS/TS."""
-        parsers = {}
+        """Initialize the canonical parser and expose its parser cache."""
+        code_parser = CodeParser()
+        self._code_parser = code_parser
+        return code_parser.parsers
 
-        # Python
-        py_lang = Language(tree_sitter_python.language())
-        parsers[".py"] = Parser(py_lang)
+    def _get_code_parser(self) -> CodeParser:
+        """Return the shared parser instance, creating it lazily if tests stub init."""
+        parser = getattr(self, "_code_parser", None)
+        if parser is None:
+            parser = CodeParser()
+            self._code_parser = parser
+            self.parsers = parser.parsers
+        return parser
 
-        # JavaScript/TypeScript
-        js_lang = Language(tree_sitter_javascript.language())
-        js_parser = Parser(js_lang)
-        for ext in [".js", ".jsx", ".ts", ".tsx"]:
-            parsers[ext] = js_parser
+    def _set_repo_context(self, repo_path: Path) -> tuple[Path, str]:
+        """Persist the active repo root and return its stable repo_id."""
+        resolved = repo_path.resolve()
+        self.repo_root = resolved
+        self.repo_id = str(resolved)
+        return resolved, self.repo_id
 
-        return parsers
+    def _require_repo_context(self, repo_path: Optional[Path] = None) -> tuple[Path, str]:
+        """Resolve the active repository context for one graph operation."""
+        candidate = repo_path or self.repo_root
+        if not candidate:
+            raise ValueError("repo_path must be provided either in __init__ or as parameter")
+        return self._set_repo_context(Path(candidate))
+
+    def _upsert_file_node(
+        self,
+        session: neo4j.Session,
+        *,
+        repo_id: str,
+        rel_path: str,
+        file_name: str,
+        ohash: str,
+    ) -> None:
+        """Create or update one repo-scoped File node."""
+        session.run(
+            """
+            MERGE (f:File {repo_id: $repo_id, path: $path})
+            SET f.name = $name,
+                f.ohash = $ohash,
+                f.last_updated = datetime()
+            """,
+            repo_id=repo_id,
+            path=rel_path,
+            name=file_name,
+            ohash=ohash,
+        )
+
+    def _clear_file_derivatives(
+        self,
+        session: neo4j.Session,
+        *,
+        repo_id: str,
+        rel_path: str,
+    ) -> None:
+        """Delete derived entities, chunks, and outgoing structural edges for one file."""
+        session.run(
+            """
+            MATCH (f:File {repo_id: $repo_id, path: $path})-[:DEFINES]->(entity)
+            OPTIONAL MATCH (chunk:Chunk {repo_id: $repo_id})-[:DESCRIBES]->(entity)
+            DETACH DELETE chunk, entity
+            """,
+            repo_id=repo_id,
+            path=rel_path,
+        )
+        session.run(
+            """
+            MATCH (f:File {repo_id: $repo_id, path: $path})-[r:IMPORTS]->()
+            DELETE r
+            """,
+            repo_id=repo_id,
+            path=rel_path,
+        )
+
+    def _parse_source_file(self, full_path: Path) -> tuple[str, dict[str, Any]]:
+        """Read and parse one source file through the canonical parser."""
+        code_content = full_path.read_text(errors="ignore")
+        parsed = self._get_code_parser().parse_file(code_content, full_path.suffix)
+        return code_content, parsed
 
     def ingest(self, source: Any) -> dict[str, Any]:
         """Ingest a repository directory. Wraps the existing multi-pass pipeline.
@@ -314,10 +453,24 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         logger.info("🚀 [Pass 0] Configuring Database Constraints & Indexes...")
 
         queries = [
-            # 1. Uniqueness Constraints (Critical for Merge performance)
-            "CREATE CONSTRAINT file_path_unique IF NOT EXISTS FOR (f:File) REQUIRE f.path IS UNIQUE",
-            "CREATE CONSTRAINT function_sig_unique IF NOT EXISTS FOR (f:Function) REQUIRE f.signature IS UNIQUE",
-            "CREATE CONSTRAINT class_name_unique IF NOT EXISTS FOR (c:Class) REQUIRE c.qualified_name IS UNIQUE",
+            # 1. Drop legacy single-repo constraints so the graph can hold
+            # multiple repositories without path/signature collisions.
+            "DROP CONSTRAINT file_path_unique IF EXISTS",
+            "DROP CONSTRAINT function_sig_unique IF EXISTS",
+            "DROP CONSTRAINT class_name_unique IF EXISTS",
+            # 2. Repo-scoped uniqueness constraints.
+            (
+                "CREATE CONSTRAINT file_repo_path_unique IF NOT EXISTS "
+                "FOR (f:File) REQUIRE (f.repo_id, f.path) IS UNIQUE"
+            ),
+            (
+                "CREATE CONSTRAINT function_repo_sig_unique IF NOT EXISTS "
+                "FOR (f:Function) REQUIRE (f.repo_id, f.signature) IS UNIQUE"
+            ),
+            (
+                "CREATE CONSTRAINT class_repo_name_unique IF NOT EXISTS "
+                "FOR (c:Class) REQUIRE (c.repo_id, c.qualified_name) IS UNIQUE"
+            ),
             # 2. Vector Index for Hybrid Search
             f"""
             CREATE VECTOR INDEX code_embeddings IF NOT EXISTS
@@ -355,8 +508,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
 
     @retry_on_openai_error(max_retries=3, delay=1.0)
     def get_embedding(self, text: str) -> List[float]:
-        """
-        Generates embedding using OpenAI text-embedding-3-large with token tracking and truncation.
+        """Generate a code embedding using the configured provider.
 
         Args:
             text: The text to embed
@@ -364,12 +516,14 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         Returns:
             List of floats representing the embedding vector
         """
-        if self.openai_client is None:
-            logger.warning("OPENAI_API_KEY not configured; returning zero-vector embedding.")
+        if self.embedding_service is None:
+            logger.warning(
+                "No API key configured for code embedding provider '%s'; returning zero-vector embedding.",
+                self.embedding_runtime.provider,
+            )
             return [0.0] * self.VECTOR_DIMENSIONS
 
-        # Truncate text to avoid OpenAI 400 Bad Request (Limit is 8192 tokens)
-        # Using 24000 chars as safety margin for most code files.
+        # Truncate long chunks to keep request size bounded across providers.
         MAX_CHARS = 24000
 
         if len(text) > MAX_CHARS:
@@ -380,24 +534,19 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
 
         text = text.replace("\n", " ")
 
-        try:
-            response = self.openai_client.embeddings.create(
-                input=[text], model=self.EMBEDDING_MODEL
-            )
+        # Track calls for every provider. Detailed token/cost accounting remains
+        # provider-specific and is only available on some clients.
+        self.token_usage["embedding_calls"] += 1
 
-            # Track token usage
-            tokens_used = response.usage.total_tokens
-            self.token_usage["embedding_tokens"] += tokens_used
-            self.token_usage["embedding_calls"] += 1
-            self.token_usage["total_cost_usd"] = (
-                self.token_usage["embedding_tokens"] / 1_000_000
-            ) * self.COST_PER_1M_TOKENS
-
+        if self.embedding_runtime.provider == "openai":
+            client = self.openai_client or getattr(self.embedding_service, "_client", None)
+            response = client.embeddings.create(input=[text], model=self.EMBEDDING_MODEL)
+            usage = getattr(response, "usage", None)
+            if usage is not None and getattr(usage, "total_tokens", None) is not None:
+                self.token_usage["embedding_tokens"] += int(usage.total_tokens)
             return response.data[0].embedding
-        except (openai.APIError, openai.RateLimitError, openai.APIConnectionError) as e:
-            logger.error(f"❌ OpenAI Embedding Error: {e}")
-            # Return zero-vector on failure to allow pipeline to continue
-            return [0.0] * self.VECTOR_DIMENSIONS
+
+        return self.embedding_service.embed(text)
 
     # =========================================================================
     # PASS 1: STRUCTURE SCAN & CHANGE DETECTION
@@ -414,10 +563,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             repo_path: Path to repository root (defaults to self.repo_root)
             supported_extensions: Set of file extensions to process
         """
-        repo_path = repo_path or self.repo_root
-        if not repo_path:
-            raise ValueError("repo_path must be provided either in __init__ or as parameter")
-
+        repo_path, repo_id = self._require_repo_context(repo_path)
         supported_extensions = supported_extensions or {".py", ".js", ".ts", ".tsx", ".jsx"}
 
         logger.info("📂 [Pass 1] Scanning Directory Structure...")
@@ -436,14 +582,19 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                     if file_path.suffix not in supported_extensions:
                         continue
 
-                    rel_path = str(file_path.relative_to(repo_path))
+                    rel_path = self._normalize_rel_path(str(file_path.relative_to(repo_path)))
                     if self._should_ignore_path(rel_path):
                         continue
                     current_ohash = self._calculate_ohash(file_path)
 
                     # Check if file exists and hash matches (Change Detection)
                     result = session.run(
-                        "MATCH (f:File {path: $path}) RETURN f.ohash as hash", path=rel_path
+                        (
+                            "MATCH (f:File {repo_id: $repo_id, path: $path}) "
+                            "RETURN f.ohash as hash"
+                        ),
+                        repo_id=repo_id,
+                        path=rel_path,
                     ).single()
 
                     if result and result["hash"] == current_ohash:
@@ -451,15 +602,11 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                         continue
 
                     # Create/Update File Node
-                    session.run(
-                        """
-                        MERGE (f:File {path: $path})
-                        SET f.name = $name,
-                            f.ohash = $ohash,
-                            f.last_updated = datetime()
-                    """,
-                        path=rel_path,
-                        name=file_name,
+                    self._upsert_file_node(
+                        session,
+                        repo_id=repo_id,
+                        rel_path=rel_path,
+                        file_name=file_name,
                         ohash=current_ohash,
                     )
                     count += 1
@@ -467,11 +614,14 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             # Prune File nodes that are no longer indexable under current rules.
             existing_paths = [
                 record["path"]
-                for record in session.run("MATCH (f:File) RETURN f.path as path")
+                for record in session.run(
+                    "MATCH (f:File {repo_id: $repo_id}) RETURN f.path as path",
+                    repo_id=repo_id,
+                )
             ]
             for rel_path in existing_paths:
                 if self._should_prune_file(rel_path, repo_path, supported_extensions):
-                    self._delete_file_subgraph(session, rel_path)
+                    self._delete_file_subgraph(session, repo_id, rel_path)
                     pruned_count += 1
 
         logger.info(f"✅ [Pass 1] Processed {count} new/modified files.")
@@ -491,15 +641,16 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         Args:
             repo_path: Path to repository root (defaults to self.repo_root)
         """
-        repo_path = repo_path or self.repo_root
-        if not repo_path:
-            raise ValueError("repo_path must be provided either in __init__ or as parameter")
+        repo_path, repo_id = self._require_repo_context(repo_path)
 
         logger.info("🧠 [Pass 2] Extracting Entities & Creating Chunks...")
 
         with self.driver.session() as session:
             # Fetch all files that need indexing
-            result = session.run("MATCH (f:File) RETURN f.path as path")
+            result = session.run(
+                "MATCH (f:File {repo_id: $repo_id}) RETURN f.path as path",
+                repo_id=repo_id,
+            )
             files_to_process = [record["path"] for record in result]
 
             for i, rel_path in enumerate(files_to_process):
@@ -509,182 +660,122 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                 if not full_path.exists():
                     continue
 
-                code_content = full_path.read_text(errors="ignore")
-                extension = full_path.suffix
-                parser = self.parsers.get(extension)
-                if not parser:
+                _, parsed = self._parse_source_file(full_path)
+                if not parsed["classes"] and not parsed["functions"]:
                     continue
 
-                tree = parser.parse(bytes(code_content, "utf8"))
-
-                # Language-specific query to find definitions
-                if extension == ".py":
-                    query_scm = """
-                    (class_definition
-                        name: (identifier) @name
-                        body: (block) @body) @class
-                    (function_definition
-                        name: (identifier) @name
-                        body: (block) @body) @function
-                    """
-                else:  # Simple JS/TS fallback
-                    query_scm = """
-                    (class_declaration name: (identifier) @name) @class
-                    (function_declaration name: (identifier) @name) @function
-                    """
-
-                # Use updated querycursor for executing queries
-                lang = (
-                    Language(tree_sitter_python.language())
-                    if extension == ".py"
-                    else Language(tree_sitter_javascript.language())
+                self._clear_file_derivatives(session, repo_id=repo_id, rel_path=rel_path)
+                file_hash = self._calculate_ohash(full_path)
+                self._upsert_file_node(
+                    session,
+                    repo_id=repo_id,
+                    rel_path=rel_path,
+                    file_name=full_path.name,
+                    ohash=file_hash,
                 )
 
-                query = Query(lang, query_scm)
-                cursor = QueryCursor(query)
-                captures = cursor.captures(tree.root_node)
+                for class_row in parsed["classes"]:
+                    class_name = class_row["name"]
+                    class_signature = f"{rel_path}:{class_name}"
+                    class_code = class_row["code"]
+                    session.run(
+                        """
+                        MATCH (f:File {repo_id: $repo_id, path: $path})
+                        MERGE (c:Class {repo_id: $repo_id, qualified_name: $sig})
+                        SET c.name = $name,
+                            c.code = $code,
+                            c.path = $path
+                        MERGE (f)-[:DEFINES]->(c)
+                        """,
+                        repo_id=repo_id,
+                        path=rel_path,
+                        sig=class_signature,
+                        name=class_name,
+                        code=class_code,
+                    )
 
-                # Process captures
-                for tag, nodes in captures.items():
-                    for node in nodes:
-                        node_text = code_content[node.start_byte:node.end_byte]
-                        name = ""
+                    enriched_text = f"Context: File {rel_path} > Class {class_name}\n\n{class_code}"
+                    session.run(
+                        """
+                        MATCH (c:Class {repo_id: $repo_id, qualified_name: $sig})
+                        CREATE (ch:Chunk {id: randomUUID()})
+                        SET ch.repo_id = $repo_id,
+                            ch.path = $path,
+                            ch.text = $text,
+                            ch.embedding = $embedding,
+                            ch.created_at = datetime()
+                        MERGE (ch)-[:DESCRIBES]->(c)
+                        """,
+                        repo_id=repo_id,
+                        path=rel_path,
+                        sig=class_signature,
+                        text=class_code,
+                        embedding=self.get_embedding(enriched_text),
+                    )
 
-                        # Try to extract name from identifier child
-                        for child in node.children:
-                            if child.type == "identifier":
-                                name = code_content[child.start_byte:child.end_byte]
-                                break
+                for function_row in parsed["functions"]:
+                    function_name = function_row["name"]
+                    parent_class = function_row.get("parent_class", "")
+                    qualified_name = function_row.get("qualified_name") or function_name
+                    function_signature = f"{rel_path}:{qualified_name}"
+                    function_code = function_row["code"]
 
-                        if not name:
-                            continue
+                    session.run(
+                        """
+                        MATCH (f:File {repo_id: $repo_id, path: $path})
+                        MERGE (fn:Function {repo_id: $repo_id, signature: $sig})
+                        SET fn.name = $name,
+                            fn.qualified_name = $qualified_name,
+                            fn.parent_class = $parent_class,
+                            fn.code = $code,
+                            fn.path = $path
+                        MERGE (f)-[:DEFINES]->(fn)
+                        """,
+                        repo_id=repo_id,
+                        path=rel_path,
+                        sig=function_signature,
+                        name=function_name,
+                        qualified_name=qualified_name,
+                        parent_class=parent_class,
+                        code=function_code,
+                    )
 
-                        signature = f"{rel_path}:{name}"
-
-                        if tag == "class":
-                            # 1. Create Class Node
-                            session.run(
-                                """
-                                MATCH (f:File {path: $path})
-                                MERGE (c:Class {qualified_name: $sig})
-                                SET c.name = $name, c.code = $code
-                                MERGE (f)-[:DEFINES]->(c)
+                    if parent_class:
+                        class_signature = f"{rel_path}:{parent_class}"
+                        session.run(
+                            """
+                            MATCH (c:Class {repo_id: $repo_id, qualified_name: $csig})
+                            MATCH (fn:Function {repo_id: $repo_id, signature: $fsig})
+                            MERGE (c)-[:HAS_METHOD]->(fn)
                             """,
-                                path=rel_path,
-                                sig=signature,
-                                name=name,
-                                code=node_text,
-                            )
+                            repo_id=repo_id,
+                            csig=class_signature,
+                            fsig=function_signature,
+                        )
 
-                            # 2. Hybrid Chunking: Class Context
-                            # Skip if chunk already exists (avoid re-embedding)
-                            existing = session.run(
-                                """
-                                MATCH (c:Class {qualified_name: $sig})
-                                OPTIONAL MATCH (ch:Chunk)-[:DESCRIBES]->(c)
-                                RETURN ch.id as chunk_id LIMIT 1
-                            """,
-                                sig=signature,
-                            ).single()
-
-                            if not existing or not existing["chunk_id"]:
-                                # Prepend context to the vector
-                                enriched_text = f"Context: File {rel_path} > Class {name}\n\n{node_text}"
-                                embedding = self.get_embedding(enriched_text)
-
-                                session.run(
-                                    """
-                                    MATCH (c:Class {qualified_name: $sig})
-                                    CREATE (ch:Chunk {id: randomUUID()})
-                                    SET ch.text = $text,
-                                        ch.embedding = $embedding,
-                                        ch.created_at = datetime()
-                                    MERGE (ch)-[:DESCRIBES]->(c)
-                                """,
-                                    sig=signature,
-                                    text=node_text,
-                                    embedding=embedding,
-                                )
-
-                        elif tag == "function":
-                            # Check parent for Class context
-                            parent_class = ""
-                            current = node.parent
-                            while current:
-                                if current.type == "class_definition":
-                                    for child in current.children:
-                                        if child.type == "identifier":
-                                            parent_class = code_content[
-                                                child.start_byte:child.end_byte
-                                            ]
-                                            break
-                                current = current.parent
-
-                            qual_name = f"{parent_class}.{name}" if parent_class else name
-                            full_sig = f"{rel_path}:{qual_name}"
-
-                            # 1. Create Function Node
-                            session.run(
-                                """
-                                MATCH (f:File {path: $path})
-                                MERGE (fn:Function {signature: $sig})
-                                SET fn.name = $name, fn.code = $code
-                                MERGE (f)-[:DEFINES]->(fn)
-                            """,
-                                path=rel_path,
-                                sig=full_sig,
-                                name=name,
-                                code=node_text,
-                            )
-
-                            # Link to parent class if exists
-                            if parent_class:
-                                class_sig = f"{rel_path}:{parent_class}"
-                                session.run(
-                                    """
-                                    MATCH (c:Class {qualified_name: $csig})
-                                    MATCH (fn:Function {signature: $fsig})
-                                    MERGE (c)-[:HAS_METHOD]->(fn)
-                                """,
-                                    csig=class_sig,
-                                    fsig=full_sig,
-                                )
-
-                            # 2. Hybrid Chunking: Function Context
-                            # Skip if chunk already exists (avoid re-embedding)
-                            existing = session.run(
-                                """
-                                MATCH (fn:Function {signature: $sig})
-                                OPTIONAL MATCH (ch:Chunk)-[:DESCRIBES]->(fn)
-                                RETURN ch.id as chunk_id LIMIT 1
-                            """,
-                                sig=full_sig,
-                            ).single()
-
-                            if not existing or not existing["chunk_id"]:
-                                # The secret sauce: "Contextual Prefixing"
-                                context_prefix = f"File: {rel_path}"
-                                if parent_class:
-                                    context_prefix += f" > Class: {parent_class}"
-
-                                enriched_text = (
-                                    f"Context: {context_prefix} > Method: {name}\n\n{node_text}"
-                                )
-                                embedding = self.get_embedding(enriched_text)
-
-                                session.run(
-                                    """
-                                    MATCH (fn:Function {signature: $sig})
-                                    CREATE (ch:Chunk {id: randomUUID()})
-                                    SET ch.text = $text,
-                                        ch.embedding = $embedding,
-                                        ch.created_at = datetime()
-                                    MERGE (ch)-[:DESCRIBES]->(fn)
-                                """,
-                                    sig=full_sig,
-                                    text=node_text,
-                                    embedding=embedding,
-                                )
+                    context_prefix = f"File: {rel_path}"
+                    if parent_class:
+                        context_prefix += f" > Class: {parent_class}"
+                    enriched_text = (
+                        f"Context: {context_prefix} > Method: {function_name}\n\n{function_code}"
+                    )
+                    session.run(
+                        """
+                        MATCH (fn:Function {repo_id: $repo_id, signature: $sig})
+                        CREATE (ch:Chunk {id: randomUUID()})
+                        SET ch.repo_id = $repo_id,
+                            ch.path = $path,
+                            ch.text = $text,
+                            ch.embedding = $embedding,
+                            ch.created_at = datetime()
+                        MERGE (ch)-[:DESCRIBES]->(fn)
+                        """,
+                        repo_id=repo_id,
+                        path=rel_path,
+                        sig=function_signature,
+                        text=function_code,
+                        embedding=self.get_embedding(enriched_text),
+                    )
 
         logger.info("✅ [Pass 2] Entities and Semantic Chunks created.")
 
@@ -694,51 +785,17 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
 
     def _extract_python_import_modules(self, code: str) -> Set[str]:
         """Extract Python import module names from source text."""
-        parser = self.parsers.get(".py")
-        if not parser:
-            return set()
-
-        query_scm = """
-        (import_statement name: (dotted_name) @module)
-        (import_from_statement module_name: (dotted_name) @module)
-        """
-        modules: Set[str] = set()
-
-        try:
-            tree = parser.parse(bytes(code, "utf8"))
-            lang = Language(tree_sitter_python.language())
-            query = Query(lang, query_scm)
-            cursor = QueryCursor(query)
-            captures = cursor.captures(tree.root_node)
-
-            for node in captures.get("module", []):
-                module_name = code[node.start_byte:node.end_byte].strip()
-                if module_name:
-                    modules.add(module_name)
-        except (RuntimeError, AttributeError, ValueError) as e:
-            logger.warning(f"⚠️ Failed to parse Python imports: {e}")
-
-        return modules
+        parsed = self._get_code_parser().parse_file(code, ".py")
+        return set(parsed["imports"])
 
     def _extract_js_ts_import_modules(self, code: str) -> Set[str]:
-        """Extract JS/TS/TSX module specifiers from source text using regex heuristics."""
-        patterns = [
-            # import x from "mod" / import {x} from "mod" / import type {x} from "mod"
-            r'^\s*import\s+(?:type\s+)?(?:[\w*\s{},$]+\s+from\s+)?["\']([^"\']+)["\']',
-            # export {x} from "mod" / export * from "mod"
-            r'^\s*export\s+(?:type\s+)?(?:\*|\{[^}]*\})\s+from\s+["\']([^"\']+)["\']',
-            # const x = require("mod")
-            r'require\(\s*["\']([^"\']+)["\']\s*\)',
-            # import("mod")
-            r'import\(\s*["\']([^"\']+)["\']\s*\)',
-        ]
-
+        """Extract JS/TS/TSX module specifiers from source text."""
         modules: Set[str] = set()
-        for pattern in patterns:
-            for match in re.finditer(pattern, code, flags=re.MULTILINE):
-                module_name = match.group(1).strip()
-                if module_name:
-                    modules.add(module_name)
+        for extension in [".js", ".ts", ".tsx", ".jsx"]:
+            parsed = self._get_code_parser().parse_file(code, extension)
+            modules.update(parsed["imports"])
+            if modules:
+                break
         return modules
 
     def _normalize_js_ts_specifier(self, module_name: str) -> str:
@@ -765,9 +822,29 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         candidates: Set[str] = set()
 
         if source_ext == ".py":
-            normalized = module_name.strip().replace(".", "/")
-            if not normalized:
+            raw_module = module_name.strip()
+            if not raw_module:
                 return candidates
+
+            source_dir = posixpath.dirname(source_rel_path)
+            leading_dots = len(raw_module) - len(raw_module.lstrip("."))
+            remainder = raw_module.lstrip(".").replace(".", "/")
+
+            if leading_dots:
+                base_dir = source_dir
+                for _ in range(max(leading_dots - 1, 0)):
+                    base_dir = posixpath.dirname(base_dir)
+                normalized = (
+                    posixpath.normpath(posixpath.join(base_dir, remainder))
+                    if remainder
+                    else posixpath.normpath(base_dir)
+                )
+            else:
+                normalized = remainder
+
+            if not normalized or normalized.startswith("../"):
+                return candidates
+
             candidates.add(normalized)
             candidates.add(f"{normalized}.py")
             candidates.add(f"{normalized}/__init__.py")
@@ -819,15 +896,16 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         Args:
             repo_path: Path to repository root (defaults to self.repo_root)
         """
-        repo_path = repo_path or self.repo_root
-        if not repo_path:
-            raise ValueError("repo_path must be provided either in __init__ or as parameter")
+        repo_path, repo_id = self._require_repo_context(repo_path)
 
         logger.info("🕸️ [Pass 3] Linking Files via Imports...")
         supported_exts = {".py", ".js", ".jsx", ".ts", ".tsx"}
 
         with self.driver.session() as session:
-            result = session.run("MATCH (f:File) RETURN f.path as path")
+            result = session.run(
+                "MATCH (f:File {repo_id: $repo_id}) RETURN f.path as path",
+                repo_id=repo_id,
+            )
             all_paths = [r["path"] for r in result]
             path_set = set(all_paths)
             files = [path for path in all_paths if Path(path).suffix in supported_exts]
@@ -838,61 +916,46 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
 
                 if not full_path.exists():
                     logger.warning(
-                        f"⚠️ File found in graph but missing on disk (Stale): {rel_path}. Deleting node."
+                        "⚠️ File found in graph but missing on disk (stale): %s. Deleting node.",
+                        rel_path,
                     )
-                    session.run("MATCH (f:File {path: $path}) DETACH DELETE f", path=rel_path)
+                    session.run(
+                        "MATCH (f:File {repo_id: $repo_id, path: $path}) DETACH DELETE f",
+                        repo_id=repo_id,
+                        path=rel_path,
+                    )
                     continue
 
-                code = full_path.read_text(errors="ignore")
-                if source_ext == ".py":
-                    modules = self._extract_python_import_modules(code)
-                else:
-                    modules = self._extract_js_ts_import_modules(code)
+                _, parsed = self._parse_source_file(full_path)
+                modules = parsed["imports"]
 
                 # Rebuild imports for this source file to avoid stale edges.
                 session.run(
                     """
-                    MATCH (source:File {path: $src})-[r:IMPORTS]->()
+                    MATCH (source:File {repo_id: $repo_id, path: $src})-[r:IMPORTS]->()
                     DELETE r
                     """,
+                    repo_id=repo_id,
                     src=rel_path,
                 )
 
                 exact_targets: Set[str] = set()
-                fuzzy_parts: Set[str] = set()
                 for module_name in modules:
                     candidates = self._resolve_import_candidates(rel_path, module_name, source_ext)
                     matched = {candidate for candidate in candidates if candidate in path_set}
-                    if matched:
-                        exact_targets.update(matched)
-                        continue
-
-                    fuzzy_part = self._module_to_fuzzy_part(module_name, source_ext)
-                    if fuzzy_part:
-                        fuzzy_parts.add(fuzzy_part)
+                    exact_targets.update(matched)
 
                 if exact_targets:
                     session.run(
                         """
-                        MATCH (source:File {path: $src})
+                        MATCH (source:File {repo_id: $repo_id, path: $src})
                         UNWIND $targets as target_path
-                        MATCH (target:File {path: target_path})
+                        MATCH (target:File {repo_id: $repo_id, path: target_path})
                         MERGE (source)-[:IMPORTS]->(target)
                         """,
+                        repo_id=repo_id,
                         src=rel_path,
                         targets=sorted(exact_targets),
-                    )
-
-                for mod_part in sorted(fuzzy_parts):
-                    session.run(
-                        """
-                        MATCH (source:File {path: $src})
-                        MATCH (target:File)
-                        WHERE target.path CONTAINS $mod_part
-                        MERGE (source)-[:IMPORTS]->(target)
-                        """,
-                        src=rel_path,
-                        mod_part=mod_part,
                     )
 
             logger.info("✅ [Pass 3] Import graph built.")
@@ -909,28 +972,23 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         Args:
             repo_path: Path to repository root (defaults to self.repo_root)
         """
-        repo_path = repo_path or self.repo_root
-        if not repo_path:
-            raise ValueError("repo_path must be provided either in __init__ or as parameter")
+        repo_path, repo_id = self._require_repo_context(repo_path)
 
         logger.info("📞 [Pass 4] Constructing Call Graph...")
 
-        query_scm = """(call function: (identifier) @name)"""
-
         with self.driver.session() as session:
-            # Get all function definitions ordered by file
             result = session.run(
                 """
-                MATCH (f:File)-[:DEFINES]->(fn:Function)
+                MATCH (f:File {repo_id: $repo_id})-[:DEFINES]->(fn:Function)
                 RETURN f.path as path, collect({name: fn.name, sig: fn.signature}) as funcs
-            """
+                """,
+                repo_id=repo_id,
             )
             file_records = list(result)
             total_files = len(file_records)
 
             for i, record in enumerate(file_records):
                 rel_path = record["path"]
-                funcs_in_file = record["funcs"]
                 full_path = repo_path / rel_path
 
                 # Progress logging
@@ -940,45 +998,106 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                     continue
 
                 try:
-                    code = full_path.read_text(errors="ignore")
-                    tree = self.parsers[".py"].parse(bytes(code, "utf8"))
-
-                    lang = Language(tree_sitter_python.language())
-                    query = Query(lang, query_scm)
-                    cursor = QueryCursor(query)
-                    captures = cursor.captures(tree.root_node)
-
-                    # Extract all calls in the file once
-                    calls_in_file = []
-                    for tag, nodes in captures.items():
-                        for node in nodes:
-                            called_name = code[node.start_byte:node.end_byte]
-                            calls_in_file.append(called_name)
-
-                    if not calls_in_file:
+                    _, parsed = self._parse_source_file(full_path)
+                    function_rows = parsed["functions"]
+                    if not function_rows:
                         continue
 
-                    # Batch the creation of relationships for performance
-                    for func in funcs_in_file:
-                        caller_sig = func["sig"]
+                    # Clear outgoing calls for functions defined in this file so
+                    # the call graph stays idempotent across rebuilds.
+                    session.run(
+                        """
+                        MATCH (:File {repo_id: $repo_id, path: $path})-[:DEFINES]->(fn:Function)-[r:CALLS]->()
+                        DELETE r
+                        """,
+                        repo_id=repo_id,
+                        path=rel_path,
+                    )
 
-                        # Create relationships for found calls
+                    local_candidates: dict[str, list[str]] = {}
+                    for function_row in function_rows:
+                        function_signature = f"{rel_path}:{function_row['qualified_name']}"
+                        local_candidates.setdefault(function_row["name"], []).append(
+                            function_signature
+                        )
+
+                    for function_row in function_rows:
+                        caller_signature = f"{rel_path}:{function_row['qualified_name']}"
+                        resolved_calls = []
+                        for called_name in function_row.get("calls", []):
+                            candidate_sigs = local_candidates.get(called_name, [])
+                            if len(candidate_sigs) == 1 and candidate_sigs[0] != caller_signature:
+                                resolved_calls.append(candidate_sigs[0])
+
+                        if not resolved_calls:
+                            continue
+
                         session.run(
                             """
-                            UNWIND $calls as called_name
-                            MATCH (caller:Function {signature: $caller_sig})
-                            MATCH (callee:Function {name: called_name})
-                            WHERE caller <> callee
+                            MATCH (caller:Function {repo_id: $repo_id, signature: $caller_sig})
+                            UNWIND $callee_sigs as callee_sig
+                            MATCH (callee:Function {repo_id: $repo_id, signature: callee_sig})
                             MERGE (caller)-[:CALLS]->(callee)
-                        """,
-                            caller_sig=caller_sig,
-                            calls=calls_in_file,
+                            """,
+                            repo_id=repo_id,
+                            caller_sig=caller_signature,
+                            callee_sigs=sorted(set(resolved_calls)),
                         )
 
                 except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
                     logger.warning(f"⚠️ Failed to process calls in {rel_path}: {e}")
 
             print(f"\n✅ [Pass 4] Call Graph approximation complete. Processed {total_files} files.")
+
+    def reindex_file(
+        self,
+        rel_path: str,
+        *,
+        repo_path: Optional[Path] = None,
+    ) -> None:
+        """Rebuild all derived graph state for one file.
+
+        This is the watcher-safe single-file path used for create/modify events.
+        It keeps file structure, imports, and conservative same-file call edges
+        in sync without forcing a full repository rebuild.
+        """
+        repo_path, repo_id = self._require_repo_context(repo_path)
+        normalized_path = self._normalize_rel_path(rel_path)
+        full_path = repo_path / normalized_path
+
+        if not full_path.exists():
+            raise FileNotFoundError(full_path)
+
+        _, parsed = self._parse_source_file(full_path)
+        file_hash = self._calculate_ohash(full_path)
+
+        with self.driver.session() as session:
+            self._upsert_file_node(
+                session,
+                repo_id=repo_id,
+                rel_path=normalized_path,
+                file_name=full_path.name,
+                ohash=file_hash,
+            )
+
+        # Reuse the multi-pass logic for one file by re-running the passes on the
+        # repo. This keeps the watcher behavior aligned with the main pipeline
+        # until a dedicated incremental graph-updater is carved out.
+        self.pass_2_entity_definition(repo_path)
+        self.pass_3_imports(repo_path)
+        self.pass_4_call_graph(repo_path)
+
+    def delete_file(
+        self,
+        rel_path: str,
+        *,
+        repo_path: Optional[Path] = None,
+    ) -> None:
+        """Delete one file and its derived graph state from the active repo."""
+        _, repo_id = self._require_repo_context(repo_path)
+        normalized_path = self._normalize_rel_path(rel_path)
+        with self.driver.session() as session:
+            self._delete_file_subgraph(session, repo_id, normalized_path)
 
     # =========================================================================
     # FULL PIPELINE
@@ -999,9 +1118,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         Returns:
             Dict with pipeline execution metrics
         """
-        repo_path = repo_path or self.repo_root
-        if not repo_path:
-            raise ValueError("repo_path must be provided either in __init__ or as parameter")
+        repo_path, _ = self._require_repo_context(repo_path)
 
         start_time = time.time()
         print("=" * 60)
@@ -1040,13 +1157,21 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
     # SEMANTIC SEARCH (for MCP Server)
     # =========================================================================
 
-    def semantic_search(self, query: str, limit: int = 5) -> List[Dict]:
+    def semantic_search(
+        self,
+        query: str,
+        limit: int = 5,
+        *,
+        repo_id: str | None = None,
+    ) -> List[Dict]:
         """
         Hybrid Search for the Agent using vector similarity.
 
         Args:
             query: Natural language query
             limit: Maximum number of results to return
+            repo_id: Optional explicit repository scope. Defaults to the active
+                builder repo when available.
 
         Returns:
             List of dicts with name, signature, score, and text
@@ -1065,46 +1190,80 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             cypher = """
             CALL db.index.fulltext.queryNodes('entity_text_search', $search_query)
             YIELD node, score
+            WHERE node.repo_id = $repo_id
             OPTIONAL MATCH (ch:Chunk)-[:DESCRIBES]->(node)
             RETURN
                 coalesce(node.name, node.path, 'Unknown') as name,
                 coalesce(node.signature, node.qualified_name, '') as sig,
                 score,
-                coalesce(ch.text, node.docstring, node.path, '') as text
+                coalesce(ch.text, node.docstring, node.path, '') as text,
+                node.path as path,
+                node.repo_id as repo_id,
+                labels(node) as labels
             ORDER BY score DESC
             LIMIT $limit
             """
             with self.driver.session() as session:
-                res = session.run(cypher, search_query=query, limit=limit)
+                res = session.run(
+                    cypher,
+                    search_query=query,
+                    limit=limit,
+                    repo_id=resolved_repo_id,
+                )
                 return [dict(r) for r in res]
 
         def _execute_search():
+            if resolved_repo_id is None:
+                raise ValueError("repo_id is required for code semantic_search")
+
             vector = self.get_embedding(query)
             if not _is_valid_vector(vector):
                 logger.warning(
-                    "Semantic query vector invalid (likely missing OpenAI key or zero-vector); "
+                    "Semantic query vector invalid (likely missing code embedding API key or zero-vector); "
                     "falling back to full-text search."
                 )
                 return _fallback_fulltext_search()
 
             cypher = """
-            CALL db.index.vector.queryNodes('code_embeddings', $limit, $vec)
+            CALL db.index.vector.queryNodes('code_embeddings', $candidate_limit, $vec)
             YIELD node, score
+            WHERE node.repo_id = $repo_id
             MATCH (node)-[:DESCRIBES]->(target)
-            RETURN target.name as name, target.signature as sig, score, node.text as text
+            WHERE target.repo_id = $repo_id
+            RETURN
+                target.name as name,
+                coalesce(target.signature, target.qualified_name, target.path) as sig,
+                score,
+                node.text as text,
+                target.path as path,
+                target.repo_id as repo_id,
+                labels(target) as labels
             ORDER BY score DESC
+            LIMIT $limit
             """
             with self.driver.session() as session:
-                res = session.run(cypher, limit=limit, vec=vector)
+                res = session.run(
+                    cypher,
+                    limit=limit,
+                    candidate_limit=max(limit * 8, limit),
+                    vec=vector,
+                    repo_id=resolved_repo_id,
+                )
                 return [dict(r) for r in res]
-        
+
+        resolved_repo_id = repo_id or self.repo_id
         return self.circuit_breaker.call(_execute_search)
 
     # =========================================================================
     # DEPENDENCY ANALYSIS (for MCP Server)
     # =========================================================================
 
-    def get_file_dependencies(self, file_path: str) -> Dict[str, List[str]]:
+    def get_file_dependencies(
+        self,
+        file_path: str,
+        *,
+        repo_id: str | None = None,
+    ) -> Dict[str, List[str]]:
         """
         Get files that this file imports, and files that import this file.
 
@@ -1115,15 +1274,23 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             Dict with 'imports' and 'imported_by' lists
         """
         cypher = """
-        MATCH (f:File {path: $path})
+        MATCH (f:File {repo_id: $repo_id, path: $path})
         OPTIONAL MATCH (f)-[:IMPORTS]->(imported)
         OPTIONAL MATCH (dependent)-[:IMPORTS]->(f)
         RETURN
             collect(DISTINCT imported.path) as imports,
             collect(DISTINCT dependent.path) as imported_by
         """
+        normalized_path = self._normalize_rel_path(file_path)
+        resolved_repo_id = repo_id or self.repo_id
+        if resolved_repo_id is None:
+            raise ValueError("repo_id is required for code dependency lookup")
         with self.driver.session() as session:
-            result = session.run(cypher, path=file_path).single()
+            result = session.run(
+                cypher,
+                repo_id=resolved_repo_id,
+                path=normalized_path,
+            ).single()
             if result:
                 return {
                     "imports": result["imports"] or [],
@@ -1132,7 +1299,11 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             return {"imports": [], "imported_by": []}
 
     def identify_impact(
-        self, file_path: str, max_depth: int = 3
+        self,
+        file_path: str,
+        max_depth: int = 3,
+        *,
+        repo_id: str | None = None,
     ) -> Dict[str, List[Dict]]:
         """
         Identify the blast radius of changes to a file.
@@ -1147,8 +1318,11 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         """
         def _execute_impact_analysis():
             depth = max(1, int(max_depth))
+            resolved_repo_id = repo_id or self.repo_id
+            if resolved_repo_id is None:
+                raise ValueError("repo_id is required for impact analysis")
             cypher = f"""
-            MATCH path = (f:File {{path: $path}})<-[:IMPORTS*1..{depth}]-(dependent)
+            MATCH path = (f:File {{repo_id: $repo_id, path: $path}})<-[:IMPORTS*1..{depth}]-(dependent:File {{repo_id: $repo_id}})
             RETURN DISTINCT
                 dependent.path as path,
                 length(path) as depth,
@@ -1156,7 +1330,11 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             ORDER BY depth, path
             """
             with self.driver.session() as session:
-                result = session.run(cypher, path=file_path)
+                result = session.run(
+                    cypher,
+                    repo_id=resolved_repo_id,
+                    path=self._normalize_rel_path(file_path),
+                )
                 affected_files = [
                     {"path": r["path"], "depth": r["depth"], "impact_type": r["impact_type"]}
                     for r in result
@@ -1179,7 +1357,13 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
 
         return self.circuit_breaker.call(_execute_check)
 
-    def get_git_file_history(self, file_path: str, limit: int = 20) -> List[Dict[str, Any]]:
+    def get_git_file_history(
+        self,
+        file_path: str,
+        limit: int = 20,
+        *,
+        repo_id: str | None = None,
+    ) -> List[Dict[str, Any]]:
         """
         Return commit history touching a specific file.
 
@@ -1192,8 +1376,11 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         """
         def _execute_history_query() -> List[Dict[str, Any]]:
             safe_limit = max(1, int(limit))
+            resolved_repo_id = repo_id or self.repo_id
+            if resolved_repo_id is None:
+                raise ValueError("repo_id is required for git file history lookup")
             cypher = """
-            MATCH (c:GitCommit)-[:TOUCHES]->(fv:GitFileVersion {path: $path})
+            MATCH (c:GitCommit {repo_id: $repo_id})-[:TOUCHES]->(fv:GitFileVersion {repo_id: $repo_id, path: $path})
             OPTIONAL MATCH (c)-[:AUTHORED_BY]->(a:GitAuthor)
             RETURN
                 c.sha as sha,
@@ -1209,7 +1396,12 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             LIMIT $limit
             """
             with self.driver.session() as session:
-                result = session.run(cypher, path=file_path, limit=safe_limit)
+                result = session.run(
+                    cypher,
+                    repo_id=resolved_repo_id,
+                    path=self._normalize_rel_path(file_path),
+                    limit=safe_limit,
+                )
                 return [dict(record) for record in result]
 
         return self.circuit_breaker.call(_execute_history_query)

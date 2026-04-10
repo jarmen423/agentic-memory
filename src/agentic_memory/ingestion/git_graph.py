@@ -417,7 +417,7 @@ class GitGraphIngestor:
                     fv.deletions = file.deletions
                 MERGE (commit)-[:TOUCHES]->(fv)
                 WITH fv, file
-                OPTIONAL MATCH (code_file:File {path: file.path})
+                OPTIONAL MATCH (code_file:File {repo_id: $repo_id, path: file.path})
                 FOREACH (_ IN CASE WHEN code_file IS NULL THEN [] ELSE [1] END |
                     MERGE (fv)-[:VERSION_OF]->(code_file)
                 )

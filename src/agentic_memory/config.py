@@ -51,18 +51,26 @@ DEFAULT_CONFIG = {
     },
     "modules": {
         "code": {
-            "embedding_provider": "openai",
-            "embedding_model": "text-embedding-3-large",
+            # Code defaults to Gemini so code memory can live in the same
+            # embedding family as the rest of the multimodal Agentic Memory
+            # system. Operators can still switch code to another text embedding
+            # provider when they want a completely separate code-memory lane.
+            "embedding_provider": "gemini",
+            "embedding_model": "gemini-embedding-2-preview",
             "embedding_dimensions": 3072,
         },
         "web": {
             "embedding_provider": "gemini",
             "embedding_model": "gemini-embedding-2-preview",
+            # Gemini embedding defaults to 3072 dimensions. Keep the repo
+            # default aligned with the index schema so new configs do not
+            # create query-time/index-time dimension mismatches.
             "embedding_dimensions": 3072,
         },
         "chat": {
             "embedding_provider": "gemini",
             "embedding_model": "gemini-embedding-2-preview",
+            # Conversation memory uses the same Gemini embedding default.
             "embedding_dimensions": 3072,
         },
     },
@@ -126,9 +134,13 @@ class Config:
         self.config_dir.mkdir(exist_ok=True)
         payload = copy.deepcopy(config)
 
-        # Don't save empty api_key - let it fall back to env var
+        # Don't save empty provider keys - let them fall back to env vars.
         if payload.get("openai", {}).get("api_key") == "":
             payload["openai"]["api_key"] = None
+        if payload.get("gemini", {}).get("api_key") == "":
+            payload["gemini"]["api_key"] = None
+        if payload.get("nemotron", {}).get("api_key") == "":
+            payload["nemotron"]["api_key"] = None
 
         with open(self.config_file, "w") as f:
             json.dump(payload, f, indent=2)

@@ -59,6 +59,7 @@ Evaluation references:
 1. **Agentic Memory installed:** See [INSTALLATION.md](INSTALLATION.md)
 2. **Repository initialized:** Run `agentic-memory init` in your project
 3. **Neo4j running:** The server requires a live connection
+4. **Code embedding provider configured:** New repos default to Gemini for code memory so they stay aligned with the rest of the multimodal Agentic Memory system
 
 ### Start the Server
 
@@ -90,8 +91,16 @@ If you don't have a local `.codememory/config.json`, the server will use environ
 export NEO4J_URI="bolt://localhost:7687"
 export NEO4J_USER="neo4j"
 export NEO4J_PASSWORD="password"
-export OPENAI_API_KEY="sk-..."
+export GEMINI_API_KEY="your-gemini-key"
 
+agentic-memory serve
+```
+
+If you intentionally want code memory on a separate text embedding lane:
+
+```bash
+export CODE_EMBEDDING_PROVIDER="openai"
+export OPENAI_API_KEY="sk-..."
 agentic-memory serve
 ```
 
@@ -121,7 +130,7 @@ open ~/Library/Application\ Support/Claude
         "NEO4J_URI": "bolt://localhost:7687",
         "NEO4J_USER": "neo4j",
         "NEO4J_PASSWORD": "password",
-        "OPENAI_API_KEY": "sk-your-api-key-here"
+        "GEMINI_API_KEY": "your-gemini-key"
       }
     }
   }
@@ -148,7 +157,7 @@ notepad "%APPDATA%\Claude\claude_desktop_config.json"
         "NEO4J_URI": "bolt://localhost:7687",
         "NEO4J_USER": "neo4j",
         "NEO4J_PASSWORD": "password",
-        "OPENAI_API_KEY": "sk-your-api-key-here"
+        "GEMINI_API_KEY": "your-gemini-key"
       }
     }
   }
@@ -619,11 +628,13 @@ agentic-memory serve
 
 **Solutions:**
 
-1. **Check OpenAI API key:**
+1. **Check the configured code embedding API key:**
 ```bash
+echo $GEMINI_API_KEY
+# or
+echo $GOOGLE_API_KEY
+# or, if you intentionally set CODE_EMBEDDING_PROVIDER=openai:
 echo $OPENAI_API_KEY
-
-# Should start with: sk-
 ```
 
 2. **Verify embeddings were created:**
@@ -639,7 +650,7 @@ MATCH (ch:Chunk) RETURN count(ch) as total_chunks;
 
 3. **Re-index if needed:**
 ```bash
-agentic-memory index --force
+agentic-memory index
 ```
 
 ---
@@ -737,7 +748,7 @@ ls -la .codememory/config.json
         "NEO4J_URI": "bolt://localhost:7687",
         "NEO4J_USER": "neo4j",
         "NEO4J_PASSWORD": "password",
-        "OPENAI_API_KEY": "sk-..."
+        "GEMINI_API_KEY": "your-gemini-key"
       }
     }
   }

@@ -11,7 +11,34 @@
   - docs and setup position context-engine mode as an upgrade path when users do not already prefer another engine
 - Shared memory scope is `per user workspace`, not per device. Devices can connect however they want; the backend treats them as one memory workspace with device-aware metadata.
 - Keep all existing integrations intact. OpenClaw is an additive package and onboarding path, not a replacement for MCP, extension, proxy, or desktop-shell surfaces.
-- This plan assumes OpenClaw’s current plugin model with separate `memory` and `contextEngine` slots and a built-in `legacy` context engine. Sources: [Plugins](https://docs.openclaw.ai/plugins), [Context Engine](https://docs.openclaw.ai/context-engine), [Context](https://docs.openclaw.ai/context/).
+- This plan assumes OpenClaw's current plugin model with separate `memory` and `contextEngine` slots and a built-in `legacy` context engine. Sources: [Plugins](https://docs.openclaw.ai/plugins), [Context Engine](https://docs.openclaw.ai/context-engine), [Context](https://docs.openclaw.ai/context/).
+
+## Important Clarification: Memory vs Context Engine
+
+- `plugins.slots.memory = "agentic-memory"`
+  - this is the real Agentic Memory runtime that OpenClaw uses for memory
+    search and canonical reads
+- `plugins.slots.contextEngine = "agentic-memory"`
+  - this is currently still needed as the lifecycle-hook surface for turn
+    capture
+  - in `capture_only` mode it does **not** add custom context to prompts
+  - in `augment_context` mode it also performs context assembly through
+    `/openclaw/context/resolve`
+
+The product model remains:
+
+- memory owns capture, storage, retrieval, and canonical reads
+- context augmentation is optional and downstream of memory
+
+The remaining reason we still occupy the OpenClaw `contextEngine` slot in
+`capture_only` mode is a host integration constraint: the per-turn callbacks we
+need for capture currently arrive through that surface.
+
+So the correct interpretation of `capture_only` is:
+
+- memory on
+- context augmentation off
+- context-engine slot still used internally as the turn-capture event tap
 
 ## Progress Snapshot
 
@@ -71,8 +98,8 @@
   - exposes config flags so users can enable memory only or memory + context engine without reinstalling
 - Default generated OpenClaw config:
   - `plugins.slots.memory = "agentic-memory"`
-  - `plugins.slots.contextEngine` remains `legacy`
-  - plugin entry includes backend URL, API key, workspace ID, device ID, and optional project mapping
+  - `plugins.slots.contextEngine = "agentic-memory"` for lifecycle capture
+  - plugin entry includes backend URL, API key, workspace ID, device ID, agent ID, and `mode`
 
 ### 2. Backend/API additions
 
@@ -87,11 +114,18 @@
   - `POST /openclaw/memory/search`
     - input: query, workspace_id, device_id, agent_id, optional project_id, session_id, limit
     - output: ranked memory hits with provenance
+  - `POST /openclaw/memory/ingest-turn`
+    - input: one OpenClaw turn plus identity fields
+    - behavior: resolves the active project server-side when no explicit project is passed
   - `POST /openclaw/context/resolve`
     - input: current turn, workspace_id, device_id, agent_id, session_id, optional project_id, token budget hints
     - output: ordered context blocks plus optional `system_prompt_addition`
   - `POST /openclaw/session/register`
     - records device/workspace/session metadata and updates product-state integration health
+  - `POST /openclaw/project/activate`
+  - `POST /openclaw/project/deactivate`
+  - `POST /openclaw/project/status`
+  - `POST /openclaw/project/automation`
 - Keep existing generic routes intact. OpenClaw routes are thin adapters over current search/ingest primitives.
 - `Status`
   - `Done:` all items in this section are implemented
@@ -101,21 +135,21 @@
 ### 3. Memory and context behavior
 
 - Memory plugin behavior:
-  - writes new turns to Agentic Memory using `chat_openclaw`
+  - writes new turns to Agentic Memory using `/openclaw/memory/ingest-turn`
   - retrieves from shared workspace memory across devices
   - boosts same-project and same-session results, but never hides cross-device workspace memory
 - Context-engine behavior:
-  - uses Agentic Memory retrieval during `assemble`
+  - uses Agentic Memory retrieval during `assemble` only when mode is `augment_context`
   - returns ordered context blocks and optional prompt guidance
   - delegates compaction to OpenClaw runtime in v1 unless memory-specific compaction is clearly needed
 - Shipping behavior:
   - package both plugins together
-  - recommend users start in memory-only mode
-  - allow one config switch to turn the Agentic Memory context engine on for evaluation
+  - recommend users start in `capture_only` mode
+  - allow one config switch to turn `augment_context` on for evaluation
 - `Status`
   - `Done:` backend context resolution contract and shared-memory search contract
-  - `Done:` desktop shell and CLI can configure memory-only vs context-engine mode
-  - `Done:` the native OpenClaw runtime now calls `/openclaw/session/register`, `/openclaw/memory/search`, `/openclaw/context/resolve`, and `/ingest/conversation`
+  - `Done:` desktop shell and CLI can configure `capture_only` vs `augment_context`
+  - `Done:` the native OpenClaw runtime now calls `/openclaw/session/register`, `/openclaw/memory/search`, `/openclaw/memory/ingest-turn`, and `/openclaw/context/resolve`
   - `Done:` conversation-turn canonical reads now flow through `/openclaw/memory/read`
   - `Partial:` non-conversation reads still fall back to cached search snippets
 
@@ -125,11 +159,15 @@
   - `agentic-memory openclaw-setup`
 - Add a dedicated OpenClaw-native setup command:
   - `openclaw agentic-memory setup`
+- Add project lifecycle commands:
+  - `openclaw agentic-memory project start <project-id> --session-id <session-id>`
+  - `openclaw agentic-memory project status --session-id <session-id>`
+  - `openclaw agentic-memory project stop --session-id <session-id>`
 - That command should:
   - verify `am-server` reachability
   - generate or patch OpenClaw plugin config
   - register `openclaw_memory` and `openclaw_context_engine` integration records in product state
-  - emit a single “next command” or “done” experience for power users
+  - emit a single "next command" or "done" experience for power users
 - Extend desktop shell with an OpenClaw integration card:
   - status for memory plugin
   - status for context engine
@@ -141,18 +179,24 @@
   - `openclaw_memory_connected`
   - `openclaw_context_enabled`
   - `openclaw_cross_device_recall_verified`
+  - `openclaw_project_activated`
+  - `openclaw_project_deactivated`
+  - `openclaw_project_automation_updated`
 - `Status`
   - `Done:`
     - shell OpenClaw setup card
     - shell verification flow hitting `/openclaw/context/resolve`
     - `agentic-memory openclaw-setup`
     - `openclaw agentic-memory setup` now writes the live OpenClaw plugin config in-place
+    - `openclaw agentic-memory project *` command family
     - `openclaw_setup_completed` event recording
   - `Partial:`
     - the Python setup command still writes a deterministic config artifact for non-OpenClaw flows
+    - project commands currently require an explicit `--session-id` because the host CLI does not yet provide the live session identity automatically
     - live OpenClaw host validation is still incomplete because the host CLI has been hanging in this environment
   - `Next:`
     - prove the native setup command end-to-end inside a responsive real OpenClaw host session
+    - remove or hide manual `--session-id` once the host exposes the active session cleanly
 
 ## Test Plan
 

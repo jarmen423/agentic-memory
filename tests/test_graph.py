@@ -29,7 +29,7 @@ class TestKnowledgeGraphBuilder:
         driver, session = mock_driver
         with patch('neo4j.GraphDatabase.driver', return_value=driver), \
              patch.object(KnowledgeGraphBuilder, '_init_parsers'), \
-             patch('agentic_memory.ingestion.graph.OpenAI'):
+             patch('agentic_memory.ingestion.graph.EmbeddingService'):
             
             builder = KnowledgeGraphBuilder(
                 uri="bolt://localhost:7687",

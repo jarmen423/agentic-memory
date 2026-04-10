@@ -7,6 +7,7 @@ from typing import Any, Iterable
 
 from agentic_memory.chat.pipeline import ConversationIngestionPipeline
 from agentic_memory.ingestion.graph import KnowledgeGraphBuilder
+from agentic_memory.server.code_search import search_code
 from agentic_memory.server.result_types import UnifiedMemoryHit, UnifiedSearchResponse
 from agentic_memory.server.tools import search_conversation_turns_sync
 from agentic_memory.temporal.seeds import (
@@ -65,9 +66,15 @@ def _normalize_code_results(
     *,
     query: str,
     limit: int,
+    repo_id: str | None = None,
 ) -> list[UnifiedMemoryHit]:
     """Run code semantic search and normalize the result shape."""
-    rows = graph.semantic_search(query, limit=limit)
+    rows = search_code(
+        graph,
+        query=query,
+        limit=limit,
+        repo_id=repo_id,
+    )
     hits: list[UnifiedMemoryHit] = []
     for row in rows:
         score = float(row.get("score", 0.0) or 0.0)
@@ -85,6 +92,9 @@ def _normalize_code_results(
                 metadata={
                     "signature": row.get("sig"),
                     "name": row.get("name"),
+                    "path": row.get("path"),
+                    "repo_id": row.get("repo_id"),
+                    "labels": row.get("labels"),
                 },
             )
         )
@@ -303,6 +313,7 @@ def search_all_memory_sync(
     query: str,
     limit: int = 10,
     project_id: str | None = None,
+    repo_id: str | None = None,
     as_of: str | None = None,
     modules: Iterable[str] | None = None,
     graph: KnowledgeGraphBuilder | None = None,
@@ -317,7 +328,23 @@ def search_all_memory_sync(
 
     if "code" in selected_modules and graph is not None:
         try:
-            hits.extend(_normalize_code_results(graph, query=query, limit=safe_limit))
+            if repo_id is None:
+                hits.extend(
+                    _normalize_code_results(
+                        graph,
+                        query=query,
+                        limit=safe_limit,
+                    )
+                )
+            else:
+                hits.extend(
+                    _normalize_code_results(
+                        graph,
+                        query=query,
+                        limit=safe_limit,
+                        repo_id=repo_id,
+                    )
+                )
         except Exception as exc:  # noqa: BLE001
             logger.warning("search_all_memory code module failed: %s", exc)
             errors.append({"module": "code", "message": str(exc)})

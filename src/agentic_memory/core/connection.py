@@ -64,12 +64,12 @@ class ConnectionManager:
             (
                 "CREATE VECTOR INDEX research_embeddings IF NOT EXISTS "
                 "FOR (n:Memory:Research) ON n.embedding "
-                "OPTIONS { indexConfig: { `vector.dimensions`: 768, `vector.similarity_function`: 'cosine' }}"
+                "OPTIONS { indexConfig: { `vector.dimensions`: 3072, `vector.similarity_function`: 'cosine' }}"
             ),
             (
                 "CREATE VECTOR INDEX chat_embeddings IF NOT EXISTS "
                 "FOR (n:Memory:Conversation) ON n.embedding "
-                "OPTIONS { indexConfig: { `vector.dimensions`: 768, `vector.similarity_function`: 'cosine' }}"
+                "OPTIONS { indexConfig: { `vector.dimensions`: 3072, `vector.similarity_function`: 'cosine' }}"
             ),
             (
                 "CREATE CONSTRAINT entity_unique IF NOT EXISTS "
@@ -82,11 +82,12 @@ class ConnectionManager:
         logger.info("Database setup complete: indexes and constraints created (if not existing).")
 
     def fix_vector_index_dimensions(self) -> None:
-        """Drop and recreate research_embeddings and chat_embeddings at correct 768d dimensions.
+        """Drop and recreate research/chat vector indexes at the default 3072d.
 
-        Needed for databases that already ran setup_database() with the old 3072d DDL.
-        IF NOT EXISTS prevents setup_database() from correcting an already-existing index,
-        so this method drops first then creates unconditionally.
+        This repairs databases that were provisioned with the wrong research/chat
+        dimensions. IF NOT EXISTS prevents setup_database() from correcting an
+        already-existing index, so this method drops first then creates
+        unconditionally.
 
         Safe to call on fresh databases (DROP IF EXISTS is a no-op when index absent).
         """
@@ -98,12 +99,12 @@ class ConnectionManager:
             (
                 "CREATE VECTOR INDEX research_embeddings "
                 "FOR (n:Memory:Research) ON n.embedding "
-                "OPTIONS { indexConfig: { `vector.dimensions`: 768, `vector.similarity_function`: 'cosine' }}"
+                "OPTIONS { indexConfig: { `vector.dimensions`: 3072, `vector.similarity_function`: 'cosine' }}"
             ),
             (
                 "CREATE VECTOR INDEX chat_embeddings "
                 "FOR (n:Memory:Conversation) ON n.embedding "
-                "OPTIONS { indexConfig: { `vector.dimensions`: 768, `vector.similarity_function`: 'cosine' }}"
+                "OPTIONS { indexConfig: { `vector.dimensions`: 3072, `vector.similarity_function`: 'cosine' }}"
             ),
         ]
         with self.session() as s:
@@ -112,7 +113,7 @@ class ConnectionManager:
             for stmt in create_statements:
                 s.run(stmt)
         logger.info(
-            "Vector index migration complete: research_embeddings and chat_embeddings reset to 768d."
+            "Vector index migration complete: research_embeddings and chat_embeddings reset to 3072d."
         )
 
     def close(self) -> None:

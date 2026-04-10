@@ -33,6 +33,19 @@ Live web and chat runtime factories now resolve embedding configuration from:
 - `gemini`
 - `nemotron`
 
+## Default code embedding path
+
+New repositories default the `code` module to Gemini:
+
+- provider: `gemini`
+- model: `gemini-embedding-2-preview`
+- dimensions: `3072`
+
+That default keeps code memory aligned with the rest of the multimodal Agentic
+Memory system. If you want code memory intentionally isolated from the rest of
+the graph-retrieval stack, switch the `code` module to another text embedding
+provider such as OpenAI.
+
 ## Useful embedding env vars
 
 Global:
@@ -107,10 +120,16 @@ $env:OPENAI_API_KEY="..."
 
 ```json
 {
+  "gemini": {
+    "api_key": null
+  },
+  "openai": {
+    "api_key": null
+  },
   "modules": {
     "code": {
-      "embedding_provider": "openai",
-      "embedding_model": "text-embedding-3-large",
+      "embedding_provider": "gemini",
+      "embedding_model": "gemini-embedding-2-preview",
       "embedding_dimensions": 3072
     },
     "web": {
@@ -126,6 +145,42 @@ $env:OPENAI_API_KEY="..."
   }
 }
 ```
+
+## Example: keep code memory separate on OpenAI
+
+```json
+{
+  "modules": {
+    "code": {
+      "embedding_provider": "openai",
+      "embedding_model": "text-embedding-3-large",
+      "embedding_dimensions": 3072
+    }
+  }
+}
+```
+
+## Shared Neo4j caution for code memory
+
+Do not mix code embedding providers inside the same live `code_embeddings`
+vector index unless you also isolate them yourself.
+
+Current code retrieval calls Neo4j like this:
+
+```cypher
+CALL db.index.vector.queryNodes('code_embeddings', $limit, $vec)
+```
+
+That code path is not currently repo-scoped or provider-scoped. So if one repo
+stores code vectors from Gemini and another stores code vectors from OpenAI in
+the same Neo4j code index, cross-repo retrieval quality becomes undefined even
+though both providers may use 3072 dimensions.
+
+Safe options today:
+
+- keep all codebases on the same code embedding provider
+- use separate Neo4j databases / instances for codebases that use different code embedding providers
+- add explicit provider or namespace isolation before sharing one code index
 
 ## Notes
 

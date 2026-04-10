@@ -21,7 +21,9 @@ import neo4j
 from agentic_memory.core.extraction_llm import resolve_extraction_llm_config
 from agentic_memory.core.request_context import get_request_id
 from agentic_memory.core.retry import retry_transient
+from agentic_memory.core.runtime_embedding import resolve_embedding_runtime
 from agentic_memory.ingestion.graph import KnowledgeGraphBuilder
+from agentic_memory.server.code_search import search_code
 from agentic_memory.server.unified_search import search_all_memory_sync
 from agentic_memory.temporal.seeds import (
     collect_seed_entities,
@@ -189,24 +191,32 @@ def init_graph():
         uri = neo4j_cfg["uri"]
         user = neo4j_cfg["user"]
         password = neo4j_cfg["password"]
-        openai_key = config.get_openai_key()
         logger.info(f"📂 Using config from: {config.config_file}")
     else:
         # Fall back to environment variables
         uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
         user = os.getenv("NEO4J_USER") or os.getenv("NEO4J_USERNAME", "neo4j")
         password = os.getenv("NEO4J_PASSWORD", "password")
-        openai_key = os.getenv("OPENAI_API_KEY")
         logger.info("🔧 Using environment variables for configuration")
 
-    if not openai_key:
-        logger.warning("⚠️ OPENAI_API_KEY not set - semantic search will not work")
+    runtime = resolve_embedding_runtime(
+        "code",
+        config=config if config and config.exists() else None,
+        repo_root=repo_root,
+    )
+    if not runtime.api_key:
+        logger.warning(
+            "⚠️ Code embedding API key not set for provider '%s' - semantic code search will not work",
+            runtime.provider,
+        )
 
     graph = KnowledgeGraphBuilder(
         uri=uri,
         user=user,
         password=password,
-        openai_key=openai_key,
+        openai_key=None,
+        config=config if config and config.exists() else None,
+        repo_root=repo_root,
     )
     logger.info(f"✅ Connected to Neo4j at {uri}")
     return graph
@@ -393,7 +403,12 @@ def _format_commit_context_output(context: Dict[str, Any], include_diff_stats: b
 @mcp.tool()
 @rate_limit
 @log_tool_call
-def search_codebase(query: str, limit: int = 5, domain: str = "code") -> str:
+def search_codebase(
+    query: str,
+    limit: int = 5,
+    domain: str = "code",
+    repo_id: str | None = None,
+) -> str:
     """
     Semantically search the codebase for functionality.
 
@@ -404,6 +419,7 @@ def search_codebase(query: str, limit: int = 5, domain: str = "code") -> str:
         query: Natural language query (e.g. "Where is the auth logic?")
         limit: Maximum number of results to return (default: 5)
         domain: Search domain route: code, git, or hybrid (default: code)
+        repo_id: Optional explicit repo scope for code and git lookups
 
     Returns:
         Formatted string with search results including scores and code snippets
@@ -419,10 +435,16 @@ def search_codebase(query: str, limit: int = 5, domain: str = "code") -> str:
 
     normalized_query = query.strip()
     safe_limit = max(1, int(limit))
+    resolved_repo_id = repo_id or current_graph.repo_id
 
     try:
         if domain_mode == "code":
-            results = current_graph.semantic_search(normalized_query, limit=safe_limit)
+            results = search_code(
+                current_graph,
+                query=normalized_query,
+                limit=safe_limit,
+                repo_id=repo_id,
+            )
             if not results:
                 return "No relevant code found."
             return validate_tool_output(_format_code_results(results))
@@ -442,13 +464,25 @@ def search_codebase(query: str, limit: int = 5, domain: str = "code") -> str:
                     _format_commit_context_output(context, include_diff_stats=False)
                 )
 
-            history = current_graph.get_git_file_history(normalized_query, limit=safe_limit)
+            if repo_id is None:
+                history = current_graph.get_git_file_history(normalized_query, limit=safe_limit)
+            else:
+                history = current_graph.get_git_file_history(
+                    normalized_query,
+                    limit=safe_limit,
+                    repo_id=resolved_repo_id,
+                )
             if not history:
                 return f"No relevant git history found for `{normalized_query}`."
             return validate_tool_output(_format_git_file_history(normalized_query, history))
 
         # hybrid: return both code results and git context (if query maps to file/sha)
-        code_results = current_graph.semantic_search(normalized_query, limit=safe_limit)
+        code_results = search_code(
+            current_graph,
+            query=normalized_query,
+            limit=safe_limit,
+            repo_id=repo_id,
+        )
         output = "## Hybrid Search Results\n\n"
 
         if code_results:
@@ -466,7 +500,14 @@ def search_codebase(query: str, limit: int = 5, domain: str = "code") -> str:
             else:
                 output += f"### Git Commit Context\nNo commit found for `{normalized_query}`."
         else:
-            history = current_graph.get_git_file_history(normalized_query, limit=safe_limit)
+            if repo_id is None:
+                history = current_graph.get_git_file_history(normalized_query, limit=safe_limit)
+            else:
+                history = current_graph.get_git_file_history(
+                    normalized_query,
+                    limit=safe_limit,
+                    repo_id=resolved_repo_id,
+                )
             if history:
                 output += "### Git File History\n"
                 output += _format_git_file_history(normalized_query, history)
@@ -485,7 +526,7 @@ def search_codebase(query: str, limit: int = 5, domain: str = "code") -> str:
 @mcp.tool()
 @rate_limit
 @log_tool_call
-def get_file_dependencies(file_path: str) -> str:
+def get_file_dependencies(file_path: str, repo_id: str | None = None) -> str:
     """
     Returns a list of files that this file IMPORTS and files that IMPORT this file.
 
@@ -505,7 +546,10 @@ def get_file_dependencies(file_path: str) -> str:
         return "❌ Graph not initialized. Check Neo4j connection."
 
     try:
-        deps = current_graph.get_file_dependencies(file_path)
+        if repo_id is None:
+            deps = current_graph.get_file_dependencies(file_path)
+        else:
+            deps = current_graph.get_file_dependencies(file_path, repo_id=repo_id)
 
         output = f"## Dependencies for `{file_path}`\n\n"
 
@@ -624,7 +668,7 @@ def get_commit_context(sha: str, include_diff_stats: bool = True) -> str:
 @mcp.tool()
 @rate_limit
 @log_tool_call
-def identify_impact(file_path: str, max_depth: int = 3) -> str:
+def identify_impact(file_path: str, max_depth: int = 3, repo_id: str | None = None) -> str:
     """
     Identify the blast radius of changes to a file.
 
@@ -643,7 +687,14 @@ def identify_impact(file_path: str, max_depth: int = 3) -> str:
         return "❌ Graph not initialized. Check Neo4j connection."
 
     try:
-        result = current_graph.identify_impact(file_path, max_depth=max_depth)
+        if repo_id is None:
+            result = current_graph.identify_impact(file_path, max_depth=max_depth)
+        else:
+            result = current_graph.identify_impact(
+                file_path,
+                max_depth=max_depth,
+                repo_id=repo_id,
+            )
         affected = result["affected_files"]
         total = result["total_count"]
 
@@ -683,7 +734,7 @@ def identify_impact(file_path: str, max_depth: int = 3) -> str:
 @mcp.tool()
 @rate_limit
 @log_tool_call
-def get_file_info(file_path: str) -> str:
+def get_file_info(file_path: str, repo_id: str | None = None) -> str:
     """
     Get detailed information about a file including its entities and relationships.
 
@@ -702,15 +753,17 @@ def get_file_info(file_path: str) -> str:
     if not current_graph:
         return "❌ Graph not initialized. Check Neo4j connection."
 
+    resolved_repo_id = repo_id or current_graph.repo_id
+
     try:
         with current_graph.driver.session() as session:
             # Get file info
             result = session.run(
                 """
-                MATCH (f:File {path: $path})
-                OPTIONAL MATCH (f)-[:DEFINES]->(fn:Function)
-                OPTIONAL MATCH (f)-[:DEFINES]->(c:Class)
-                OPTIONAL MATCH (f)-[:IMPORTS]->(imp:File)
+                MATCH (f:File {repo_id: $repo_id, path: $path})
+                OPTIONAL MATCH (f)-[:DEFINES]->(fn:Function {repo_id: $repo_id})
+                OPTIONAL MATCH (f)-[:DEFINES]->(c:Class {repo_id: $repo_id})
+                OPTIONAL MATCH (f)-[:IMPORTS]->(imp:File {repo_id: $repo_id})
                 RETURN
                     f.name as name,
                     f.path as path,
@@ -719,7 +772,8 @@ def get_file_info(file_path: str) -> str:
                     collect(DISTINCT c.name) as classes,
                     collect(DISTINCT imp.path) as imports
             """,
-                path=file_path,
+                repo_id=resolved_repo_id,
+                path=file_path.replace("\\", "/"),
             ).single()
 
             if not result:
@@ -1121,6 +1175,7 @@ def search_all_memory(
     query: str,
     limit: int = 10,
     project_id: str | None = None,
+    repo_id: str | None = None,
     as_of: str | None = None,
     modules: str | None = None,
 ) -> str:
@@ -1135,6 +1190,7 @@ def search_all_memory(
         query=query,
         limit=limit,
         project_id=project_id,
+        repo_id=repo_id,
         as_of=as_of,
         modules=requested_modules,
         graph=current_graph,

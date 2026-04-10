@@ -1,105 +1,81 @@
+"""Tree-sitter-backed code extraction for the code-memory graph.
+
+This module is the canonical structural extraction layer for code ingestion.
+`KnowledgeGraphBuilder` should ask this parser for definitions, imports, and
+per-function calls instead of re-implementing language-specific heuristics in
+multiple places.
+
+Why this exists:
+- The old graph builder parsed each file in several different ways.
+- Import extraction and call extraction used different logic paths.
+- The call graph was especially noisy because file-level calls were copied onto
+  every function in the file.
+
+The parser now returns a single structured view of one source file so graph
+ingestion can decide which relationships are safe to write.
 """
-Tree-sitter-based source code parser for the Agentic Memory ingestion pipeline.
 
-Extracts structural elements from Python and JavaScript/TypeScript source files —
-classes, functions, imports, function calls, and environment variable references —
-using the tree-sitter incremental parsing library.  Results feed the Neo4j
-knowledge graph via ``KnowledgeGraphBuilder``.
-
-Extended:
-    The parser is language-aware: Python and JS/TS use different tree-sitter
-    grammars and query patterns.  Unsupported extensions are handled gracefully
-    (empty result dict returned with a warning log rather than raising).
-
-    Extracted data flows:
-    - ``classes`` and ``functions`` → ``Class`` and ``Function`` Neo4j nodes
-    - ``imports`` → ``IMPORTS`` relationships between ``File`` nodes
-    - ``calls`` → ``CALLS`` relationships between ``Function`` nodes
-    - ``env_vars`` → ``EnvVar`` nodes (documents runtime configuration surface)
-
-Role:
-    Instantiated once per ``KnowledgeGraphBuilder`` instance.  The ``parse_file``
-    method is called for every source file encountered during indexing and
-    incremental watch-mode updates.
-
-Dependencies:
-    - tree-sitter >= 0.22 (``Language``, ``Parser``, ``Query``, ``QueryCursor``)
-    - tree-sitter-python (Python grammar)
-    - tree-sitter-javascript (JS/TS grammar — used for .js, .jsx, .ts, .tsx)
-
-Key Technologies:
-    tree-sitter (incremental concrete syntax tree parsing), S-expression query DSL.
-"""
+from __future__ import annotations
 
 import logging
-from typing import Dict, List, Any
-from tree_sitter import Language, Parser, Query, QueryCursor, Node, Tree
-import tree_sitter_python
+from typing import Any, Dict, Iterable, Iterator, List
+
+from tree_sitter import Language, Node, Parser, Tree
 import tree_sitter_javascript
+import tree_sitter_python
 
 logger = logging.getLogger(__name__)
 
 class CodeParser:
-    """Tree-sitter parser that extracts structural code elements from source files.
-
-    Maintains one tree-sitter ``Parser`` and ``Language`` instance per supported
-    file extension.  Parsers are initialized once at construction time; subsequent
-    calls to ``parse_file`` reuse those instances for efficiency.
+    """Parse Python and JS-like source files into a normalized structure.
 
     Supported extensions:
-        - ``.py`` — Python (tree-sitter-python grammar)
-        - ``.js``, ``.jsx``, ``.ts``, ``.tsx`` — JavaScript/TypeScript
-          (tree-sitter-javascript grammar; TypeScript-specific syntax is parsed
-          on a best-effort basis since a separate grammar is not loaded)
+    - `.py`
+    - `.js`
+    - `.jsx`
+    - `.ts`
+    - `.tsx`
 
-    Note:
-        This class is not thread-safe.  The ``KnowledgeGraphBuilder`` that owns
-        it should not share an instance across threads.
+    TypeScript and TSX currently use the JavaScript grammar available in this
+    repo. That means extraction is "best effort" for TS-only syntax, but the
+    parser still covers the common declaration shapes we need for graph quality:
+    class methods, function declarations, arrow functions assigned to names, and
+    function expressions assigned to names.
     """
 
-    def __init__(self):
-        """Initialize tree-sitter parsers for all supported languages."""
-        self.parsers = {}
-        self.languages = {}
+    SUPPORTED_JS_EXTENSIONS = frozenset({".js", ".jsx", ".ts", ".tsx"})
+
+    def __init__(self) -> None:
+        """Initialize and cache one parser per supported extension."""
+        self.parsers: dict[str, Parser] = {}
+        self.languages: dict[str, Language] = {}
         self._init_parsers()
 
-    def _init_parsers(self):
+    def _init_parsers(self) -> None:
+        """Create parser instances for each supported language."""
         try:
-            # Python
-            py_lang = Language(tree_sitter_python.language())
-            self.languages['.py'] = py_lang
-            self.parsers['.py'] = Parser(py_lang)
+            python_language = Language(tree_sitter_python.language())
+            self.languages[".py"] = python_language
+            self.parsers[".py"] = Parser(python_language)
 
-            # JS/TS
-            js_lang = Language(tree_sitter_javascript.language())
-            for ext in ['.js', '.jsx', '.ts', '.tsx']:
-                self.languages[ext] = js_lang
-                self.parsers[ext] = Parser(js_lang)
-        except (ImportError, RuntimeError) as e:
-            logger.error(f"Failed to initialize parsers: {e}")
+            javascript_language = Language(tree_sitter_javascript.language())
+            for extension in self.SUPPORTED_JS_EXTENSIONS:
+                self.languages[extension] = javascript_language
+                self.parsers[extension] = Parser(javascript_language)
+        except (ImportError, RuntimeError) as exc:
+            logger.error("Failed to initialize tree-sitter parsers: %s", exc)
 
     def parse_file(self, code: str, extension: str) -> Dict[str, Any]:
-        """Parse source code and return a dict of extracted structural elements.
-
-        Runs the tree-sitter parser for the given extension, then applies
-        language-specific S-expression queries to extract classes, functions,
-        imports, function calls, and environment variable reads.
-
-        Args:
-            code: Raw source code text to parse.
-            extension: File extension including the leading dot (e.g. ``".py"``).
-                Must be one of the extensions registered during ``__init__``.
+        """Parse one source file into normalized graph-ingestion data.
 
         Returns:
-            Dict with keys:
-                - ``classes``: List of ``{name, code, start_line}`` dicts.
-                - ``functions``: List of ``{name, code, parent_class, start_line}`` dicts.
-                - ``imports``: List of module name strings (Python only).
-                - ``calls``: List of called function name strings.
-                - ``env_vars``: List of ``{type, name, line}`` dicts for env reads
-                  (Python only; ``type`` is ``"read"`` or ``"load"``).
-            Returns the empty-list default dict on unsupported extension or
-            any parsing error.
+            Dict with:
+            - `classes`: `[{name, code, start_line}]`
+            - `functions`: `[{name, qualified_name, parent_class, code, start_line, calls}]`
+            - `imports`: `[module_specifier, ...]`
+            - `calls`: flattened call-name list across the file
+            - `env_vars`: Python env-var reads / dotenv loads
+            - `diagnostics`: non-fatal extraction notes for unsupported syntax
         """
         default_result = {
             "classes": [],
@@ -107,221 +83,453 @@ class CodeParser:
             "imports": [],
             "calls": [],
             "env_vars": [],
+            "diagnostics": [],
         }
+
         parser = self.parsers.get(extension)
-        if not parser:
-            logger.warning(f"No parser found for extension {extension}")
+        language = self.languages.get(extension)
+        if parser is None or language is None:
+            logger.warning("No parser configured for extension %s", extension)
+            default_result["diagnostics"].append(
+                {
+                    "level": "warning",
+                    "kind": "unsupported_extension",
+                    "message": f"No parser configured for extension {extension}",
+                }
+            )
             return default_result
 
         try:
-            tree = parser.parse(bytes(code, "utf8"))
-            lang = self.languages[extension]
-
-            return {
-                "classes": self._extract_classes(tree, code, lang, extension),
-                "functions": self._extract_functions(tree, code, lang, extension),
-                "imports": self._extract_imports(tree, code, lang, extension),
-                "calls": self._extract_calls(tree, code, lang, extension),
-                "env_vars": self._extract_env_vars(tree, code, lang, extension)
-            }
-        except (ValueError, RuntimeError, AttributeError, TypeError) as e:
-            logger.error(f"Error parsing file with extension {extension}: {e}")
+            tree = parser.parse(code.encode("utf8"))
+        except (RuntimeError, ValueError, TypeError) as exc:
+            logger.error("Failed to parse %s source: %s", extension, exc)
+            default_result["diagnostics"].append(
+                {
+                    "level": "error",
+                    "kind": "parse_error",
+                    "message": str(exc),
+                }
+            )
             return default_result
 
-    def _extract_classes(self, tree: Tree, code: str, lang: Language, extension: str) -> List[Dict[str, Any]]:
-        classes = []
-        if extension == '.py':
-            query_scm = """
-            (class_definition
-                name: (identifier) @name
-                body: (block) @body) @class_def
-            """
-        else: # JS/TS
-            query_scm = """
-            (class_declaration name: (identifier) @name) @class_def
-            """
-
-        try:
-            query = Query(lang, query_scm)
-            cursor = QueryCursor(query)
-            matches = cursor.matches(tree.root_node)
-
-            for match_id, match_map in matches:
-                if 'name' not in match_map: continue
-
-                name_node = match_map['name'][0]
-                name = code[name_node.start_byte:name_node.end_byte]
-
-                def_node = match_map['class_def'][0]
-
-                classes.append({
-                    "name": name,
-                    "code": code[def_node.start_byte:def_node.end_byte],
-                    "start_line": def_node.start_point[0] + 1
-                })
-
-        except (RuntimeError, AttributeError, IndexError) as e:
-            logger.error(f"Error extracting classes: {e}")
-
-        return classes
-
-    def _extract_functions(self, tree: Tree, code: str, lang: Language, extension: str) -> List[Dict[str, Any]]:
-        functions = []
-        if extension == '.py':
-            query_scm = """
-            (function_definition
-                name: (identifier) @name
-                body: (block) @body) @function_def
-            """
-        else:
-            query_scm = """
-            (function_declaration name: (identifier) @name) @function_def
-            """
-
-        try:
-            query = Query(lang, query_scm)
-            cursor = QueryCursor(query)
-            matches = cursor.matches(tree.root_node)
-
-            for match_id, match_map in matches:
-                if 'name' not in match_map: continue
-
-                name_node = match_map['name'][0]
-                name = code[name_node.start_byte:name_node.end_byte]
-
-                def_node = match_map['function_def'][0]
-
-                # Determine parent class
-                parent_class = self._get_parent_class(def_node, code)
-
-                functions.append({
-                    "name": name,
-                    "code": code[def_node.start_byte:def_node.end_byte],
-                    "parent_class": parent_class,
-                    "start_line": def_node.start_point[0] + 1
-                })
-        except (RuntimeError, AttributeError, IndexError) as e:
-            logger.error(f"Error extracting functions: {e}")
-
-        return functions
-
-    def _extract_imports(self, tree: Tree, code: str, lang: Language, extension: str) -> List[str]:
-        imports = []
-        if extension != '.py': return imports # Only Python supported for now
-
-        query_scm = """
-        (import_statement name: (dotted_name) @module)
-        (import_from_statement module_name: (dotted_name) @module)
-        """
-
-        try:
-            query = Query(lang, query_scm)
-            cursor = QueryCursor(query)
-            captures = cursor.captures(tree.root_node)
-            for node in captures.get("module", []):
-                module_name = code[node.start_byte:node.end_byte]
-                imports.append(module_name)
-        except (RuntimeError, AttributeError, IndexError) as e:
-            logger.error(f"Error extracting imports: {e}")
-
-        return imports
-
-    def _extract_calls(self, tree: Tree, code: str, lang: Language, extension: str) -> List[str]:
-        calls = []
         if extension == ".py":
-            query_scm = """(call function: (identifier) @name)"""
+            result = self._parse_python(tree, code)
         else:
-            query_scm = """(call_expression function: (identifier) @name)"""
+            result = self._parse_javascript_like(tree, code)
 
-        try:
-            query = Query(lang, query_scm)
-            cursor = QueryCursor(query)
-            captures = cursor.captures(tree.root_node)
+        result["calls"] = [call for fn in result["functions"] for call in fn["calls"]]
+        return result
 
-            for node in captures.get("name", []):
-                call_name = code[node.start_byte:node.end_byte]
-                calls.append(call_name)
-        except (RuntimeError, AttributeError) as e:
-            logger.error(f"Error extracting calls: {e}")
+    def _parse_python(self, tree: Tree, code: str) -> Dict[str, Any]:
+        """Extract Python classes, functions, imports, calls, and env-var usage."""
+        classes: list[dict[str, Any]] = []
+        functions: list[dict[str, Any]] = []
+        imports: list[str] = []
+        env_vars: list[dict[str, Any]] = []
+        diagnostics: list[dict[str, Any]] = []
 
-        return calls
+        for node in self._walk(tree.root_node):
+            if node.type == "class_definition":
+                class_name = self._identifier_text(node, code)
+                if class_name:
+                    classes.append(
+                        {
+                            "name": class_name,
+                            "code": self._node_text(node, code),
+                            "start_line": node.start_point[0] + 1,
+                        }
+                    )
+                continue
 
-    def _extract_env_vars(self, tree: Tree, code: str, lang: Language, extension: str) -> List[Dict[str, Any]]:
-        env_vars = []
-        if extension != '.py': return env_vars
+            if node.type == "function_definition":
+                function_name = self._identifier_text(node, code)
+                if not function_name:
+                    continue
 
-        # Query 1: os.getenv
-        query_scm_1 = """
-        (call
-            function: (attribute
-                attribute: (identifier) @method)
-            arguments: (argument_list
-                (string) @var_name)) @env_call
-        """
+                parent_class = self._python_parent_class(node, code)
+                qualified_name = (
+                    f"{parent_class}.{function_name}" if parent_class else function_name
+                )
+                functions.append(
+                    {
+                        "name": function_name,
+                        "qualified_name": qualified_name,
+                        "parent_class": parent_class,
+                        "code": self._node_text(node, code),
+                        "start_line": node.start_point[0] + 1,
+                        "calls": self._extract_python_calls(node, code),
+                    }
+                )
+                continue
 
-        try:
-            query = Query(lang, query_scm_1)
-            cursor = QueryCursor(query)
-            matches = cursor.matches(tree.root_node)
+            if node.type == "import_statement":
+                module_name = self._dotted_name_text(node, code)
+                if module_name:
+                    imports.append(module_name)
+                continue
 
-            for match_id, match_map in matches:
-                if 'method' not in match_map or 'var_name' not in match_map: continue
+            if node.type == "import_from_statement":
+                module_name = self._python_from_import_module(node, code)
+                if module_name:
+                    imports.append(module_name)
+                else:
+                    diagnostics.append(
+                        {
+                            "level": "info",
+                            "kind": "ambiguous_import",
+                            "message": self._node_text(node, code),
+                        }
+                    )
+                continue
 
-                method_node = match_map['method'][0]
-                method_name = code[method_node.start_byte:method_node.end_byte]
+            env_var_event = self._extract_python_env_var_event(node, code)
+            if env_var_event is not None:
+                env_vars.append(env_var_event)
 
-                if method_name in ["getenv", "get"]:
-                    var_node = match_map['var_name'][0]
-                    var_name = code[var_node.start_byte:var_node.end_byte].strip("'\"")
+        return {
+            "classes": classes,
+            "functions": functions,
+            "imports": self._stable_dedupe(imports),
+            "calls": [],
+            "env_vars": env_vars,
+            "diagnostics": diagnostics,
+        }
 
-                    env_vars.append({
-                        "type": "read",
-                        "name": var_name,
-                        "line": method_node.start_point[0] + 1
-                    })
-        except (RuntimeError, AttributeError, IndexError) as e:
-            logger.error(f"Error extracting env vars (read): {e}")
+    def _parse_javascript_like(self, tree: Tree, code: str) -> Dict[str, Any]:
+        """Extract JavaScript/JSX/TS/TSX structure using the JS grammar."""
+        classes: list[dict[str, Any]] = []
+        functions: list[dict[str, Any]] = []
+        imports: list[str] = []
+        diagnostics: list[dict[str, Any]] = []
 
-        # Query 2: load_dotenv
-        query_scm_2 = """
-        (call
-            function: (identifier) @func
-            arguments: (argument_list) @args) @load_call
-        """
+        for node in self._walk(tree.root_node):
+            if node.type == "class_declaration":
+                class_name = self._identifier_text(node, code)
+                if class_name:
+                    classes.append(
+                        {
+                            "name": class_name,
+                            "code": self._node_text(node, code),
+                            "start_line": node.start_point[0] + 1,
+                        }
+                    )
+                continue
 
-        try:
-            query = Query(lang, query_scm_2)
-            cursor = QueryCursor(query)
-            matches = cursor.matches(tree.root_node)
+            if node.type == "function_declaration":
+                function_name = self._identifier_text(node, code)
+                if function_name:
+                    functions.append(
+                        {
+                            "name": function_name,
+                            "qualified_name": function_name,
+                            "parent_class": "",
+                            "code": self._node_text(node, code),
+                            "start_line": node.start_point[0] + 1,
+                            "calls": self._extract_js_calls(node, code),
+                        }
+                    )
+                continue
 
-            for match_id, match_map in matches:
-                if 'func' not in match_map: continue
+            if node.type == "method_definition":
+                method_name = self._js_method_name(node, code)
+                if not method_name:
+                    continue
 
-                func_node = match_map['func'][0]
-                func_name = code[func_node.start_byte:func_node.end_byte]
+                parent_class = self._js_parent_class(node, code)
+                qualified_name = f"{parent_class}.{method_name}" if parent_class else method_name
+                functions.append(
+                    {
+                        "name": method_name,
+                        "qualified_name": qualified_name,
+                        "parent_class": parent_class,
+                        "code": self._node_text(node, code),
+                        "start_line": node.start_point[0] + 1,
+                        "calls": self._extract_js_calls(node, code),
+                    }
+                )
+                continue
 
-                if func_name == "load_dotenv":
-                     env_vars.append({
-                        "type": "load",
-                        "line": func_node.start_point[0] + 1
-                    })
-        except (RuntimeError, AttributeError, IndexError) as e:
-             logger.error(f"Error extracting env vars (load): {e}")
+            if node.type == "variable_declarator":
+                variable_function = self._js_variable_function(node, code)
+                if variable_function is not None:
+                    functions.append(variable_function)
+                continue
 
-        return env_vars
+            import_value = self._extract_js_import(node, code)
+            if import_value is not None:
+                imports.append(import_value)
+                continue
 
-    def _get_name_from_node(self, node: Node, code: str) -> str:
-        # Try to find 'identifier' child
+        return {
+            "classes": classes,
+            "functions": self._dedupe_function_rows(functions),
+            "imports": self._stable_dedupe(imports),
+            "calls": [],
+            "env_vars": [],
+            "diagnostics": diagnostics,
+        }
+
+    def _extract_python_calls(self, owner: Node, code: str) -> list[str]:
+        """Return call names that belong to one Python function or method."""
+        call_names: list[str] = []
+        for node in self._walk_owned_descendants(
+            owner,
+            skip_types={"function_definition", "class_definition"},
+        ):
+            if node.type != "call":
+                continue
+            callee = node.child_by_field_name("function")
+            call_name = self._callee_name(callee, code)
+            if call_name:
+                call_names.append(call_name)
+        return self._stable_dedupe(call_names)
+
+    def _extract_js_calls(self, owner: Node, code: str) -> list[str]:
+        """Return call names that belong to one JS function-like owner."""
+        call_names: list[str] = []
+        for node in self._walk_owned_descendants(
+            owner,
+            skip_types={
+                "function_declaration",
+                "function_expression",
+                "arrow_function",
+                "method_definition",
+                "class_declaration",
+            },
+        ):
+            if node.type != "call_expression":
+                continue
+            callee = node.child_by_field_name("function")
+            call_name = self._callee_name(callee, code)
+            if call_name and call_name != "import":
+                call_names.append(call_name)
+        return self._stable_dedupe(call_names)
+
+    def _extract_python_env_var_event(
+        self,
+        node: Node,
+        code: str,
+    ) -> dict[str, Any] | None:
+        """Detect a narrow set of Python env-var access patterns."""
+        if node.type != "call":
+            return None
+
+        callee = node.child_by_field_name("function")
+        if callee is None:
+            return None
+
+        callee_name = self._full_callee_name(callee, code)
+        if callee_name == "load_dotenv":
+            return {"type": "load", "line": callee.start_point[0] + 1}
+
+        if callee_name not in {"os.getenv", "os.environ.get"}:
+            return None
+
+        args_node = node.child_by_field_name("arguments")
+        if args_node is None:
+            return None
+
+        for child in args_node.children:
+            if child.type == "string":
+                return {
+                    "type": "read",
+                    "name": self._string_literal_value(child, code),
+                    "line": child.start_point[0] + 1,
+                }
+        return None
+
+    def _python_from_import_module(self, node: Node, code: str) -> str:
+        """Return the module portion of a Python `from ... import ...` statement."""
         for child in node.children:
-            if child.type == 'identifier':
-                return code[child.start_byte:child.end_byte]
+            if child.type in {"dotted_name", "relative_import"}:
+                return self._node_text(child, code)
         return ""
 
-    def _get_parent_class(self, node: Node, code: str) -> str:
+    def _js_variable_function(self, node: Node, code: str) -> dict[str, Any] | None:
+        """Extract `const fn = () => {}` / `const fn = function(){}` shapes."""
+        name_node = node.child_by_field_name("name")
+        value_node = node.child_by_field_name("value")
+        if name_node is None or value_node is None:
+            return None
+
+        if value_node.type not in {"arrow_function", "function_expression"}:
+            return None
+
+        function_name = self._node_text(name_node, code)
+        if not function_name:
+            return None
+
+        return {
+            "name": function_name,
+            "qualified_name": function_name,
+            "parent_class": "",
+            "code": self._node_text(node, code),
+            "start_line": node.start_point[0] + 1,
+            "calls": self._extract_js_calls(value_node, code),
+        }
+
+    def _extract_js_import(self, node: Node, code: str) -> str | None:
+        """Extract one JS import-like specifier from an AST node."""
+        if node.type in {"import_statement", "export_statement"}:
+            for child in node.children:
+                if child.type == "string":
+                    return self._string_literal_value(child, code)
+            return None
+
+        if node.type != "call_expression":
+            return None
+
+        callee = node.child_by_field_name("function")
+        if callee is None:
+            return None
+
+        callee_name = self._full_callee_name(callee, code)
+        if callee_name not in {"require", "import"}:
+            return None
+
+        args_node = node.child_by_field_name("arguments")
+        if args_node is None:
+            return None
+
+        for child in args_node.children:
+            if child.type == "string":
+                return self._string_literal_value(child, code)
+        return None
+
+    def _identifier_text(self, node: Node, code: str) -> str:
+        """Return the first identifier-like child text for a definition node."""
+        for child in node.children:
+            if child.type in {"identifier", "property_identifier"}:
+                return self._node_text(child, code)
+        return ""
+
+    def _dotted_name_text(self, node: Node, code: str) -> str:
+        """Return the first dotted-name child text for a Python import node."""
+        for child in node.children:
+            if child.type == "dotted_name":
+                return self._node_text(child, code)
+        return ""
+
+    def _python_parent_class(self, node: Node, code: str) -> str:
+        """Return the nearest containing Python class name, if any."""
         current = node.parent
-        while current:
-            if current.type == 'class_definition' or current.type == 'class_declaration':
-                 name = self._get_name_from_node(current, code)
-                 if name: return name
+        while current is not None:
+            if current.type == "class_definition":
+                return self._identifier_text(current, code)
             current = current.parent
         return ""
+
+    def _js_parent_class(self, node: Node, code: str) -> str:
+        """Return the nearest containing JS class name, if any."""
+        current = node.parent
+        while current is not None:
+            if current.type == "class_declaration":
+                return self._identifier_text(current, code)
+            current = current.parent
+        return ""
+
+    def _js_method_name(self, node: Node, code: str) -> str:
+        """Return the property name for a JS method definition."""
+        name_node = node.child_by_field_name("name")
+        if name_node is not None:
+            return self._node_text(name_node, code)
+        return self._identifier_text(node, code)
+
+    def _callee_name(self, callee: Node | None, code: str) -> str:
+        """Return a short call target name used for conservative call linking."""
+        if callee is None:
+            return ""
+        if callee.type in {"identifier", "property_identifier"}:
+            return self._node_text(callee, code)
+        if callee.type == "attribute":
+            attribute_child = callee.child_by_field_name("attribute")
+            if attribute_child is not None:
+                return self._node_text(attribute_child, code)
+        if callee.type == "member_expression":
+            property_child = callee.child_by_field_name("property")
+            if property_child is not None:
+                return self._node_text(property_child, code)
+        if callee.type == "import":
+            return "import"
+        return ""
+
+    def _full_callee_name(self, callee: Node, code: str) -> str:
+        """Return a full dotted call expression when that is safer than the short name."""
+        if callee.type in {"identifier", "property_identifier"}:
+            return self._node_text(callee, code)
+        if callee.type == "attribute":
+            object_child = callee.child_by_field_name("object")
+            attribute_child = callee.child_by_field_name("attribute")
+            if object_child is not None and attribute_child is not None:
+                return f"{self._node_text(object_child, code)}.{self._node_text(attribute_child, code)}"
+        if callee.type == "member_expression":
+            object_child = callee.child_by_field_name("object")
+            property_child = callee.child_by_field_name("property")
+            if object_child is not None and property_child is not None:
+                return f"{self._node_text(object_child, code)}.{self._node_text(property_child, code)}"
+        if callee.type == "import":
+            return "import"
+        return self._node_text(callee, code)
+
+    def _string_literal_value(self, node: Node, code: str) -> str:
+        """Strip surrounding quotes from a string literal node."""
+        raw = self._node_text(node, code).strip()
+        if len(raw) >= 2 and raw[0] in {"'", '"'} and raw[-1] == raw[0]:
+            return raw[1:-1]
+        return raw
+
+    def _node_text(self, node: Node, code: str) -> str:
+        """Return the source slice that corresponds to one node."""
+        return code[node.start_byte:node.end_byte]
+
+    def _walk(self, node: Node) -> Iterator[Node]:
+        """Yield one node and all descendants depth-first."""
+        yield node
+        for child in node.children:
+            yield from self._walk(child)
+
+    def _walk_owned_descendants(
+        self,
+        owner: Node,
+        *,
+        skip_types: set[str],
+    ) -> Iterator[Node]:
+        """Yield descendants that belong to one function-like owner.
+
+        Nested definitions are intentionally skipped so parent functions do not
+        inherit calls from inner functions, inner classes, or nested methods.
+        """
+        for child in owner.children:
+            if child.type in skip_types:
+                continue
+            yield child
+            for descendant in self._walk_owned_descendants(child, skip_types=skip_types):
+                yield descendant
+
+    def _stable_dedupe(self, values: Iterable[str]) -> list[str]:
+        """Return values with duplicates removed while preserving first-seen order."""
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for value in values:
+            normalized = value.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered.append(normalized)
+        return ordered
+
+    def _dedupe_function_rows(self, rows: List[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Deduplicate function rows by qualified name and source line.
+
+        JS extraction can encounter the same function through a wrapper node and
+        the underlying declaration node. This keeps the first stable row only.
+        """
+        seen: set[tuple[str, int]] = set()
+        ordered: list[dict[str, Any]] = []
+        for row in rows:
+            key = (str(row.get("qualified_name") or row.get("name") or ""), int(row.get("start_line") or 0))
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(row)
+        return ordered

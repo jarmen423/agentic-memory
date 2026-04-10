@@ -2,6 +2,10 @@
 
 This document provides a comprehensive technical overview of Agentic Memory's architecture, design decisions, and implementation details.
 
+> Migration note: code memory now defaults to Gemini (`gemini-embedding-2-preview`, 3072d) so it stays aligned with the rest of the multimodal Agentic Memory system. Older OpenAI-specific examples in this document should be read as optional code-module overrides, not the current default.
+
+> Important retrieval note: the current code search path queries the shared Neo4j `code_embeddings` index directly and is not repo-scoped or provider-scoped. Do not mix Gemini and OpenAI code vectors in one live code index unless you add explicit isolation.
+
 ## Table of Contents
 
 - [System Overview](#system-overview)
@@ -146,7 +150,7 @@ Contains semantic embeddings for natural language search.
 (:Chunk {
   id: string,            // UUID
   text: string,          // Code snippet
-  embedding: vector[3072], // OpenAI text-embedding-3-large
+  embedding: vector[3072], // Default Gemini code embedding output
   created_at: datetime
 })
 ```
@@ -558,10 +562,10 @@ for child in node.children:
 
 ### Embedding Model
 
-**Model:** OpenAI `text-embedding-3-large`
+**Default code model:** Gemini `gemini-embedding-2-preview`
 - **Dimensions:** 3072
-- **Cost:** $0.13 per 1M tokens
-- **Max Input:** 8191 tokens (~24,000 chars)
+- **Cost:** Provider-dependent
+- **Max Input:** Provider-dependent; the current code path truncates large chunks before embedding requests
 
 ### Contextual Prefixing Strategy
 
@@ -811,7 +815,7 @@ agentic-memory search    # Test semantic search
 **State:**
 ```python
 self.driver: neo4j.Driver           # Database connection
-self.openai_client: OpenAI          # Embedding client
+self.embedding_service: EmbeddingService | None  # Provider-aware embedding client
 self.parsers: Dict[str, Parser]     # Tree-sitter parsers
 self.token_usage: Dict              # Cost tracking
 self.repo_root: Path                # Repository path
@@ -894,7 +898,7 @@ def init_graph():
 
 1. **Embedding API Calls** (largest bottleneck)
    - ~100ms per call (network latency)
-   - Batch processing doesn't help (OpenAI limitation)
+   - Batch behavior depends on the configured provider
    - Solution: Only embed changed files
 
 2. **Cypher Query Execution**
@@ -979,7 +983,7 @@ sequenceDiagram
     participant Parser
     participant GraphBuilder
     participant Neo4j
-    participant OpenAI
+    participant Embedder
     participant MCPServer
     participant Agent
 
@@ -995,8 +999,8 @@ sequenceDiagram
             GraphBuilder->>Parser: parse(file)
             Parser-->>GraphBuilder: AST
             GraphBuilder->>GraphBuilder: extract_entities()
-            GraphBuilder->>OpenAI: get_embedding(code)
-            OpenAI-->>GraphBuilder: vector[3072]
+            GraphBuilder->>Embedder: get_embedding(code)
+            Embedder-->>GraphBuilder: vector[3072]
             GraphBuilder->>Neo4j: MERGE entities + embeddings
         end
     end
@@ -1050,6 +1054,7 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for:
 
 - **Neo4j Cypher Manual:** https://neo4j.com/docs/cypher-manual/
 - **Tree-sitter Documentation:** https://tree-sitter.github.io/tree-sitter/
+- **Google Gemini Embeddings:** https://cloud.google.com/vertex-ai/generative-ai/docs/embeddings/get-multimodal-embeddings
 - **OpenAI Embeddings:** https://platform.openai.com/docs/guides/embeddings
 - **MCP Protocol:** https://modelcontextprotocol.io/
 

@@ -8,6 +8,7 @@
   "types": "dist/index.d.ts",
   "files": [
     "dist",
+    "setup-api.js",
     "openclaw.plugin.json",
     "README.md"
   ],
@@ -20,6 +21,7 @@
     "extensions": [
       "./dist/index.js"
     ],
+    "setupEntry": "./setup-api.js",
     "install": {
       "minHostVersion": ">=2026.4.5"
     }

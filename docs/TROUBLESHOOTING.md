@@ -117,22 +117,41 @@ CALL db.index.vector.drop('code_embeddings');
 
 ## Indexing Issues
 
-### "OpenAI API key not found"
+### "Configured code embedding API key not found"
 
 **Symptom:** Semantic search doesn't work, errors about missing API key.
 
 **Solution:**
 ```bash
-# Option 1: Set environment variable
+# Option 1: Default Gemini path
+export GEMINI_API_KEY="your-gemini-key"
+# or
+export GOOGLE_API_KEY="your-gemini-key"
+
+# Option 2: Keep code separate on OpenAI instead
+export CODE_EMBEDDING_PROVIDER="openai"
 export OPENAI_API_KEY="sk-..."
 
-# Option 2: Add to config
+# Option 3: Add the provider key through init
 agentic-memory init
-# Choose option 1 to enter API key
+# Choose the code embedding provider and then enter the matching key
 
 # Verify:
 agentic-memory search "test"
 ```
+
+### Mixed code embedding providers in one Neo4j
+
+**Symptom:** Search results feel cross-contaminated when different codebases share
+one Neo4j but use different code embedding providers.
+
+**Cause:** Current code retrieval queries the shared `code_embeddings` vector
+index directly and does not namespace results by repo or provider.
+
+**Solution:**
+- Keep all codebases on the same code embedding provider when they share one Neo4j code index.
+- Or use separate Neo4j databases / instances for codebases that use different code embedding providers.
+- Do not rely on matching dimensions alone. OpenAI and Gemini vectors can both be 3072d while still living in incompatible embedding spaces.
 
 ### "No files indexed"
 
@@ -175,7 +194,7 @@ agentic-memory index
 }
 ```
 
-2. **Check OpenAI rate limits:** You may be hitting rate limits. The code automatically retries, but it slows things down.
+2. **Check embedding provider rate limits:** You may be hitting Gemini, OpenAI, or other provider limits. The code retries some transient failures, but rate limiting still slows indexing down.
 
 3. **Use a smaller repository for testing:**
 ```bash
@@ -351,7 +370,7 @@ as first-class options. Until then, keep `mcp_native` as default.
 
 ## Performance Issues
 
-### High OpenAI costs
+### High embedding-provider costs
 
 **Symptom:** Embedding costs add up quickly.
 
@@ -427,6 +446,6 @@ agentic-memory status
 |-------|-------|----------|
 | `ModuleNotFoundError: No module named 'agentic_memory'` | Not installed or in wrong venv | `pip install agentic-memory` |
 | `Neo4j timeout` | Neo4j not responding | Restart Neo4j: `docker-compose restart neo4j` |
-| `OpenAI rate limit` | Too many embedding requests | Wait 60s, re-run; costs should still be low |
+| `Embedding provider rate limit` | Too many embedding requests | Wait 60s, re-run; verify the configured provider key and quota |
 | `File not found in graph` | File not indexed yet | Run `agentic-memory index` |
 | `Path not found` | Wrong working directory | Run from repo root where `.codememory/` exists |

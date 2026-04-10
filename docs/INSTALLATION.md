@@ -21,7 +21,7 @@ This guide covers installing and configuring Agentic Memory for local developmen
 |----------|----------------|-------------|---------|
 | **Python** | 3.10 | 3.11+ | Runtime environment |
 | **Neo4j** | 5.18 | 5.25+ | Graph database with vector search |
-| **OpenAI API Key** | - | - | For semantic embeddings |
+| **Gemini API Key** | - | - | Default code embedding provider |
 | **Git** | 2.0+ | Latest | For version control (optional) |
 
 ### System Requirements
@@ -32,10 +32,11 @@ This guide covers installing and configuring Agentic Memory for local developmen
 
 ### API Keys Required
 
-- **OpenAI API Key** - Required for semantic search (embeddings)
-  - Get yours at: https://platform.openai.com/api-keys
-  - Pricing: ~$0.13 per 1M tokens (text-embedding-3-large)
-  - Typical cost: $0.50-2.00 for a medium codebase (10K-50K LOC)
+- **Gemini API Key** - Default for code semantic search in new repos
+  - Set `GEMINI_API_KEY` or `GOOGLE_API_KEY`
+- **OpenAI API Key** - Optional if you intentionally want code memory on a separate text embedding provider
+  - Set `CODE_EMBEDDING_PROVIDER=openai`
+  - Then provide `OPENAI_API_KEY`
 
 ---
 
@@ -258,7 +259,7 @@ agentic-memory init
 
 The wizard will guide you through:
 1. Neo4j connection setup
-2. OpenAI API key configuration
+2. Code embedding provider selection, with Gemini as the default path for multimodal alignment
 3. File extension selection
 4. Initial indexing
 
@@ -274,8 +275,12 @@ NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=password
 
-# OpenAI Configuration
-OPENAI_API_KEY=sk-your-api-key-here
+# Default code embedding provider: Gemini
+GEMINI_API_KEY=your-gemini-api-key-here
+
+# Optional: keep code memory separate on OpenAI instead
+# CODE_EMBEDDING_PROVIDER=openai
+# OPENAI_API_KEY=sk-your-api-key-here
 
 # Optional: Logging
 LOG_LEVEL=INFO
@@ -300,6 +305,16 @@ The init wizard creates `.codememory/config.json`:
   },
   "openai": {
     "api_key": null
+  },
+  "gemini": {
+    "api_key": null
+  },
+  "modules": {
+    "code": {
+      "embedding_provider": "gemini",
+      "embedding_model": "gemini-embedding-2-preview",
+      "embedding_dimensions": 3072
+    }
   },
   "indexing": {
     "ignore_dirs": [
@@ -337,9 +352,10 @@ agentic-memory init
 
 Follow the interactive prompts:
 1. Choose Neo4j setup (Docker, Aura, or custom)
-2. Enter OpenAI API key (or use environment variable)
-3. Select file extensions to index
-4. Run initial indexing
+2. Choose the code embedding provider
+3. Keep the default Gemini path for multimodal alignment, or switch code to another text embedding provider if you want a separate code-memory lane
+4. Select file extensions to index
+5. Run initial indexing
 
 ### Step 2: Verify Installation
 
@@ -446,36 +462,46 @@ netstat -an | findstr 7687  # Windows
 4. **Check firewall:**
 - Ensure port 7687 (Bolt) and 7474 (HTTP) are not blocked
 
-### Issue: OpenAI API Errors
+### Issue: Code Embedding API Key Errors
 
 **Symptom:**
 ```
-Error: The OPENAI_API_KEY environment variable is not set
+Error: the configured code embedding API key is not set
 ```
 
 **Solutions:**
 
-1. **Set environment variable:**
+1. **Set the default Gemini environment variable:**
 ```bash
 # Linux/macOS
-export OPENAI_API_KEY="sk-your-key-here"
+export GEMINI_API_KEY="your-gemini-key-here"
 
 # Windows (Command Prompt)
-set OPENAI_API_KEY=sk-your-key-here
+set GEMINI_API_KEY=your-gemini-key-here
 
 # Windows (PowerShell)
-$env:OPENAI_API_KEY="sk-your-key-here"
+$env:GEMINI_API_KEY="your-gemini-key-here"
 ```
 
-2. **Add to `.env` file:**
+2. **Or use `GOOGLE_API_KEY`:**
 ```bash
-echo "OPENAI_API_KEY=sk-your-key-here" >> .env
+export GOOGLE_API_KEY="your-gemini-key-here"
 ```
 
-3. **Verify API key is valid:**
+3. **If you intentionally configured code to use OpenAI instead, set both the provider override and key:**
 ```bash
-curl https://api.openai.com/v1/models \
-  -H "Authorization: Bearer $OPENAI_API_KEY"
+export CODE_EMBEDDING_PROVIDER="openai"
+export OPENAI_API_KEY="sk-your-key-here"
+```
+
+4. **Add the key to `.env`:**
+```bash
+echo "GEMINI_API_KEY=your-gemini-key-here" >> .env
+```
+
+5. **Verify end-to-end by running a real search:**
+```bash
+agentic-memory search "entrypoint"
 ```
 
 ### Issue: "Out of Memory" During Indexing

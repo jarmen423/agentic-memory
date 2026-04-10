@@ -49,8 +49,15 @@ agentic-memory init
 
 The interactive wizard will guide you through:
 - Neo4j setup (local Docker, Aura cloud, or custom)
-- OpenAI API key (for semantic search)
+- Code embedding provider selection
+- Gemini API key by default for code semantic search
 - File extensions to index
+
+By default, `agentic-memory init` configures the `code` module to use
+`gemini-embedding-2-preview` so code memory stays aligned with the rest of the
+multimodal Agentic Memory system. If you want code memory completely separate,
+you can switch the `code` module to another text embedding provider such as
+OpenAI.
 
 That's it! Your repository is now indexed and ready for AI agents.
 
@@ -61,13 +68,16 @@ That's it! Your repository is now indexed and ready for AI agents.
 ### Code memory
 
 ```bash
+# Setup/config for code memory in this repo
+agentic-memory init
+
 # Show repository status and statistics
 agentic-memory status
 
-# One-time full index (e.g., after major changes)
+# Actual one-time code ingest (e.g., after major changes)
 agentic-memory index
 
-# Watch for changes and continuously update
+# Continuous code ingest on file changes
 agentic-memory watch
 
 # Start MCP server for AI agents
@@ -80,29 +90,29 @@ agentic-memory search "where is the auth logic?"
 ### Web & research memory
 
 ```bash
-# Initialize the research module
+# Setup/index repair for research memory
 agentic-memory web-init
 
-# Ingest a URL or PDF
+# Actual ad hoc research ingest from a URL or PDF
 agentic-memory web-ingest https://example.com/paper.pdf
 
 # Search research memory
 agentic-memory web-search "transformer attention mechanisms"
 
-# Schedule recurring research sessions
+# Create future ingest triggers
 agentic-memory web-schedule --project my-project --query "LLM memory" --interval 24h
 
-# Run a research session immediately
+# Actual scheduled or ad hoc research ingest execution
 agentic-memory web-run-research --project my-project
 ```
 
 ### Conversation memory
 
 ```bash
-# Initialize the conversation module
+# Setup/index repair for conversation memory
 agentic-memory chat-init
 
-# Ingest conversation logs
+# Actual conversation ingest
 agentic-memory chat-ingest /path/to/conversation.json
 
 # Search past conversations
@@ -405,6 +415,6 @@ Contributions welcome! Please see TODO.md for the roadmap.
 
 - **Neo4j** - Graph database with vector search
 - **Tree-sitter** - Incremental parsing for code
-- **OpenAI** - Embeddings for semantic search
+- **Google Gemini** - Default embedding provider for multimodal memory alignment
 - **MCP (Model Context Protocol)** - Standard interface for AI tools
 - **SpacetimeDB** - Temporal graph layer

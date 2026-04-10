@@ -1,9 +1,12 @@
 {
   "id": "agentic-memory",
   "name": "Agentic Memory",
-  "description": "Shared memory runtime and optional context engine for OpenClaw.",
+  "description": "Memory capture, retrieval, and optional context augmentation for OpenClaw.",
   "version": "0.1.0",
-  "kind": "memory",
+  "kind": [
+    "memory",
+    "context-engine"
+  ],
   "uiHints": {
     "backendUrl": {
       "label": "Backend URL",
@@ -17,7 +20,8 @@
     },
     "workspaceId": {
       "label": "Workspace ID",
-      "help": "Shared memory workspace identifier used across devices."
+      "advanced": true,
+      "help": "Optional workspace override. Agentic Memory normally auto-resolves workspace from the current agent/default config."
     },
     "deviceId": {
       "label": "Device ID",
@@ -25,17 +29,21 @@
     },
     "agentId": {
       "label": "Agent ID",
-      "help": "Stable identifier for the current OpenClaw agent."
+      "help": "Stable identifier for the current OpenClaw agent. Workspace defaults to this agent identity unless explicitly overridden."
+    },
+    "mode": {
+      "label": "Mode",
+      "help": "Use capture_only to capture turns and serve memory without adding custom context blocks. Use augment_context to also assemble Agentic Memory context for each turn."
     },
     "projectId": {
       "label": "Project ID",
       "advanced": true,
-      "help": "Optional project identifier used to bias retrieval."
+      "help": "Legacy static project fallback. The preferred model is to start and stop projects at runtime instead of baking one into install-time config."
     },
     "contextEngineId": {
       "label": "Context Engine ID",
       "advanced": true,
-      "help": "Context engine id to register with OpenClaw. Defaults to agentic-memory."
+      "help": "Context engine id to register with OpenClaw. Defaults to agentic-memory. Capture-only mode still uses this slot internally as the turn-lifecycle hook surface."
     }
   },
   "configSchema": {
@@ -57,11 +65,20 @@
       "agentId": {
         "type": "string"
       },
+      "mode": {
+        "type": "string",
+        "enum": [
+          "capture_only",
+          "augment_context"
+        ],
+        "default": "capture_only"
+      },
       "projectId": {
         "type": "string"
       },
       "contextEngineId": {
-        "type": "string"
+        "type": "string",
+        "default": "agentic-memory"
       }
     }
   }

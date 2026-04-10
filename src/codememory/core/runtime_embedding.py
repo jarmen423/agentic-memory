@@ -88,10 +88,11 @@ def resolve_embedding_runtime(
     """Resolve embedding provider settings for one module from config and env."""
     cfg = _repo_config(config=config, repo_root=repo_root)
     module_cfg = cfg.get_module_config(module_name)
+    configured_provider = str(module_cfg.get("embedding_provider") or "").strip().lower()
+    provider_override = provider or _env_override(module_name, "PROVIDER")
 
     resolved_provider = (
-        provider
-        or _env_override(module_name, "PROVIDER")
+        provider_override
         or module_cfg.get("embedding_provider")
         or "gemini"
     ).strip().lower()
@@ -102,11 +103,12 @@ def resolve_embedding_runtime(
             f"Must be one of: {supported}"
         )
 
+    provider_overridden = bool(provider_override) and resolved_provider != configured_provider
     provider_defaults = _PROVIDER_DEFAULTS[resolved_provider]
     resolved_model = (
         model
         or _env_override(module_name, "MODEL")
-        or module_cfg.get("embedding_model")
+        or (None if provider_overridden else module_cfg.get("embedding_model"))
         or str(provider_defaults["model"])
     )
     resolved_dimensions = output_dimensions
@@ -116,7 +118,8 @@ def resolve_embedding_runtime(
             resolved_dimensions = int(env_dimensions)
         else:
             resolved_dimensions = int(
-                module_cfg.get("embedding_dimensions") or provider_defaults["dimensions"]
+                (None if provider_overridden else module_cfg.get("embedding_dimensions"))
+                or provider_defaults["dimensions"]
             )
 
     resolved_base_url = (

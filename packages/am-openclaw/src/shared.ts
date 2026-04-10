@@ -182,6 +182,28 @@ export function createDefaultAgentId(): string {
 }
 
 /**
+ * Derive a stable default workspace from the resolved agent identity.
+ *
+ * Product intent:
+ *
+ * - users should not have to think about workspace during normal setup
+ * - one agent should naturally land in one home-base workspace unless the
+ *   operator explicitly overrides it
+ *
+ * This does not guarantee that OpenClaw has exposed a richer host-side
+ * workspace concept. It simply gives Agentic Memory a predictable home base
+ * that follows the agent identity by default.
+ */
+export function createDefaultWorkspaceId(agentId?: string): string {
+  const normalizedAgentId = agentId?.trim();
+  if (!normalizedAgentId) {
+    return "default-workspace";
+  }
+
+  return normalizedAgentId;
+}
+
+/**
  * Resolve plugin configuration from the OpenClaw plugin config payload.
  *
  * The plugin prefers explicit plugin config because both the Python helper and

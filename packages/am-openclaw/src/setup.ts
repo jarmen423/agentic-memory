@@ -16,6 +16,7 @@ import {
   asString,
   createDefaultAgentId,
   createDefaultDeviceId,
+  createDefaultWorkspaceId,
   DEFAULT_BACKEND_URL,
   DEFAULT_CONTEXT_ENGINE_ID,
   OpenClawConfig,
@@ -158,6 +159,28 @@ function ensureSetupFlagCompatibility(options: SetupCommandOptions): void {
   }
 }
 
+/**
+ * Resolve the workspace Agentic Memory should use when the operator does not
+ * provide one explicitly.
+ *
+ * The setup UX is intentionally biased toward "memory just works." That means
+ * workspace should quietly follow the resolved agent identity unless the user
+ * overrides it with a flag or an existing persisted config already pins a
+ * different home base.
+ */
+function resolveWorkspaceIdDefault(
+  existing: Record<string, unknown>,
+  options: SetupCommandOptions,
+  agentIdDefault: string,
+): string {
+  return (
+    options.workspace?.trim() ||
+    options.workspaceId?.trim() ||
+    asString(existing.workspaceId) ||
+    createDefaultWorkspaceId(agentIdDefault)
+  );
+}
+
 async function resolveSetupValues(
   currentConfig: OpenClawConfig,
   options: SetupCommandOptions,
@@ -176,13 +199,9 @@ async function resolveSetupValues(
 
   const backendUrlDefault = options.backendUrl?.trim() || asString(existing.backendUrl) || DEFAULT_BACKEND_URL;
   const apiKeyDefault = options.apiKey?.trim() || asString(existing.apiKey) || "${AGENTIC_MEMORY_API_KEY}";
-  const workspaceIdDefault =
-    options.workspace?.trim() ||
-    options.workspaceId?.trim() ||
-    asString(existing.workspaceId) ||
-    "default-workspace";
   const deviceIdDefault = options.deviceId?.trim() || asString(existing.deviceId) || createDefaultDeviceId();
   const agentIdDefault = options.agentId?.trim() || asString(existing.agentId) || createDefaultAgentId();
+  const workspaceIdDefault = resolveWorkspaceIdDefault(existing, options, agentIdDefault);
 
   if (!interactive) {
     return {
@@ -198,9 +217,9 @@ async function resolveSetupValues(
 
   const backendUrl = await promptWithDefault("Agentic Memory backend URL", backendUrlDefault);
   const apiKey = await promptWithDefault("API key or interpolation template", apiKeyDefault);
-  const workspaceId = await promptWithDefault("OpenClaw workspace (home base)", workspaceIdDefault);
   const deviceId = await promptWithDefault("Device ID", deviceIdDefault);
   const agentId = await promptWithDefault("Agent ID", agentIdDefault);
+  const workspaceId = resolveWorkspaceIdDefault(existing, options, agentId);
   const enableContextAugmentation = await promptYesNo(
     "Enable Agentic Memory context augmentation now?",
     modeDefault === "augment_context",
@@ -241,7 +260,7 @@ function printSetupResult(
 
   output.write(`Configured ${PLUGIN_ID} in the active OpenClaw profile.\n`);
   output.write(`Backend: ${values.backendUrl}\n`);
-  output.write(`Workspace: ${values.workspaceId}\n`);
+  output.write(`Workspace: ${values.workspaceId} (auto-resolved unless overridden)\n`);
   output.write(`Device: ${values.deviceId}\n`);
   output.write(`Agent: ${values.agentId}\n`);
   output.write(`Memory slot: ${PLUGIN_ID}\n`);
@@ -269,16 +288,14 @@ function resolveProjectCommandConfig(
   options: ProjectCommandOptions | ProjectStopOptions,
 ) {
   const existing = resolveExistingPluginConfig(currentConfig);
+  const agentId =
+    options.agentId?.trim() || asString(existing.agentId) || createDefaultAgentId();
   return {
     backendUrl: asString(existing.backendUrl) ?? DEFAULT_BACKEND_URL,
     apiKey: asString(existing.apiKey) ?? null,
-    workspaceId:
-      options.workspace?.trim() ||
-      options.workspaceId?.trim() ||
-      asString(existing.workspaceId) ||
-      "default-workspace",
+    workspaceId: resolveWorkspaceIdDefault(existing, options, agentId),
     deviceId: options.deviceId?.trim() || asString(existing.deviceId) || createDefaultDeviceId(),
-    agentId: options.agentId?.trim() || asString(existing.agentId) || createDefaultAgentId(),
+    agentId,
   };
 }
 
@@ -288,6 +305,68 @@ function printProjectPayload(payload: Record<string, unknown>, json = false): vo
     return;
   }
   output.write(`${JSON.stringify(payload, null, 2)}\n`);
+}
+
+/**
+ * Activate a project for one OpenClaw session.
+ *
+ * `init` and `use` deliberately share the same backend write today:
+ *
+ * - `init` is the user-facing "start working on this project now" command
+ * - `use` is the user-facing "switch into an existing project" command
+ * - `start` remains as a backward-compatible alias
+ *
+ * The backend treats project activation idempotently, so repeated calls are
+ * safe and simply keep the requested project active for the target session.
+ */
+async function activateProjectForSession(
+  ctx: AgenticMemoryCliContext,
+  projectId: string,
+  options: ProjectCommandOptions,
+  action: "project_init" | "project_use" | "project_start",
+): Promise<void> {
+  const config = resolveProjectCommandConfig(ctx.config, options);
+  const client = new AgenticMemoryBackendClient(
+    {
+      ...config,
+      projectId: null,
+      contextEngineId: DEFAULT_CONTEXT_ENGINE_ID,
+      mode: resolveExistingMode(ctx.config),
+    },
+    ctx.logger,
+  );
+  const activation = await client.post("/openclaw/project/activate", {
+    workspace_id: config.workspaceId,
+    device_id: config.deviceId,
+    agent_id: config.agentId,
+    session_id: options.sessionId,
+    project_id: projectId,
+    title: projectId,
+    metadata: { plugin: PLUGIN_ID, action },
+  });
+  let automation: unknown = null;
+  if (options.automation) {
+    automation = await client.post("/openclaw/project/automation", {
+      workspace_id: config.workspaceId,
+      project_id: projectId,
+      automation_kind: "research_ingestion",
+      enabled: true,
+      metadata: { plugin: PLUGIN_ID, action },
+    });
+  }
+  printProjectPayload(
+    {
+      ok: true,
+      action,
+      projectId,
+      sessionId: options.sessionId,
+      workspaceId: config.workspaceId,
+      agentId: config.agentId,
+      activation,
+      automation,
+    },
+    options.json,
+  );
 }
 
 /**
@@ -307,8 +386,11 @@ export function registerAgenticMemoryCli(ctx: AgenticMemoryCliContext): void {
       "--api-key <value>",
       "Backend API key or interpolation template such as ${AGENTIC_MEMORY_API_KEY}",
     )
-    .option("--workspace <id>", "OpenClaw workspace identifier (friendly alias for --workspace-id)")
-    .option("--workspace-id <id>", "OpenClaw workspace identifier")
+    .option(
+      "--workspace <id>",
+      "Optional workspace override. When omitted, Agentic Memory auto-resolves the workspace from the active agent/default config.",
+    )
+    .option("--workspace-id <id>", "Legacy alias for --workspace")
     .option("--device-id <id>", "Device identifier")
     .option("--agent-id <id>", "Agent identifier")
     .option(
@@ -329,64 +411,53 @@ export function registerAgenticMemoryCli(ctx: AgenticMemoryCliContext): void {
   const project = root.command("project").description("Manage the active Agentic Memory project");
 
   project
-    .command("start <projectId>")
-    .description("Activate a project for the current OpenClaw session")
+    .command("init <projectId>")
+    .description("Create or activate a project for the current OpenClaw session")
     .requiredOption("--session-id <id>", "Session identifier to scope the active project")
-    .option("--workspace <id>", "Workspace identifier (friendly alias for --workspace-id)")
-    .option("--workspace-id <id>", "Workspace identifier")
+    .option("--workspace <id>", "Optional workspace override")
+    .option("--workspace-id <id>", "Legacy alias for --workspace")
     .option("--device-id <id>", "Device identifier")
     .option("--agent-id <id>", "Agent identifier")
     .option("--automation", "Also enable project automation for this workspace", false)
     .option("--json", "Print machine-readable JSON", false)
     .action(async (projectId: string, options: ProjectCommandOptions) => {
-      const config = resolveProjectCommandConfig(ctx.config, options);
-      const client = new AgenticMemoryBackendClient(
-        {
-          ...config,
-          projectId: null,
-          contextEngineId: DEFAULT_CONTEXT_ENGINE_ID,
-          mode: resolveExistingMode(ctx.config),
-        },
-        ctx.logger,
-      );
-      const activation = await client.post("/openclaw/project/activate", {
-        workspace_id: config.workspaceId,
-        device_id: config.deviceId,
-        agent_id: config.agentId,
-        session_id: options.sessionId,
-        project_id: projectId,
-        title: projectId,
-        metadata: { plugin: PLUGIN_ID },
-      });
-      let automation: unknown = null;
-      if (options.automation) {
-        automation = await client.post("/openclaw/project/automation", {
-          workspace_id: config.workspaceId,
-          project_id: projectId,
-          automation_kind: "research_ingestion",
-          enabled: true,
-          metadata: { plugin: PLUGIN_ID },
-        });
-      }
-      printProjectPayload(
-        {
-          ok: true,
-          action: "project_start",
-          projectId,
-          sessionId: options.sessionId,
-          activation,
-          automation,
-        },
-        options.json,
-      );
+      await activateProjectForSession(ctx, projectId, options, "project_init");
+    });
+
+  project
+    .command("use <projectId>")
+    .description("Switch the current OpenClaw session into an existing project")
+    .requiredOption("--session-id <id>", "Session identifier to scope the active project")
+    .option("--workspace <id>", "Optional workspace override")
+    .option("--workspace-id <id>", "Legacy alias for --workspace")
+    .option("--device-id <id>", "Device identifier")
+    .option("--agent-id <id>", "Agent identifier")
+    .option("--automation", "Also enable project automation for this workspace", false)
+    .option("--json", "Print machine-readable JSON", false)
+    .action(async (projectId: string, options: ProjectCommandOptions) => {
+      await activateProjectForSession(ctx, projectId, options, "project_use");
+    });
+
+  project
+    .command("start <projectId>")
+    .description("Legacy alias for project init")
+    .requiredOption("--session-id <id>", "Session identifier to scope the active project")
+    .option("--workspace <id>", "Optional workspace override")
+    .option("--workspace-id <id>", "Legacy alias for --workspace")
+    .option("--device-id <id>", "Device identifier")
+    .option("--agent-id <id>", "Agent identifier")
+    .option("--automation", "Also enable project automation for this workspace", false)
+    .option("--json", "Print machine-readable JSON", false)
+    .action(async (projectId: string, options: ProjectCommandOptions) => {
+      await activateProjectForSession(ctx, projectId, options, "project_start");
     });
 
   project
     .command("stop")
     .description("Deactivate the current project for one OpenClaw session")
     .requiredOption("--session-id <id>", "Session identifier to clear")
-    .option("--workspace <id>", "Workspace identifier (friendly alias for --workspace-id)")
-    .option("--workspace-id <id>", "Workspace identifier")
+    .option("--workspace <id>", "Optional workspace override")
+    .option("--workspace-id <id>", "Legacy alias for --workspace")
     .option("--device-id <id>", "Device identifier")
     .option("--agent-id <id>", "Agent identifier")
     .option("--json", "Print machine-readable JSON", false)
@@ -423,8 +494,8 @@ export function registerAgenticMemoryCli(ctx: AgenticMemoryCliContext): void {
     .command("status")
     .description("Show the active project for one OpenClaw session")
     .requiredOption("--session-id <id>", "Session identifier to inspect")
-    .option("--workspace <id>", "Workspace identifier (friendly alias for --workspace-id)")
-    .option("--workspace-id <id>", "Workspace identifier")
+    .option("--workspace <id>", "Optional workspace override")
+    .option("--workspace-id <id>", "Legacy alias for --workspace")
     .option("--device-id <id>", "Device identifier")
     .option("--agent-id <id>", "Agent identifier")
     .option("--json", "Print machine-readable JSON", false)

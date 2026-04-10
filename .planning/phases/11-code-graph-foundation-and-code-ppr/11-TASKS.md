@@ -39,4 +39,5 @@
 - [x] Record analyzer drop reasons so failed semantic edges are inspectable by file, function, and reason.
 - [x] Extend `call-status` / debug tooling so Python and JS/TS analyzer coverage can be compared by repo.
 - [x] Stabilize parser symbol extraction so semantic analyzers keep correct names when repo files contain Unicode text before later definitions.
+- [x] Classify Python builtin/library calls and repo-local class constructor hits separately so unresolved diagnostics only represent real mapping debt.
 - [ ] Re-run real-repo indexing on both `D:\code\agentic-memory` and `/home/josh/m26pipeline` to verify analyzer-backed `CALLS` survive full indexing.

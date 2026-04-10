@@ -95,6 +95,22 @@ class PythonFileCallAnalysis:
 
 
 @dataclass(frozen=True)
+class _ResolvedDefinitionTarget:
+    """Result of mapping one LSP definition lookup back to repo-local symbols.
+
+    Attributes:
+        target: Repo-local outgoing call target when we can map the definition
+            back onto a function or method owned by the indexed repository.
+        drop_reason: Diagnostic reason when no repo-local target is admissible.
+            This keeps the analyzer honest about whether the loss came from an
+            external library call or a repo-local symbol-matching failure.
+    """
+
+    target: PythonOutgoingCall | None
+    drop_reason: str | None = None
+
+
+@dataclass(frozen=True)
 class _CallSite:
     """One call expression inside a function body."""
 
@@ -116,6 +132,31 @@ class _FunctionSymbol:
     call_sites: tuple[_CallSite, ...]
 
 
+@dataclass(frozen=True)
+class _ClassSymbol:
+    """Python class definition discovered from AST."""
+
+    name: str
+    name_line: int
+    name_column: int
+
+
+@dataclass(frozen=True)
+class _FileSymbolIndex:
+    """Repo-local symbol cache for one Python file.
+
+    The Python semantic analyzer only emits CALLS edges for functions and
+    methods, but the language server can also resolve constructor calls to
+    class definitions. Keeping function and class positions separate lets the
+    analyzer classify those repo-local constructor hits as "non_function_target"
+    instead of overstating them as unresolved mapping failures.
+    """
+
+    functions_by_position: dict[tuple[int, int], _FunctionSymbol]
+    functions_by_qualified_name: dict[str, _FunctionSymbol]
+    class_positions: set[tuple[int, int]]
+
+
 class _FunctionScopeCollector(ast.NodeVisitor):
     """Collect Python function/method definitions and call sites from one AST."""
 
@@ -123,8 +164,17 @@ class _FunctionScopeCollector(ast.NodeVisitor):
         self._source_lines = source_lines
         self._class_stack: list[str] = []
         self.functions: list[_FunctionSymbol] = []
+        self.classes: list[_ClassSymbol] = []
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802 - ast API
+        name_line, name_column = _class_name_position(node, self._source_lines)
+        self.classes.append(
+            _ClassSymbol(
+                name=node.name,
+                name_line=name_line,
+                name_column=name_column,
+            )
+        )
         self._class_stack.append(node.name)
         try:
             self.generic_visit(node)
@@ -369,7 +419,7 @@ class PythonCallAnalyzer:
 
         client = _LspClient(self._config.command)
         results: dict[str, PythonFileCallAnalysis] = {}
-        symbol_cache: dict[str, dict[tuple[int, int], _FunctionSymbol]] = {}
+        symbol_cache: dict[str, _FileSymbolIndex] = {}
 
         try:
             client.initialize(repo_root)
@@ -401,11 +451,8 @@ class PythonCallAnalyzer:
                 code = full_path.read_text(encoding="utf8", errors="ignore")
                 client.did_open(full_path, code)
 
-                function_symbols = _function_symbols_from_code(code, diagnostics)
-                symbol_cache[rel_path] = {
-                    (row.name_line, row.name_column): row for row in function_symbols
-                }
-                by_qualified_name = {row.qualified_name: row for row in function_symbols}
+                file_symbols = _file_symbol_index_from_code(code, diagnostics)
+                symbol_cache[rel_path] = file_symbols
 
                 functions: dict[str, PythonFunctionCallAnalysis] = {}
                 for request_function in file_request.get("functions", []):
@@ -416,7 +463,9 @@ class PythonCallAnalyzer:
                     )
                     request_name_line = int(request_function.get("name_line") or 0)
                     request_name_column = int(request_function.get("name_column") or 0)
-                    symbol = by_qualified_name.get(qualified_name) or symbol_cache[rel_path].get(
+                    symbol = file_symbols.functions_by_qualified_name.get(
+                        qualified_name
+                    ) or file_symbols.functions_by_position.get(
                         (request_name_line, request_name_column)
                     )
                     if symbol is None:
@@ -440,13 +489,20 @@ class PythonCallAnalyzer:
                             symbol_cache=symbol_cache,
                             diagnostics=diagnostics,
                         )
-                        if resolved_target is None:
-                            _increment(drop_reason_counts, "unresolved_target_symbol")
+                        if resolved_target.target is None:
+                            _increment(
+                                drop_reason_counts,
+                                resolved_target.drop_reason or "unresolved_target_symbol",
+                            )
                             continue
 
-                        if resolved_target.qualified_name_guess == symbol.qualified_name and resolved_target.rel_path == rel_path:
+                        if (
+                            resolved_target.target.qualified_name_guess
+                            == symbol.qualified_name
+                            and resolved_target.target.rel_path == rel_path
+                        ):
                             continue
-                        outgoing_calls.append(resolved_target)
+                        outgoing_calls.append(resolved_target.target)
 
                     functions[qualified_name] = PythonFunctionCallAnalysis(
                         qualified_name=qualified_name,
@@ -472,38 +528,52 @@ class PythonCallAnalyzer:
         *,
         repo_root: Path,
         locations: list[dict[str, Any]],
-        symbol_cache: dict[str, dict[tuple[int, int], _FunctionSymbol]],
+        symbol_cache: dict[str, _FileSymbolIndex],
         diagnostics: list[dict[str, Any]],
-    ) -> PythonOutgoingCall | None:
-        """Map LSP definition results back to a repo-local Python function symbol."""
+    ) -> _ResolvedDefinitionTarget:
+        """Map one LSP definition result set back to a repo-local Python symbol.
+
+        The language server can legally resolve a Python call to:
+
+        - another repo-local function or method,
+        - a stdlib/builtin/site-packages symbol that should stay outside the
+          graph, or
+        - a repo-local location we still fail to match to our function cache.
+
+        Returning both the target and the drop reason lets later diagnostics
+        distinguish real mapping debt from healthy external-library filtering.
+        """
         repo_local_targets: list[PythonOutgoingCall] = []
+        saw_external_target = False
+        saw_repo_local_location = False
 
         for location in locations:
             uri = str(location.get("uri") or "")
             rel_path = _rel_path_from_uri(repo_root, uri)
             if rel_path is None:
+                saw_external_target = True
                 continue
 
+            saw_repo_local_location = True
             range_row = location.get("range") or {}
             start = range_row.get("start") or {}
             name_line = int(start.get("line", -1)) + 1
             name_column = int(start.get("character", -1)) + 1
-            per_file_symbols = symbol_cache.get(rel_path)
-            if per_file_symbols is None:
+            file_symbols = symbol_cache.get(rel_path)
+            if file_symbols is None:
                 target_path = (repo_root / rel_path).resolve()
                 if not target_path.exists():
                     continue
                 target_code = target_path.read_text(encoding="utf8", errors="ignore")
                 target_diagnostics: list[dict[str, Any]] = []
-                target_symbols = _function_symbols_from_code(target_code, target_diagnostics)
+                file_symbols = _file_symbol_index_from_code(target_code, target_diagnostics)
                 diagnostics.extend(target_diagnostics)
-                per_file_symbols = {
-                    (row.name_line, row.name_column): row for row in target_symbols
-                }
-                symbol_cache[rel_path] = per_file_symbols
+                symbol_cache[rel_path] = file_symbols
 
-            function_symbol = per_file_symbols.get((name_line, name_column))
+            function_symbol = file_symbols.functions_by_position.get((name_line, name_column))
             if function_symbol is None:
+                if (name_line, name_column) in file_symbols.class_positions:
+                    return _ResolvedDefinitionTarget(target=None, drop_reason="non_function_target")
                 continue
 
             repo_local_targets.append(
@@ -519,13 +589,15 @@ class PythonCallAnalyzer:
             )
 
         if not repo_local_targets:
-            return None
+            if saw_external_target and not saw_repo_local_location:
+                return _ResolvedDefinitionTarget(target=None, drop_reason="external_target")
+            return _ResolvedDefinitionTarget(target=None, drop_reason="unresolved_target_symbol")
 
         deduped = _dedupe_python_outgoing_calls(repo_local_targets)
         if len(deduped) == 1:
-            return deduped[0]
+            return _ResolvedDefinitionTarget(target=deduped[0])
 
-        return None
+        return _ResolvedDefinitionTarget(target=None, drop_reason="unresolved_target_symbol")
 
     def _build_config(self) -> _AnalyzerConfig:
         """Resolve the local language-server command."""
@@ -553,11 +625,11 @@ class PythonCallAnalyzer:
         )
 
 
-def _function_symbols_from_code(
+def _file_symbol_index_from_code(
     code: str,
     diagnostics: list[dict[str, Any]],
-) -> list[_FunctionSymbol]:
-    """Parse one Python file into function symbols plus call-site positions."""
+) -> _FileSymbolIndex:
+    """Parse one Python file into function and class symbol indexes."""
     try:
         tree = ast.parse(code)
     except SyntaxError as exc:
@@ -568,11 +640,25 @@ def _function_symbols_from_code(
                 "message": str(exc),
             }
         )
-        return []
+        return _FileSymbolIndex(
+            functions_by_position={},
+            functions_by_qualified_name={},
+            class_positions=set(),
+        )
 
     collector = _FunctionScopeCollector(code.splitlines())
     collector.visit(tree)
-    return collector.functions
+    return _FileSymbolIndex(
+        functions_by_position={
+            (row.name_line, row.name_column): row for row in collector.functions
+        },
+        functions_by_qualified_name={
+            row.qualified_name: row for row in collector.functions
+        },
+        class_positions={
+            (row.name_line, row.name_column) for row in collector.classes
+        },
+    )
 
 
 def _definition_name_position(
@@ -583,6 +669,20 @@ def _definition_name_position(
     line_text = source_lines[node.lineno - 1] if node.lineno - 1 < len(source_lines) else ""
     segment = line_text[node.col_offset :]
     prefix = "async def " if isinstance(node, ast.AsyncFunctionDef) else "def "
+    name_offset = segment.find(prefix)
+    if name_offset == -1:
+        return node.lineno, node.col_offset + 1
+    return node.lineno, node.col_offset + name_offset + len(prefix) + 1
+
+
+def _class_name_position(
+    node: ast.ClassDef,
+    source_lines: list[str],
+) -> tuple[int, int]:
+    """Return the 1-based location of a class name token."""
+    line_text = source_lines[node.lineno - 1] if node.lineno - 1 < len(source_lines) else ""
+    segment = line_text[node.col_offset :]
+    prefix = "class "
     name_offset = segment.find(prefix)
     if name_offset == -1:
         return node.lineno, node.col_offset + 1

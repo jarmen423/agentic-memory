@@ -31,3 +31,9 @@
   stable when semantic analyzers run on real repo files.
 - Align packaging metadata so the new Python analyzer dependency is present in
   both `pyproject.toml` and `requirements.txt`.
+
+### Wave 5: Python diagnostic cleanup
+
+- `W11-CALLS-05`: Distinguish repo-external Python calls from repo-local
+  constructor/class targets so the unresolved bucket only represents real
+  mapping debt.

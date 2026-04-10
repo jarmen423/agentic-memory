@@ -104,6 +104,24 @@
         "python -m agentic_memory.cli debug-py-calls src\\agentic_memory\\cli.py --repo D:\\code\\agentic-memory --json"
       ],
       "handoff_path": ".planning/execution/handoffs/w11-calls/W11-CALLS-04.md"
+    },
+    {
+      "id": "W11-CALLS-05",
+      "title": "Classify external and non-function Python targets cleanly",
+      "status": "completed",
+      "owner": "orchestrator",
+      "depends_on": [
+        "W11-CALLS-04"
+      ],
+      "write_scope": [
+        "src/agentic_memory/ingestion/python_call_analyzer.py",
+        "tests/test_python_call_analyzer.py"
+      ],
+      "verify": [
+        "python -m pytest tests/test_python_call_analyzer.py -q",
+        "python -m agentic_memory.cli debug-py-calls src\\agentic_memory\\cli.py --repo D:\\code\\agentic-memory --json"
+      ],
+      "handoff_path": ".planning/execution/handoffs/w11-calls/W11-CALLS-05.md"
     }
   ],
   "merge_gates": [

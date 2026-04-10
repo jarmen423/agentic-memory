@@ -75,6 +75,8 @@ def test_python_call_analyzer_resolves_cross_file_calls(tmp_path: Path) -> None:
     assert ("b.py", "run", "Worker.run") in [
         (call.rel_path, call.name, call.qualified_name_guess) for call in execute_calls
     ]
+    assert not (results["c.py"].drop_reason_counts or {}).get("unresolved_target_symbol", 0)
+    assert (results["c.py"].drop_reason_counts or {}).get("non_function_target", 0) >= 1
 
 
 def test_python_call_analyzer_keeps_duplicate_paths_repo_local(tmp_path: Path) -> None:
@@ -129,3 +131,47 @@ def test_python_call_analyzer_keeps_duplicate_paths_repo_local(tmp_path: Path) -
     assert ("src/shared/helpers.py", "helper", "helper") in beta_calls
     assert ("src/shared/helpers.py", "beta_only", "beta_only") in beta_calls
     assert ("src/shared/helpers.py", "alpha_only", "alpha_only") not in beta_calls
+
+
+def test_python_call_analyzer_reports_external_targets_separately(tmp_path: Path) -> None:
+    """External Python calls should not be counted as repo-local mapping failures.
+
+    Phase 11 diagnostics need to distinguish two different outcomes:
+
+    - basedpyright resolved a call successfully, but the target lives outside the
+      indexed repository and should therefore stay out of the CALLS graph
+    - basedpyright pointed at a repo-local location that we still failed to map
+      back to a function symbol
+
+    This regression keeps builtins and stdlib calls in the `external_target`
+    bucket instead of inflating `unresolved_target_symbol`.
+    """
+    repo_root = tmp_path
+    files = {
+        "pyrightconfig.json": "{}\n",
+        "main.py": (
+            "from pathlib import Path\n\n\n"
+            "def run() -> None:\n"
+            "    print('hello')\n"
+            "    Path.cwd()\n"
+        ),
+    }
+    for rel_path, contents in files.items():
+        target = repo_root / rel_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(contents, encoding="utf8")
+
+    analyzer = PythonCallAnalyzer()
+    if not analyzer.is_available():
+        pytest.skip(analyzer.disabled_reason or "Python analyzer is unavailable.")
+
+    code_parser = CodeParser()
+    results = analyzer.analyze_files(
+        repo_root=repo_root,
+        files=[_build_analyzer_request(code_parser, "main.py", files["main.py"])],
+    )
+
+    analysis = results["main.py"]
+    assert analysis.functions["run"].outgoing_calls == ()
+    assert (analysis.drop_reason_counts or {}).get("external_target", 0) >= 2
+    assert not (analysis.drop_reason_counts or {}).get("unresolved_target_symbol", 0)

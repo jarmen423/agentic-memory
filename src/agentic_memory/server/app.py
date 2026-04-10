@@ -23,7 +23,11 @@ from agentic_memory.core.request_context import get_request_id
 from agentic_memory.core.retry import retry_transient
 from agentic_memory.core.runtime_embedding import resolve_embedding_runtime
 from agentic_memory.ingestion.graph import KnowledgeGraphBuilder
-from agentic_memory.server.code_search import search_code
+from agentic_memory.server.code_search import (
+    SAFE_RETRIEVAL_POLICY,
+    normalize_retrieval_policy,
+    search_code,
+)
 from agentic_memory.server.unified_search import search_all_memory_sync
 from agentic_memory.temporal.seeds import (
     collect_seed_entities,
@@ -294,18 +298,54 @@ def _validate_git_graph_data(current_graph: KnowledgeGraphBuilder) -> Optional[s
 
 
 def _format_code_results(results: List[Dict[str, Any]]) -> str:
-    """Format code semantic search results."""
+    """Format code semantic search results for LLM and agent consumption.
+
+    The current rollout is intentionally explicit about retrieval provenance so
+    an agent can tell whether it is looking at plain semantic hits or a
+    structural rerank. This avoids over-trusting ``CALLS`` edges while the
+    multi-repository analyzer coverage is still uneven.
+    """
     output = f"Found {len(results)} relevant code result(s):\n\n"
+    provenance = dict((results[0].get("retrieval_provenance") or {})) if results else {}
+    if provenance:
+        graph_edges = provenance.get("graph_edge_types_used") or []
+        output += "Retrieval provenance:\n"
+        output += f"- Policy: `{provenance.get('policy', 'unknown')}`\n"
+        output += f"- Mode: `{provenance.get('mode', 'unknown')}`\n"
+        output += (
+            f"- Graph reranking applied: "
+            f"`{bool(provenance.get('graph_reranking_applied', False))}`\n"
+        )
+        output += (
+            f"- Structural edges used: "
+            f"{', '.join(f'`{edge}`' for edge in graph_edges) if graph_edges else '`none`'}\n"
+        )
+        output += f"- `CALLS` edges used for ranking: `False`\n"
+        for note in provenance.get("notes") or []:
+            output += f"- Note: {note}\n"
+        output += "\n"
+
     for i, r in enumerate(results, 1):
         name = r.get("name", "Unknown")
         score = r.get("score", 0)
         text = r.get("text", "")[:300]
         sig = r.get("sig", "")
+        path = r.get("path", "")
+        labels = r.get("labels") or []
 
         output += f"{i}. **{name}**"
         if sig:
             output += f" (`{sig}`)"
         output += f" [Score: {score:.2f}]\n"
+        if path:
+            output += f"   Path: `{path}`\n"
+        if labels:
+            output += f"   Labels: {', '.join(f'`{label}`' for label in labels)}\n"
+        if r.get("baseline_score") is not None and r.get("ppr_score") is not None:
+            output += (
+                f"   Rank components: baseline={float(r['baseline_score']):.2f}, "
+                f"graph={float(r['ppr_score']):.2f}\n"
+            )
         output += f"   ```\n{text}...\n   ```\n\n"
 
     return output.strip()
@@ -408,6 +448,7 @@ def search_codebase(
     limit: int = 5,
     domain: str = "code",
     repo_id: str | None = None,
+    retrieval_policy: str = SAFE_RETRIEVAL_POLICY,
 ) -> str:
     """
     Semantically search the codebase for functionality.
@@ -420,6 +461,9 @@ def search_codebase(
         limit: Maximum number of results to return (default: 5)
         domain: Search domain route: code, git, or hybrid (default: code)
         repo_id: Optional explicit repo scope for code and git lookups
+        retrieval_policy: Code retrieval policy. ``safe`` is the agent-safe
+            default; ``graph_reranked`` enables structural reranking without
+            using ``CALLS`` edges.
 
     Returns:
         Formatted string with search results including scores and code snippets
@@ -436,6 +480,17 @@ def search_codebase(
     normalized_query = query.strip()
     safe_limit = max(1, int(limit))
     resolved_repo_id = repo_id or current_graph.repo_id
+    resolved_retrieval_policy = None
+    if domain_mode in {"code", "hybrid"}:
+        resolved_retrieval_policy = normalize_retrieval_policy(
+            retrieval_policy,
+            allow_auto=False,
+        )
+        if resolved_retrieval_policy is None:
+            return (
+                "❌ Invalid retrieval_policy "
+                f"`{retrieval_policy}`. Valid values: safe|graph_reranked"
+            )
 
     try:
         if domain_mode == "code":
@@ -444,6 +499,7 @@ def search_codebase(
                 query=normalized_query,
                 limit=safe_limit,
                 repo_id=repo_id,
+                retrieval_policy=resolved_retrieval_policy or SAFE_RETRIEVAL_POLICY,
             )
             if not results:
                 return "No relevant code found."
@@ -482,6 +538,7 @@ def search_codebase(
             query=normalized_query,
             limit=safe_limit,
             repo_id=repo_id,
+            retrieval_policy=resolved_retrieval_policy or SAFE_RETRIEVAL_POLICY,
         )
         output = "## Hybrid Search Results\n\n"
 

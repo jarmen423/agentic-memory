@@ -10,6 +10,18 @@ Why the extra layer lives here instead of in ``KnowledgeGraphBuilder``:
 - PPR is query-time ranking logic
 - the rollout is intentionally guarded by a feature flag so baseline search can
   stay unchanged while graph quality hardening lands
+
+The most important operational rule for agent-facing retrieval today is that
+``CALLS`` edges are not trusted enough to drive ranking across repositories.
+This module therefore exposes a retrieval-policy concept:
+
+- ``safe``: semantic search only, no graph reranking
+- ``graph_reranked``: semantic search plus graph reranking over
+  ``IMPORTS``, ``DEFINES``, and ``HAS_METHOD``
+- ``auto``: legacy behavior controlled by the feature flag
+
+Every returned row carries a ``retrieval_provenance`` dictionary so MCP tools
+and future agent surfaces can explain exactly what structural evidence was used.
 """
 
 from __future__ import annotations
@@ -30,12 +42,43 @@ PPR_RESTART_ALPHA = 0.2
 PPR_MAX_ITERATIONS = 12
 PPR_CONVERGENCE_EPSILON = 1e-6
 PPR_MAX_HOPS = 2
+AUTO_RETRIEVAL_POLICY = "auto"
+SAFE_RETRIEVAL_POLICY = "safe"
+GRAPH_RERANKED_POLICY = "graph_reranked"
+VALID_RETRIEVAL_POLICIES = {
+    AUTO_RETRIEVAL_POLICY,
+    SAFE_RETRIEVAL_POLICY,
+    GRAPH_RERANKED_POLICY,
+}
+SAFE_GRAPH_EDGE_TYPES = tuple(PPR_EDGE_WEIGHTS.keys())
 
 
 def is_code_ppr_enabled() -> bool:
     """Return ``True`` when the code-side graph reranker is enabled."""
     raw = os.getenv("ENABLE_CODE_PPR", "0").strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+def normalize_retrieval_policy(
+    policy: str | None,
+    *,
+    allow_auto: bool,
+) -> str | None:
+    """Normalize one retrieval-policy string for agent-safe code search.
+
+    Args:
+        policy: Raw user-facing or internal policy string.
+        allow_auto: Whether the internal ``auto`` policy is accepted.
+
+    Returns:
+        The normalized policy string, or ``None`` when invalid.
+    """
+    normalized = str(policy or SAFE_RETRIEVAL_POLICY).strip().lower()
+    if normalized == AUTO_RETRIEVAL_POLICY and not allow_auto:
+        return None
+    if normalized in VALID_RETRIEVAL_POLICIES:
+        return normalized
+    return None
 
 
 def search_code(
@@ -45,6 +88,7 @@ def search_code(
     limit: int,
     repo_id: str | None = None,
     use_ppr: bool | None = None,
+    retrieval_policy: str = AUTO_RETRIEVAL_POLICY,
 ) -> list[dict[str, Any]]:
     """Return code results using baseline semantic search or baseline + PPR.
 
@@ -55,9 +99,23 @@ def search_code(
         repo_id: Optional explicit repo scope. Defaults to the graph builder repo.
         use_ppr: Optional override for the feature flag. Tests use this so they
             can exercise the PPR path deterministically.
+        retrieval_policy: ``safe`` for semantic-only agent-safe retrieval,
+            ``graph_reranked`` for structural reranking without ``CALLS``, or
+            ``auto`` to preserve legacy feature-flag behavior.
     """
+    normalized_policy = normalize_retrieval_policy(
+        retrieval_policy,
+        allow_auto=True,
+    )
+    if normalized_policy is None:
+        valid = ", ".join(sorted(VALID_RETRIEVAL_POLICIES))
+        raise ValueError(f"Invalid retrieval_policy '{retrieval_policy}'. Valid values: {valid}")
+
     resolved_repo_id = repo_id or graph.repo_id
-    ppr_requested = is_code_ppr_enabled() if use_ppr is None else bool(use_ppr)
+    ppr_requested = _resolve_ppr_requested(
+        retrieval_policy=normalized_policy,
+        use_ppr=use_ppr,
+    )
     ppr_enabled = ppr_requested and resolved_repo_id is not None
     baseline_limit = max(limit * 3, limit) if ppr_enabled else limit
     baseline_rows = _run_baseline_search(
@@ -70,11 +128,31 @@ def search_code(
         return []
 
     if not ppr_enabled:
-        return baseline_rows[:limit]
+        notes = ["CALLS edges are excluded from ranking in safe retrieval."]
+        if ppr_requested and resolved_repo_id is None:
+            notes.append("Graph reranking was requested but no repo scope was available.")
+        return _annotate_rows(
+            baseline_rows[:limit],
+            retrieval_policy=normalized_policy,
+            retrieval_mode="semantic_only",
+            graph_reranking_applied=False,
+            graph_edge_types_used=[],
+            notes=notes,
+        )
 
     seed_refs = _seed_refs_from_baseline(baseline_rows)
     if not seed_refs:
-        return baseline_rows[:limit]
+        return _annotate_rows(
+            baseline_rows[:limit],
+            retrieval_policy=normalized_policy,
+            retrieval_mode="semantic_only_fallback",
+            graph_reranking_applied=False,
+            graph_edge_types_used=[],
+            notes=[
+                "Graph reranking was requested, but the semantic hits did not map to graph seeds.",
+                "CALLS edges remain excluded from ranking.",
+            ],
+        )
 
     neighborhood = _load_code_neighborhood(
         graph,
@@ -86,7 +164,17 @@ def search_code(
     adjacency = neighborhood["adjacency"]
     node_meta = neighborhood["node_meta"]
     if not seed_ids or not adjacency:
-        return baseline_rows[:limit]
+        return _annotate_rows(
+            baseline_rows[:limit],
+            retrieval_policy=normalized_policy,
+            retrieval_mode="semantic_only_fallback",
+            graph_reranking_applied=False,
+            graph_edge_types_used=[],
+            notes=[
+                "Graph reranking was requested, but no structural neighborhood was available.",
+                "CALLS edges remain excluded from ranking.",
+            ],
+        )
 
     ppr_scores = _run_personalized_page_rank(
         seed_ids=seed_ids,
@@ -102,7 +190,71 @@ def search_code(
         repo_id=resolved_repo_id,
         limit=limit,
     )
-    return reranked_rows or baseline_rows[:limit]
+    if reranked_rows:
+        return _annotate_rows(
+            reranked_rows,
+            retrieval_policy=normalized_policy,
+            retrieval_mode="semantic_plus_graph_rerank",
+            graph_reranking_applied=True,
+            graph_edge_types_used=list(SAFE_GRAPH_EDGE_TYPES),
+            notes=[
+                "Graph reranking used only high-confidence structural edges.",
+                "CALLS edges are excluded from ranking until analyzer-backed coverage improves.",
+            ],
+        )
+    return _annotate_rows(
+        baseline_rows[:limit],
+        retrieval_policy=normalized_policy,
+        retrieval_mode="semantic_only_fallback",
+        graph_reranking_applied=False,
+        graph_edge_types_used=[],
+        notes=[
+            "Graph reranking produced no ranked rows, so semantic fallback was used.",
+            "CALLS edges remain excluded from ranking.",
+        ],
+    )
+
+
+def _resolve_ppr_requested(
+    *,
+    retrieval_policy: str,
+    use_ppr: bool | None,
+) -> bool:
+    """Resolve whether graph reranking should be attempted for this request."""
+    if use_ppr is not None:
+        return bool(use_ppr)
+    if retrieval_policy == SAFE_RETRIEVAL_POLICY:
+        return False
+    if retrieval_policy == GRAPH_RERANKED_POLICY:
+        return True
+    return is_code_ppr_enabled()
+
+
+def _annotate_rows(
+    rows: Iterable[dict[str, Any]],
+    *,
+    retrieval_policy: str,
+    retrieval_mode: str,
+    graph_reranking_applied: bool,
+    graph_edge_types_used: list[str],
+    notes: list[str],
+) -> list[dict[str, Any]]:
+    """Attach retrieval provenance to every row for agent-facing inspection."""
+    annotated_rows: list[dict[str, Any]] = []
+    provenance = {
+        "policy": retrieval_policy,
+        "mode": retrieval_mode,
+        "graph_reranking_applied": graph_reranking_applied,
+        "graph_edge_types_used": list(graph_edge_types_used),
+        "call_edges_used": False,
+        "call_edge_policy": "excluded_from_ranking",
+        "notes": list(notes),
+    }
+    for row in rows:
+        enriched_row = dict(row)
+        enriched_row["retrieval_provenance"] = dict(provenance)
+        annotated_rows.append(enriched_row)
+    return annotated_rows
 
 
 def _seed_refs_from_baseline(rows: Iterable[dict[str, Any]]) -> dict[str, list[str]]:

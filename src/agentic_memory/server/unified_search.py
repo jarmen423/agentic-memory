@@ -7,7 +7,7 @@ from typing import Any, Iterable
 
 from agentic_memory.chat.pipeline import ConversationIngestionPipeline
 from agentic_memory.ingestion.graph import KnowledgeGraphBuilder
-from agentic_memory.server.code_search import search_code
+from agentic_memory.server.code_search import SAFE_RETRIEVAL_POLICY, search_code
 from agentic_memory.server.result_types import UnifiedMemoryHit, UnifiedSearchResponse
 from agentic_memory.server.tools import search_conversation_turns_sync
 from agentic_memory.temporal.seeds import (
@@ -74,6 +74,7 @@ def _normalize_code_results(
         query=query,
         limit=limit,
         repo_id=repo_id,
+        retrieval_policy=SAFE_RETRIEVAL_POLICY,
     )
     hits: list[UnifiedMemoryHit] = []
     for row in rows:
@@ -95,6 +96,7 @@ def _normalize_code_results(
                     "path": row.get("path"),
                     "repo_id": row.get("repo_id"),
                     "labels": row.get("labels"),
+                    "retrieval_provenance": row.get("retrieval_provenance") or {},
                 },
             )
         )

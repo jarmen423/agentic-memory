@@ -389,5 +389,33 @@ Phases 8, 9, 10 are strictly sequential.
 | APScheduler SQLite job store: persistence across Docker restarts | Phase 7 | Medium |
 | PPR half-life default: what values work for conversation vs research memory? | Phase 9 | Medium |
 
+### Phase 11: Code Graph Foundation and Code PPR
+
+**Goal:** Harden the code graph so code retrieval is generalizable across repositories, then add repo-scoped non-temporal code graph reranking without making agents depend on untrusted `CALLS` edges.
+
+**Plans:** 1 draft plan + execution artifacts in progress
+
+Plans:
+- [ ] 11-01-PLAN.md — Repo-scoped identity, canonical parser rollout, retrieval hardening, and code-side PPR plumbing
+
+**Deliverables:**
+- Stable repo-scoped code graph identity (`repo_id`) for files, functions, and classes
+- Canonical parser coverage for Python and JS/TS-like code, including the typed TS arrow-function cases that currently break mapping quality
+- Generic analyzer-to-graph mapping diagnostics so repos degrade predictably instead of requiring per-codebase debugging
+- Agent-safe code retrieval defaults that expose provenance and exclude `CALLS` from ranking until precision gates pass
+- Multi-repo collision fixtures and rollout gates for deciding when code PPR can become default-on
+
+**Success Criteria:**
+- Agents can use code retrieval safely without depending on `CALLS`
+- Repo-scoped code search works across multiple indexed repositories without path/symbol collisions
+- Analyzer-backed edges are observable, confidence-gated, and degrade cleanly when unavailable
+- `m26pipeline`-style repo differences are handled by generic mapping logic, not repo-specific customization
+- The code search contract remains stable across MCP, REST, and unified search surfaces
+
+**Key Risks:**
+- Symbol identity mismatches between parser output and language-service output
+- Monorepo/project-layout variance making analyzer coverage look repo-specific when the real problem is generic mapping
+- Prematurely enabling `CALLS` in traversal before analyzer-backed precision is high enough
+
 ---
-*Last updated: 2026-03-21 after passive ingestion spec integration (am-proxy Phase 5, am-ext Phase 6; former Phase 5 renumbered to Phase 7; total phases: 7)*
+*Last updated: 2026-04-10 after Phase 11 was formalized for code-graph generalization and code-side PPR hardening (total phases: 11)*

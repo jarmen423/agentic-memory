@@ -34,8 +34,9 @@
 
 ## Wave 4
 
-- [ ] Add a Python semantic call analyzer with a repo-local debug surface and fixtures.
-- [ ] Harden JS/TS analyzer-to-graph target resolution without relying on repo-specific symbol rules.
-- [ ] Record analyzer drop reasons so failed semantic edges are inspectable by file, function, and reason.
-- [ ] Extend `call-status` / debug tooling so Python and JS/TS analyzer coverage can be compared by repo.
+- [x] Add a Python semantic call analyzer with a repo-local debug surface and fixtures.
+- [x] Harden JS/TS analyzer-to-graph target resolution without relying on repo-specific symbol rules.
+- [x] Record analyzer drop reasons so failed semantic edges are inspectable by file, function, and reason.
+- [x] Extend `call-status` / debug tooling so Python and JS/TS analyzer coverage can be compared by repo.
+- [x] Stabilize parser symbol extraction so semantic analyzers keep correct names when repo files contain Unicode text before later definitions.
 - [ ] Re-run real-repo indexing on both `D:\code\agentic-memory` and `/home/josh/m26pipeline` to verify analyzer-backed `CALLS` survive full indexing.

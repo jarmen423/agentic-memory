@@ -650,8 +650,20 @@ class CodeParser:
         return raw
 
     def _node_text(self, node: Node, code: str) -> str:
-        """Return the source slice that corresponds to one node."""
-        return code[node.start_byte:node.end_byte]
+        """Return the source slice that corresponds to one node.
+
+        Tree-sitter byte offsets are measured against UTF-8 bytes, not Python's
+        Unicode code-point indexing. Slicing the original `str` directly works
+        only for ASCII-only files. As soon as a file contains emoji or other
+        multi-byte characters before a definition, every later symbol boundary
+        drifts and function names become corrupted.
+
+        Decoding the exact byte range keeps node text stable across repositories
+        that contain Unicode in docstrings, comments, or banners.
+        """
+        return code.encode("utf8")[node.start_byte:node.end_byte].decode(
+            "utf8", errors="ignore"
+        )
 
     def _walk(self, node: Node) -> Iterator[Node]:
         """Yield one node and all descendants depth-first."""

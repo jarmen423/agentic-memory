@@ -84,11 +84,32 @@
         "python -m pytest tests/test_graph.py tests/test_cli.py -q"
       ],
       "handoff_path": ".planning/execution/handoffs/w11-calls/W11-CALLS-03.md"
+    },
+    {
+      "id": "W11-CALLS-04",
+      "title": "Fix parser byte-offset identity drift and align packaging metadata",
+      "status": "completed",
+      "owner": "orchestrator",
+      "depends_on": [
+        "W11-CALLS-03"
+      ],
+      "write_scope": [
+        "src/agentic_memory/ingestion/parser.py",
+        "tests/test_parser.py",
+        "pyproject.toml",
+        "requirements.txt"
+      ],
+      "verify": [
+        "python -m pytest tests/test_parser.py tests/test_python_call_analyzer.py tests/test_graph.py tests/test_cli.py -q",
+        "python -m agentic_memory.cli debug-py-calls src\\agentic_memory\\cli.py --repo D:\\code\\agentic-memory --json"
+      ],
+      "handoff_path": ".planning/execution/handoffs/w11-calls/W11-CALLS-04.md"
     }
   ],
   "merge_gates": [
     "python -m pytest tests/test_python_call_analyzer.py -q",
     "python -m pytest tests/test_typescript_call_analyzer.py -q",
-    "python -m pytest tests/test_graph.py tests/test_cli.py -q"
+    "python -m pytest tests/test_graph.py tests/test_cli.py -q",
+    "python -m pytest tests/test_parser.py tests/test_python_call_analyzer.py tests/test_graph.py tests/test_cli.py -q"
   ]
 }

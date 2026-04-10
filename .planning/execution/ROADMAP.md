@@ -24,3 +24,10 @@
 - Run analyzer unit suites.
 - Run graph and CLI regression suites.
 - Reassess whether `CALLS` is trustworthy enough for later ranking work.
+
+### Wave 4: Parser contract stabilization
+
+- `W11-CALLS-04`: Fix Unicode-safe parser slicing so Python symbol identity stays
+  stable when semantic analyzers run on real repo files.
+- Align packaging metadata so the new Python analyzer dependency is present in
+  both `pyproject.toml` and `requirements.txt`.

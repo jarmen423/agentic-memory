@@ -193,3 +193,30 @@ def test_unsupported_extension_returns_diagnostic(parser: CodeParser) -> None:
     assert result["classes"] == []
     assert result["functions"] == []
     assert result["diagnostics"][0]["kind"] == "unsupported_extension"
+
+
+def test_extract_python_functions_after_unicode_prefix(parser: CodeParser) -> None:
+    """Function identity should survive Unicode characters earlier in the file.
+
+    Phase 11's Python semantic analyzer depends on parser-qualified names being
+    exact. Tree-sitter reports byte offsets, so slicing the Python source string
+    directly can corrupt later symbol names when a file contains emoji or other
+    multi-byte characters before the function definitions.
+    """
+    code = '''
+"""
+CLI banner with emoji: 🚀
+"""
+
+def _command_example(*parts: str) -> str:
+    return " ".join(parts)
+
+def print_banner() -> None:
+    return None
+'''
+
+    result = parser.parse_file(code, ".py")
+    qualified_names = [row["qualified_name"] for row in result["functions"]]
+
+    assert qualified_names[:2] == ["_command_example", "print_banner"]
+    assert result["functions"][0]["name"] == "_command_example"

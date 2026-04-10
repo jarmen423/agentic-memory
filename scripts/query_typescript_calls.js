@@ -195,6 +195,10 @@ function guessQualifiedName(item) {
   return item.containerName ? `${item.containerName}.${item.name}` : item.name;
 }
 
+function incrementCount(counter, key) {
+  counter[key] = (counter[key] ?? 0) + 1;
+}
+
 function dedupeOutgoingCalls(outgoingCalls) {
   const seen = new Set();
   const deduped = [];
@@ -206,6 +210,8 @@ function dedupeOutgoingCalls(outgoingCalls) {
       outgoingCall.kind ?? "",
       outgoingCall.container_name ?? "",
       outgoingCall.qualified_name_guess ?? "",
+      String(outgoingCall.definition_line ?? ""),
+      String(outgoingCall.definition_column ?? ""),
     ].join("::");
 
     if (seen.has(key)) {
@@ -219,19 +225,54 @@ function dedupeOutgoingCalls(outgoingCalls) {
   return deduped;
 }
 
-function buildOutgoingCalls(repoRoot, rawOutgoingCalls) {
+function definitionLocation(program, absoluteTargetPath, target) {
+  const sourceFile = program?.getSourceFile(absoluteTargetPath);
+  const span = target?.selectionSpan ?? target?.span;
+  if (!sourceFile || !span || typeof span.start !== "number") {
+    return {
+      definitionLine: null,
+      definitionColumn: null,
+    };
+  }
+
+  const point = ts.getLineAndCharacterOfPosition(sourceFile, span.start);
+  return {
+    definitionLine: point.line + 1,
+    definitionColumn: point.character + 1,
+  };
+}
+
+function buildOutgoingCalls({ repoRoot, rawOutgoingCalls, program, dropReasonCounts }) {
   const outgoingCalls = [];
 
   for (const callRow of rawOutgoingCalls) {
     const target = callRow.to;
-    if (!target || !target.file || !SUPPORTED_CALL_KINDS.has(target.kind)) {
+    if (!target || !target.file) {
+      incrementCount(dropReasonCounts, "missing_target");
+      continue;
+    }
+
+    if (!SUPPORTED_CALL_KINDS.has(target.kind)) {
+      incrementCount(dropReasonCounts, "unsupported_target_kind");
       continue;
     }
 
     const absoluteTargetPath = path.resolve(target.file);
-    if (!isPathInsideRoot(repoRoot, absoluteTargetPath) || !isSupportedFile(absoluteTargetPath)) {
+    if (!isPathInsideRoot(repoRoot, absoluteTargetPath)) {
+      incrementCount(dropReasonCounts, "external_target");
       continue;
     }
+
+    if (!isSupportedFile(absoluteTargetPath)) {
+      incrementCount(dropReasonCounts, "unsupported_target_extension");
+      continue;
+    }
+
+    const { definitionLine, definitionColumn } = definitionLocation(
+      program,
+      absoluteTargetPath,
+      target,
+    );
 
     outgoingCalls.push({
       path: normalizeRelPath(path.relative(repoRoot, absoluteTargetPath)),
@@ -239,6 +280,8 @@ function buildOutgoingCalls(repoRoot, rawOutgoingCalls) {
       kind: target.kind,
       container_name: target.containerName ?? null,
       qualified_name_guess: guessQualifiedName(target),
+      definition_line: definitionLine,
+      definition_column: definitionColumn,
     });
   }
 
@@ -278,6 +321,7 @@ function analyzeFile({ languageService, repoRoot, fileRequest, globalDiagnostics
   }
 
   const functions = [];
+  const dropReasonCounts = {};
   for (const functionRequest of fileRequest.functions ?? []) {
     const nameLine = Number(functionRequest.name_line ?? 0);
     const nameColumn = Number(functionRequest.name_column ?? 0);
@@ -314,7 +358,23 @@ function analyzeFile({ languageService, repoRoot, fileRequest, globalDiagnostics
     functions.push({
       qualified_name: functionRequest.qualified_name ?? functionRequest.name ?? "",
       name: functionRequest.name ?? functionRequest.qualified_name ?? "",
-      outgoing: buildOutgoingCalls(repoRoot, outgoingCalls ?? []),
+      outgoing: buildOutgoingCalls({
+        repoRoot,
+        rawOutgoingCalls: outgoingCalls ?? [],
+        program,
+        dropReasonCounts,
+      }),
+    });
+  }
+
+  for (const [reason, count] of Object.entries(dropReasonCounts).sort(([a], [b]) =>
+    a.localeCompare(b),
+  )) {
+    diagnostics.push({
+      kind: "drop_reason_count",
+      level: "info",
+      reason,
+      count,
     });
   }
 
@@ -322,6 +382,7 @@ function analyzeFile({ languageService, repoRoot, fileRequest, globalDiagnostics
     path: fileRequest.path,
     functions,
     diagnostics,
+    drop_reason_counts: dropReasonCounts,
   };
 }
 

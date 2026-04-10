@@ -51,6 +51,10 @@ import neo4j
 from agentic_memory.ingestion.git_graph import GitGraphIngestor
 from agentic_memory.ingestion.graph import KnowledgeGraphBuilder
 from agentic_memory.ingestion.parser import CodeParser
+from agentic_memory.ingestion.python_call_analyzer import (
+    PythonCallAnalyzer,
+    PythonCallAnalyzerError,
+)
 from agentic_memory.ingestion.typescript_call_analyzer import (
     TypeScriptCallAnalyzer,
     TypeScriptCallAnalyzerError,
@@ -1037,6 +1041,134 @@ def cmd_debug_ts_calls(args):
         print()
 
 
+def cmd_debug_py_calls(args):
+    """Run the Python semantic call analyzer on one `.py` file without indexing.
+
+    This mirrors `debug-ts-calls` for the Python language-service-backed path.
+    It lets operators answer one question quickly: "what repo-local outgoing
+    calls can the Python semantic analyzer resolve for this file right now?"
+    """
+    repo_root = Path(args.repo).expanduser().resolve() if getattr(args, "repo", None) else find_repo_root()
+    if not repo_root.exists() or not repo_root.is_dir():
+        _exit_with_error(
+            args,
+            error=f"Invalid repository path: {repo_root}",
+            human_lines=[f"❌ Invalid repository path: {repo_root}"],
+        )
+
+    rel_path = str(args.path).replace("\\", "/").strip()
+    full_path = (repo_root / rel_path).resolve()
+    if not full_path.exists() or not full_path.is_file():
+        _exit_with_error(
+            args,
+            error=f"File not found: {full_path}",
+            human_lines=[f"❌ File not found: {full_path}"],
+        )
+
+    if full_path.suffix.lower() != ".py":
+        _exit_with_error(
+            args,
+            error=f"Unsupported file extension for Python analyzer: {full_path.suffix.lower()}",
+            human_lines=[
+                f"❌ Unsupported file extension for Python analyzer: {full_path.suffix.lower()}"
+            ],
+        )
+
+    parser = CodeParser()
+    analyzer = PythonCallAnalyzer()
+    code = full_path.read_text(encoding="utf8", errors="ignore")
+    parsed = parser.parse_file(code, ".py")
+    request = {
+        "path": rel_path,
+        "functions": [
+            {
+                "name": row["name"],
+                "qualified_name": row["qualified_name"],
+                "parent_class": row.get("parent_class") or "",
+                "name_line": row["name_line"],
+                "name_column": row["name_column"],
+            }
+            for row in parsed["functions"]
+        ],
+    }
+
+    if not analyzer.is_available():
+        _exit_with_error(
+            args,
+            error=analyzer.disabled_reason or "Python analyzer is unavailable.",
+            human_lines=[f"❌ {analyzer.disabled_reason or 'Python analyzer is unavailable.'}"],
+        )
+
+    try:
+        results = analyzer.analyze_files(repo_root=repo_root, files=[request])
+    except PythonCallAnalyzerError as exc:
+        _exit_with_error(
+            args,
+            error=f"Python call analysis failed: {exc}",
+            human_lines=[f"❌ Python call analysis failed: {exc}"],
+        )
+
+    file_result = results.get(rel_path)
+    function_rows = []
+    if file_result is not None:
+        for qualified_name, analysis in file_result.functions.items():
+            function_rows.append(
+                {
+                    "qualified_name": qualified_name,
+                    "name": analysis.name,
+                    "outgoing_calls": [
+                        {
+                            "path": call.rel_path,
+                            "name": call.name,
+                            "kind": call.kind,
+                            "container_name": call.container_name,
+                            "qualified_name_guess": call.qualified_name_guess,
+                            "definition_line": call.definition_line,
+                            "definition_column": call.definition_column,
+                        }
+                        for call in analysis.outgoing_calls
+                    ],
+                }
+            )
+
+    data = {
+        "repository": str(repo_root),
+        "path": rel_path,
+        "function_count": len(parsed["functions"]),
+        "functions": function_rows,
+        "diagnostics": list(file_result.diagnostics) if file_result is not None else [],
+    }
+
+    if _emit_success(
+        args,
+        data=data,
+        metrics={
+            "function_count": len(parsed["functions"]),
+            "analyzed_functions": len(function_rows),
+        },
+    ):
+        return
+
+    print(f"## Python Call Analysis for `{rel_path}`\n")
+    print(f"Repository: {repo_root}")
+    print(f"Functions analyzed: {len(function_rows)} / {len(parsed['functions'])}\n")
+    if not function_rows:
+        print("No analyzer-resolved functions found.")
+        return
+
+    for row in function_rows:
+        print(f"### {row['qualified_name']}")
+        outgoing_calls = row["outgoing_calls"]
+        if not outgoing_calls:
+            print("- No outgoing calls resolved.")
+            print()
+            continue
+        for call in outgoing_calls:
+            target = call["qualified_name_guess"] or call["name"]
+            print(f"- {call['path']} :: {target}")
+        print()
+
+
 def cmd_call_status(args):
     """Report CALLS-edge coverage and provenance for one repository.
 
@@ -1082,6 +1214,12 @@ def cmd_call_status(args):
             f"  Files with call edges: {diagnostics['files_with_call_edges']:,} / {diagnostics['files_with_functions']:,}"
         )
         print(f"  Files with analyzer edges: {diagnostics['files_with_analyzer_edges']:,}")
+        print(
+            f"  Files with analyzer attempts: {diagnostics.get('files_with_analyzer_attempts', 0):,}"
+        )
+        print(
+            f"  Files with drop reasons: {diagnostics.get('files_with_drop_reasons', 0):,}"
+        )
         print(f"  File coverage ratio: {diagnostics['file_coverage_ratio']:.1%}")
         print()
         print("Edges")
@@ -1100,6 +1238,15 @@ def cmd_call_status(args):
                 )
         else:
             print("  No CALLS edges recorded yet.")
+
+        drop_reasons = diagnostics.get("drop_reasons", [])
+        if drop_reasons:
+            print()
+            print("Drop Reasons")
+            for row in drop_reasons:
+                print(
+                    f"  {row['source']} :: {row['reason']} = {row['drop_count']:,}"
+                )
 
     except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ServiceUnavailable) as exc:
         _exit_with_error(
@@ -2492,6 +2639,7 @@ Commands:
   {primary_name} watch             # Continuous monitoring
   {primary_name} serve             # Start MCP server
   {primary_name} search <query>    # Test code semantic search
+  {primary_name} debug-py-calls    # Inspect Python analyzer output for one file
   {primary_name} debug-ts-calls    # Inspect JS/TS analyzer output for one file
   {primary_name} call-status       # Show CALLS-edge coverage and provenance
   {primary_name} git-init          # Enable git graph integration
@@ -2621,6 +2769,26 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
         "--limit", "-l", type=int, default=5, help="Maximum results to return"
     )
     search_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output",
+    )
+
+    # Command: debug-ts-calls (TypeScript analyzer diagnostics)
+    debug_py_calls_parser = subparsers.add_parser(
+        "debug-py-calls",
+        help="Run the Python semantic call analyzer on one file without indexing",
+    )
+    debug_py_calls_parser.add_argument(
+        "path",
+        help="Repo-relative path to a .py file",
+    )
+    debug_py_calls_parser.add_argument(
+        "--repo",
+        type=str,
+        help="Repository root to analyze. Defaults to the detected current repo root.",
+    )
+    debug_py_calls_parser.add_argument(
         "--json",
         action="store_true",
         help="Emit machine-readable JSON output",
@@ -3068,6 +3236,8 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
         cmd_serve(args)
     elif args.command == "search":
         cmd_search(args)
+    elif args.command == "debug-py-calls":
+        cmd_debug_py_calls(args)
     elif args.command == "debug-ts-calls":
         cmd_debug_ts_calls(args)
     elif args.command == "call-status":

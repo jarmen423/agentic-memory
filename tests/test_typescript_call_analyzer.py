@@ -95,11 +95,64 @@ def test_typescript_call_analyzer_resolves_cross_file_calls(tmp_path: Path) -> N
     assert [(call.rel_path, call.name, call.qualified_name_guess) for call in foo_calls] == [
         ("src/b.ts", "bar", "bar")
     ]
+    assert foo_calls[0].definition_line == 1
+    assert foo_calls[0].definition_column == 17
 
     run_calls = results["src/c.ts"].functions["A.run"].outgoing_calls
     assert [(call.rel_path, call.name, call.qualified_name_guess) for call in run_calls] == [
         ("src/b.ts", "work", "B.work")
     ]
+    assert run_calls[0].definition_line == 3
+
+
+def test_typescript_call_analyzer_reports_dropped_external_targets(tmp_path: Path) -> None:
+    """Analyzer diagnostics should count dropped non-repo targets explicitly."""
+    repo_root = tmp_path
+    src_dir = repo_root / "src"
+    src_dir.mkdir()
+
+    files = {
+        "src/app.ts": (
+            "import { localHelper } from './local';\n"
+            "export function runApp() {\n"
+            "  console.log('hello');\n"
+            "  localHelper();\n"
+            "}\n"
+        ),
+        "src/local.ts": "export function localHelper() {}\n",
+        "tsconfig.json": json.dumps(
+            {
+                "compilerOptions": {
+                    "allowJs": True,
+                    "module": "esnext",
+                    "moduleResolution": "node",
+                    "target": "es2022",
+                },
+                "include": ["src/**/*"],
+            }
+        ),
+    }
+    for rel_path, contents in files.items():
+        target_path = repo_root / rel_path
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text(contents, encoding="utf8")
+
+    analyzer = TypeScriptCallAnalyzer()
+    if not analyzer.is_available():
+        pytest.skip(analyzer.disabled_reason or "TypeScript analyzer is unavailable.")
+
+    code_parser = CodeParser()
+    results = analyzer.analyze_files(
+        repo_root=repo_root,
+        files=[_build_analyzer_request(code_parser, "src/app.ts", files["src/app.ts"])],
+    )
+
+    file_result = results["src/app.ts"]
+    assert file_result.drop_reason_counts["external_target"] >= 1
+    assert any(
+        row.get("kind") == "drop_reason_count" and row.get("reason") == "external_target"
+        for row in file_result.diagnostics
+    )
 
 
 def test_typescript_call_analyzer_keeps_duplicate_paths_repo_local(tmp_path: Path) -> None:

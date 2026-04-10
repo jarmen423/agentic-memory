@@ -31,3 +31,11 @@
 - [ ] Benchmark exact-hit vs neighborhood-query behavior with `ENABLE_CODE_PPR=1`.
 - [ ] Decide when `CALLS` can enter the traversal graph.
 - [ ] Decide when to flip `ENABLE_CODE_PPR` on by default.
+
+## Wave 4
+
+- [ ] Add a Python semantic call analyzer with a repo-local debug surface and fixtures.
+- [ ] Harden JS/TS analyzer-to-graph target resolution without relying on repo-specific symbol rules.
+- [ ] Record analyzer drop reasons so failed semantic edges are inspectable by file, function, and reason.
+- [ ] Extend `call-status` / debug tooling so Python and JS/TS analyzer coverage can be compared by repo.
+- [ ] Re-run real-repo indexing on both `D:\code\agentic-memory` and `/home/josh/m26pipeline` to verify analyzer-backed `CALLS` survive full indexing.

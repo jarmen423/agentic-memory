@@ -19,6 +19,7 @@ import fnmatch
 import math
 import posixpath
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Any, List, Dict, Optional, Tuple, Set
 from functools import wraps
@@ -33,6 +34,11 @@ from agentic_memory.core.embedding import EmbeddingService
 from agentic_memory.core.registry import register_source
 from agentic_memory.core.runtime_embedding import EmbeddingRuntimeConfig, resolve_embedding_runtime
 from agentic_memory.ingestion.parser import CodeParser
+from agentic_memory.ingestion.python_call_analyzer import (
+    PythonCallAnalyzer,
+    PythonCallAnalyzerError,
+    PythonFileCallAnalysis,
+)
 from agentic_memory.ingestion.typescript_call_analyzer import (
     TypeScriptCallAnalyzer,
     TypeScriptCallAnalyzerError,
@@ -389,6 +395,14 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         if analyzer is None:
             analyzer = TypeScriptCallAnalyzer()
             self._typescript_call_analyzer = analyzer
+        return analyzer
+
+    def _get_python_call_analyzer(self) -> PythonCallAnalyzer:
+        """Return the cached Python semantic call analyzer helper."""
+        analyzer = getattr(self, "_python_call_analyzer", None)
+        if analyzer is None:
+            analyzer = PythonCallAnalyzer()
+            self._python_call_analyzer = analyzer
         return analyzer
 
     def _set_repo_context(self, repo_path: Path) -> tuple[Path, str]:
@@ -800,6 +814,8 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                         SET fn.name = $name,
                             fn.qualified_name = $qualified_name,
                             fn.parent_class = $parent_class,
+                            fn.name_line = $name_line,
+                            fn.name_column = $name_column,
                             fn.code = $code,
                             fn.path = $path
                         MERGE (f)-[:DEFINES]->(fn)
@@ -810,6 +826,8 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                         name=function_name,
                         qualified_name=qualified_name,
                         parent_class=parent_class,
+                        name_line=function_row.get("name_line"),
+                        name_column=function_row.get("name_column"),
                         code=function_code,
                     )
 
@@ -1036,7 +1054,11 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
     def _build_function_signature_indexes(
         self,
         file_records: list[neo4j.Record],
-    ) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, list[str]]]]:
+    ) -> tuple[
+        dict[str, dict[str, str]],
+        dict[str, dict[str, list[str]]],
+        dict[str, dict[tuple[int, int], str]],
+    ]:
         """Build lookup tables for repo-scoped function signatures.
 
         Pass 4 needs to translate analyzer output back into the graph's stable
@@ -1044,14 +1066,21 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         ``repo_id + signature`` where the signature is ``path:qualified_name``.
         TypeScript's call hierarchy gives us target file paths plus symbol
         names/container names, so we build exact and fallback indexes here.
+
+        Some semantic analyzers can also point at the exact definition line and
+        column for the target symbol. The positional index gives Pass 4 one more
+        repo-generic way to disambiguate collisions inside a single file before
+        it falls back to the noisy short-name heuristic.
         """
         qualified_index: dict[str, dict[str, str]] = {}
         name_index: dict[str, dict[str, list[str]]] = {}
+        position_index: dict[str, dict[tuple[int, int], str]] = {}
 
         for record in file_records:
             rel_path = record["path"]
             per_path_qualified: dict[str, str] = {}
             per_path_name: dict[str, list[str]] = {}
+            per_path_position: dict[tuple[int, int], str] = {}
 
             for function_row in record["funcs"]:
                 signature = str(function_row["sig"])
@@ -1063,11 +1092,16 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                     per_path_qualified[qualified_name] = signature
                 if function_name:
                     per_path_name.setdefault(function_name, []).append(signature)
+                name_line = function_row.get("name_line")
+                name_column = function_row.get("name_column")
+                if isinstance(name_line, int) and isinstance(name_column, int):
+                    per_path_position[(name_line, name_column)] = signature
 
             qualified_index[rel_path] = per_path_qualified
             name_index[rel_path] = per_path_name
+            position_index[rel_path] = per_path_position
 
-        return qualified_index, name_index
+        return qualified_index, name_index, position_index
 
     def _prepare_typescript_analysis_requests(
         self,
@@ -1117,32 +1151,113 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
 
         return parsed_by_path, analyzer_requests
 
+    def _prepare_python_analysis_requests(
+        self,
+        *,
+        file_records: list[neo4j.Record],
+        parsed_by_path: dict[str, dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Prepare Python semantic-analyzer requests from the shared parser rows."""
+        analyzer_requests: list[dict[str, Any]] = []
+
+        for record in file_records:
+            rel_path = record["path"]
+            if Path(rel_path).suffix.lower() != ".py":
+                continue
+
+            parsed = parsed_by_path.get(rel_path)
+            if not parsed or not parsed["functions"]:
+                continue
+
+            analyzer_requests.append(
+                {
+                    "path": rel_path,
+                    "functions": [
+                        {
+                            "name": function_row["name"],
+                            "qualified_name": function_row.get("qualified_name")
+                            or function_row["name"],
+                            "parent_class": function_row.get("parent_class") or "",
+                            "name_line": function_row.get("name_line"),
+                            "name_column": function_row.get("name_column"),
+                        }
+                        for function_row in parsed["functions"]
+                    ],
+                }
+            )
+
+        return analyzer_requests
+
+    def _resolve_semantic_call_target(
+        self,
+        call_target: Any,
+        *,
+        qualified_index: dict[str, dict[str, str]],
+        name_index: dict[str, dict[str, list[str]]],
+        position_index: dict[str, dict[tuple[int, int], str]],
+    ) -> tuple[str | None, str]:
+        """Map one semantic analyzer target back to a graph function signature.
+
+        This shared helper keeps Python and JS/TS analyzers on the same graph
+        contract. The caller can still label the edge source separately, but the
+        matching logic should stay generic so real repos fail for understandable
+        reasons rather than language-specific copy-paste divergence.
+        """
+        target_path = getattr(call_target, "rel_path", None)
+        if not target_path:
+            return None, "missing_target_path"
+
+        per_path_qualified = qualified_index.get(target_path, {})
+        per_path_name = name_index.get(target_path, {})
+        per_path_position = position_index.get(target_path, {})
+        if not per_path_qualified and not per_path_name and not per_path_position:
+            return None, "target_path_not_indexed"
+
+        qualified_name_guess = getattr(call_target, "qualified_name_guess", None)
+        if qualified_name_guess:
+            exact_signature = per_path_qualified.get(qualified_name_guess)
+            if exact_signature:
+                return exact_signature, "matched_qualified_name"
+
+        target_line = (
+            getattr(call_target, "definition_line", None)
+            or getattr(call_target, "target_line", None)
+            or getattr(call_target, "name_line", None)
+        )
+        target_column = (
+            getattr(call_target, "definition_column", None)
+            or getattr(call_target, "target_column", None)
+            or getattr(call_target, "name_column", None)
+        )
+        if isinstance(target_line, int) and isinstance(target_column, int):
+            position_signature = per_path_position.get((target_line, target_column))
+            if position_signature:
+                return position_signature, "matched_target_position"
+
+        target_name = getattr(call_target, "name", "")
+        name_candidates = per_path_name.get(target_name, [])
+        if len(name_candidates) == 1:
+            return name_candidates[0], "matched_unique_name"
+        if len(name_candidates) > 1:
+            return None, "ambiguous_short_name"
+
+        return None, "no_matching_symbol"
+
     def _resolve_typescript_call_target(
         self,
         call_target: TypeScriptOutgoingCall,
         *,
         qualified_index: dict[str, dict[str, str]],
         name_index: dict[str, dict[str, list[str]]],
-    ) -> str | None:
-        """Map one TypeScript analyzer target back to a graph function signature."""
-        target_path = call_target.rel_path
-        if not target_path:
-            return None
-
-        per_path_qualified = qualified_index.get(target_path, {})
-        per_path_name = name_index.get(target_path, {})
-
-        qualified_name_guess = call_target.qualified_name_guess
-        if qualified_name_guess:
-            exact_signature = per_path_qualified.get(qualified_name_guess)
-            if exact_signature:
-                return exact_signature
-
-        name_candidates = per_path_name.get(call_target.name, [])
-        if len(name_candidates) == 1:
-            return name_candidates[0]
-
-        return None
+        position_index: dict[str, dict[tuple[int, int], str]],
+    ) -> tuple[str | None, str]:
+        """Compatibility wrapper for the shared semantic-target matcher."""
+        return self._resolve_semantic_call_target(
+            call_target,
+            qualified_index=qualified_index,
+            name_index=name_index,
+            position_index=position_index,
+        )
 
     def _write_call_edges(
         self,
@@ -1175,6 +1290,80 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             confidence=confidence,
         )
 
+    def _clear_call_analysis_artifacts(
+        self,
+        session: neo4j.Session,
+        *,
+        repo_id: str,
+        rel_path: str,
+    ) -> None:
+        """Delete one file's outgoing CALLS edges and drop diagnostics.
+
+        Pass 4 is an idempotent rebuild step. Re-indexing a file should replace
+        both its outgoing `CALLS` edges and any persisted semantic-analysis drop
+        reasons from the previous run. Keeping both cleanup operations together
+        avoids stale diagnostics that would otherwise make `call-status` look
+        worse than the current code actually is.
+        """
+        session.run(
+            """
+            MATCH (:File {repo_id: $repo_id, path: $path})-[:DEFINES]->(fn:Function)-[r:CALLS]->()
+            DELETE r
+            """,
+            repo_id=repo_id,
+            path=rel_path,
+        )
+        session.run(
+            """
+            MATCH (:File {repo_id: $repo_id, path: $path})-[r:CALL_ANALYSIS_DROP]->(:CallDropReason)
+            DELETE r
+            """,
+            repo_id=repo_id,
+            path=rel_path,
+        )
+
+    def _write_call_drop_reasons(
+        self,
+        session: neo4j.Session,
+        *,
+        repo_id: str,
+        rel_path: str,
+        source: str,
+        drop_reasons: dict[str, int],
+    ) -> None:
+        """Persist per-file semantic-analysis drop reasons for later diagnostics.
+
+        The important operational question after indexing is not just
+        "how many `CALLS` edges do we have?" but also "why did semantic targets
+        fail to become edges?". We store those reasons on the file node so
+        `call-status` can aggregate them without re-running the analyzers.
+        """
+        if not drop_reasons:
+            return
+
+        rows = [
+            {"reason": reason, "count": int(count)}
+            for reason, count in sorted(drop_reasons.items())
+            if count
+        ]
+        if not rows:
+            return
+
+        session.run(
+            """
+            MATCH (file:File {repo_id: $repo_id, path: $path})
+            UNWIND $rows as row
+            MERGE (reason:CallDropReason {name: row.reason})
+            MERGE (file)-[r:CALL_ANALYSIS_DROP {source: $source}]->(reason)
+            SET r.count = row.count,
+                r.last_updated = datetime()
+            """,
+            repo_id=repo_id,
+            path=rel_path,
+            source=source,
+            rows=rows,
+        )
+
     # =========================================================================
     # PASS 4: CALL GRAPH (OPTIMIZED)
     # =========================================================================
@@ -1183,13 +1372,16 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         """
         Link functions based on calls.
 
-        The call graph now has two resolution modes:
-        - Python and fallback JS/TS: conservative parser-only same-file linking.
+        The call graph now has three resolution modes:
+        - Python when available: basedpyright-backed semantic analysis.
         - JS/TS when available: TypeScript semantic call analysis across the repo.
+        - Fallback for any unsupported/unavailable case: conservative parser-only
+          same-file linking.
 
-        This keeps Pass 4 safe by preferring exact analyzer-backed targets for
-        JS/TS, while still preserving a deterministic static fallback when the
-        local TypeScript helper is unavailable.
+        This keeps Pass 4 safe by preferring exact analyzer-backed targets when
+        the local language-service helper can resolve them, while still
+        preserving a deterministic static fallback when semantic analysis is
+        unavailable.
 
         Args:
             repo_path: Path to repository root (defaults to self.repo_root)
@@ -1207,19 +1399,28 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                            name: fn.name,
                            sig: fn.signature,
                            qualified_name: fn.qualified_name,
-                           parent_class: fn.parent_class
+                           parent_class: fn.parent_class,
+                           name_line: fn.name_line,
+                           name_column: fn.name_column
                        }) as funcs
                 """,
                 repo_id=repo_id,
             )
             file_records = list(result)
             total_files = len(file_records)
-            qualified_index, name_index = self._build_function_signature_indexes(file_records)
+            qualified_index, name_index, position_index = self._build_function_signature_indexes(
+                file_records
+            )
             parsed_by_path, analyzer_requests = self._prepare_typescript_analysis_requests(
                 repo_path=repo_path,
                 file_records=file_records,
             )
+            python_requests = self._prepare_python_analysis_requests(
+                file_records=file_records,
+                parsed_by_path=parsed_by_path,
+            )
             typescript_results: dict[str, TypeScriptFileCallAnalysis] = {}
+            python_results: dict[str, PythonFileCallAnalysis] = {}
 
             if analyzer_requests:
                 analyzer = self._get_typescript_call_analyzer()
@@ -1237,6 +1438,25 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                 else:
                     logger.info(
                         "TypeScript call analyzer unavailable; using parser-only CALLS. Reason: %s",
+                        analyzer.disabled_reason,
+                    )
+
+            if python_requests:
+                analyzer = self._get_python_call_analyzer()
+                if analyzer.is_available():
+                    try:
+                        python_results = analyzer.analyze_files(
+                            repo_root=repo_path,
+                            files=python_requests,
+                        )
+                    except PythonCallAnalyzerError as exc:
+                        logger.warning(
+                            "⚠️ Python call analyzer failed; falling back to parser-only CALLS: %s",
+                            exc,
+                        )
+                else:
+                    logger.info(
+                        "Python call analyzer unavailable; using parser-only CALLS. Reason: %s",
                         analyzer.disabled_reason,
                     )
 
@@ -1258,15 +1478,12 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                     if not function_rows:
                         continue
 
-                    # Clear outgoing calls for functions defined in this file so
-                    # the call graph stays idempotent across rebuilds.
-                    session.run(
-                        """
-                        MATCH (:File {repo_id: $repo_id, path: $path})-[:DEFINES]->(fn:Function)-[r:CALLS]->()
-                        DELETE r
-                        """,
+                    # Clear outgoing calls and drop diagnostics for this file so
+                    # Pass 4 remains idempotent across rebuilds.
+                    self._clear_call_analysis_artifacts(
+                        session,
                         repo_id=repo_id,
-                        path=rel_path,
+                        rel_path=rel_path,
                     )
 
                     local_candidates: dict[str, list[str]] = {}
@@ -1277,30 +1494,67 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                         )
 
                     typescript_file_result = typescript_results.get(rel_path)
+                    python_file_result = python_results.get(rel_path)
+                    typescript_drop_reasons: Counter[str] = Counter()
+                    python_drop_reasons: Counter[str] = Counter(
+                        (python_file_result.drop_reason_counts or {})
+                        if python_file_result is not None
+                        else {}
+                    )
                     for function_row in function_rows:
                         caller_signature = f"{rel_path}:{function_row['qualified_name']}"
                         resolved_calls: list[str] = []
                         call_source = "static_parser"
                         call_confidence = 0.6
 
+                        python_function_result = None
                         typescript_function_result = None
                         if typescript_file_result is not None:
                             typescript_function_result = typescript_file_result.functions.get(
                                 function_row["qualified_name"]
                             )
+                        if python_file_result is not None:
+                            python_function_result = python_file_result.functions.get(
+                                function_row["qualified_name"]
+                            )
 
-                        if typescript_function_result is not None:
-                            call_source = "typescript_service"
+                        if python_function_result is not None:
+                            call_source = "python_service"
                             call_confidence = 0.95
-                            for call_target in typescript_function_result.outgoing_calls:
-                                candidate_sig = self._resolve_typescript_call_target(
+                            for call_target in python_function_result.outgoing_calls:
+                                candidate_sig, reason = self._resolve_semantic_call_target(
                                     call_target,
                                     qualified_index=qualified_index,
                                     name_index=name_index,
+                                    position_index=position_index,
                                 )
                                 if candidate_sig and candidate_sig != caller_signature:
                                     resolved_calls.append(candidate_sig)
+                                elif candidate_sig == caller_signature:
+                                    python_drop_reasons["self_edge"] += 1
+                                else:
+                                    python_drop_reasons[reason] += 1
+                        elif typescript_function_result is not None:
+                            call_source = "typescript_service"
+                            call_confidence = 0.95
+                            for call_target in typescript_function_result.outgoing_calls:
+                                candidate_sig, reason = self._resolve_typescript_call_target(
+                                    call_target,
+                                    qualified_index=qualified_index,
+                                    name_index=name_index,
+                                    position_index=position_index,
+                                )
+                                if candidate_sig and candidate_sig != caller_signature:
+                                    resolved_calls.append(candidate_sig)
+                                elif candidate_sig == caller_signature:
+                                    typescript_drop_reasons["self_edge"] += 1
+                                else:
+                                    typescript_drop_reasons[reason] += 1
                         else:
+                            if python_file_result is not None:
+                                python_drop_reasons["missing_function_analysis"] += 1
+                            elif typescript_file_result is not None:
+                                typescript_drop_reasons["missing_function_analysis"] += 1
                             for called_name in function_row.get("calls", []):
                                 candidate_sigs = local_candidates.get(called_name, [])
                                 if (
@@ -1321,6 +1575,21 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                             source=call_source,
                             confidence=call_confidence,
                         )
+
+                    self._write_call_drop_reasons(
+                        session,
+                        repo_id=repo_id,
+                        rel_path=rel_path,
+                        source="typescript_service",
+                        drop_reasons=dict(typescript_drop_reasons),
+                    )
+                    self._write_call_drop_reasons(
+                        session,
+                        repo_id=repo_id,
+                        rel_path=rel_path,
+                        source="python_service",
+                        drop_reasons=dict(python_drop_reasons),
+                    )
 
                 except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
                     logger.warning(f"⚠️ Failed to process calls in {rel_path}: {e}")
@@ -1670,18 +1939,51 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                     high_confidence_threshold=high_confidence_threshold,
                 ).single()
 
+                analyzer_sources = ["python_service", "typescript_service"]
                 file_coverage = session.run(
                     """
                     MATCH (file:File {repo_id: $repo_id})-[:DEFINES]->(fn:Function)
-                    OPTIONAL MATCH (fn)-[r:CALLS]->()
-                    WITH file,
-                         count(r) as total_edges,
-                         sum(CASE WHEN coalesce(r.source, "unknown") = "typescript_service" THEN 1 ELSE 0 END) as analyzer_edges
                     RETURN count(DISTINCT file) as files_with_functions,
-                           count(DISTINCT CASE WHEN total_edges > 0 THEN file END) as files_with_call_edges,
-                           count(DISTINCT CASE WHEN analyzer_edges > 0 THEN file END) as files_with_analyzer_edges
+                           count(
+                               DISTINCT CASE
+                                   WHEN EXISTS {
+                                       MATCH (file)-[:DEFINES]->(:Function)-[:CALLS]->()
+                                   }
+                                   THEN file
+                               END
+                           ) as files_with_call_edges,
+                           count(
+                               DISTINCT CASE
+                                   WHEN EXISTS {
+                                       MATCH (file)-[:DEFINES]->(:Function)-[r:CALLS]->()
+                                       WHERE coalesce(r.source, "unknown") IN $analyzer_sources
+                                   }
+                                   THEN file
+                               END
+                           ) as files_with_analyzer_edges,
+                           count(
+                               DISTINCT CASE
+                                   WHEN EXISTS {
+                                       MATCH (file)-[:DEFINES]->(:Function)-[r:CALLS]->()
+                                       WHERE coalesce(r.source, "unknown") IN $analyzer_sources
+                                   }
+                                   OR EXISTS {
+                                       MATCH (file)-[:CALL_ANALYSIS_DROP]->(:CallDropReason)
+                                   }
+                                   THEN file
+                               END
+                           ) as files_with_analyzer_attempts,
+                           count(
+                               DISTINCT CASE
+                                   WHEN EXISTS {
+                                       MATCH (file)-[:CALL_ANALYSIS_DROP]->(:CallDropReason)
+                                   }
+                                   THEN file
+                               END
+                           ) as files_with_drop_reasons
                     """,
                     repo_id=resolved_repo_id,
+                    analyzer_sources=analyzer_sources,
                 ).single()
 
                 source_rows = session.run(
@@ -1704,6 +2006,26 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                     for record in source_rows
                 ]
 
+                drop_reason_rows = session.run(
+                    """
+                    MATCH (:File {repo_id: $repo_id})-[r:CALL_ANALYSIS_DROP]->(reason:CallDropReason)
+                    RETURN reason.name as reason,
+                           coalesce(r.source, "unknown") as source,
+                           sum(coalesce(r.count, 0)) as drop_count
+                    ORDER BY drop_count DESC, source ASC, reason ASC
+                    """,
+                    repo_id=resolved_repo_id,
+                )
+
+                drop_reasons = [
+                    {
+                        "reason": record["reason"],
+                        "source": record["source"],
+                        "drop_count": int(record["drop_count"] or 0),
+                    }
+                    for record in drop_reason_rows
+                ]
+
             total_functions = int(summary["total_functions"] or 0)
             functions_with_calls = int(summary["functions_with_calls"] or 0)
             total_call_edges = int(summary["total_call_edges"] or 0)
@@ -1711,6 +2033,8 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             files_with_functions = int(file_coverage["files_with_functions"] or 0)
             files_with_call_edges = int(file_coverage["files_with_call_edges"] or 0)
             files_with_analyzer_edges = int(file_coverage["files_with_analyzer_edges"] or 0)
+            files_with_analyzer_attempts = int(file_coverage["files_with_analyzer_attempts"] or 0)
+            files_with_drop_reasons = int(file_coverage["files_with_drop_reasons"] or 0)
 
             functions_without_calls = max(total_functions - functions_with_calls, 0)
             function_coverage_ratio = (
@@ -1736,8 +2060,11 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                 "files_with_functions": files_with_functions,
                 "files_with_call_edges": files_with_call_edges,
                 "files_with_analyzer_edges": files_with_analyzer_edges,
+                "files_with_analyzer_attempts": files_with_analyzer_attempts,
+                "files_with_drop_reasons": files_with_drop_reasons,
                 "file_coverage_ratio": file_coverage_ratio,
                 "sources": sources,
+                "drop_reasons": drop_reasons,
             }
 
         return self.circuit_breaker.call(_execute_call_diagnostics)

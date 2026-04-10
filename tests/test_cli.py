@@ -11,6 +11,11 @@ from unittest.mock import Mock
 import pytest
 
 from agentic_memory import cli
+from agentic_memory.ingestion.python_call_analyzer import (
+    PythonFileCallAnalysis,
+    PythonFunctionCallAnalysis,
+    PythonOutgoingCall,
+)
 from agentic_memory.ingestion.typescript_call_analyzer import (
     TypeScriptFileCallAnalysis,
     TypeScriptFunctionCallAnalysis,
@@ -459,6 +464,76 @@ def test_debug_ts_calls_json_success(monkeypatch, capsys, tmp_path):
     )
 
 
+def test_debug_py_calls_json_success(monkeypatch, capsys, tmp_path):
+    """debug-py-calls emits analyzer output without touching Neo4j."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    target_file = repo_root / "app.py"
+    target_file.write_text(
+        "from helper import run\n\n\ndef app():\n    run()\n",
+        encoding="utf-8",
+    )
+
+    parser_result = {
+        "functions": [
+            {
+                "name": "app",
+                "qualified_name": "app",
+                "parent_class": "",
+                "name_line": 4,
+                "name_column": 5,
+            }
+        ]
+    }
+
+    parser = Mock()
+    parser.parse_file.return_value = parser_result
+    monkeypatch.setattr(cli, "CodeParser", Mock(return_value=parser))
+
+    analyzer = Mock()
+    analyzer.is_available.return_value = True
+    analyzer.analyze_files.return_value = {
+        "app.py": PythonFileCallAnalysis(
+            rel_path="app.py",
+            functions={
+                "app": PythonFunctionCallAnalysis(
+                    qualified_name="app",
+                    name="app",
+                    outgoing_calls=(
+                        PythonOutgoingCall(
+                            rel_path="helper.py",
+                            name="run",
+                            kind="function",
+                            container_name=None,
+                            qualified_name_guess="run",
+                            definition_line=1,
+                            definition_column=5,
+                        ),
+                    ),
+                )
+            },
+            diagnostics=(),
+            drop_reason_counts={},
+        )
+    }
+    monkeypatch.setattr(cli, "PythonCallAnalyzer", Mock(return_value=analyzer))
+
+    cli.cmd_debug_py_calls(
+        argparse.Namespace(
+            path="app.py",
+            repo=str(repo_root),
+            json=True,
+        )
+    )
+
+    payload = _parse_json_stdout(capsys)
+    assert payload["ok"] is True
+    assert payload["error"] is None
+    assert payload["data"]["path"] == "app.py"
+    assert payload["data"]["function_count"] == 1
+    assert payload["data"]["functions"][0]["outgoing_calls"][0]["definition_line"] == 1
+
+
 def test_debug_ts_calls_rejects_unsupported_extension(monkeypatch, capsys, tmp_path):
     """debug-ts-calls should fail cleanly for non-JS/TS files."""
     repo_root = tmp_path / "repo"
@@ -502,6 +577,8 @@ def test_call_status_json_success(monkeypatch, capsys, tmp_path):
         "files_with_functions": 4,
         "files_with_call_edges": 3,
         "files_with_analyzer_edges": 2,
+        "files_with_analyzer_attempts": 3,
+        "files_with_drop_reasons": 1,
         "file_coverage_ratio": 0.75,
         "sources": [
             {
@@ -514,6 +591,13 @@ def test_call_status_json_success(monkeypatch, capsys, tmp_path):
                 "edge_count": 2,
                 "avg_confidence": 0.6,
             },
+        ],
+        "drop_reasons": [
+            {
+                "reason": "ambiguous_name_match",
+                "source": "typescript_service",
+                "drop_count": 2,
+            }
         ],
     }
 
@@ -528,6 +612,8 @@ def test_call_status_json_success(monkeypatch, capsys, tmp_path):
     assert payload["error"] is None
     assert payload["data"]["repository"] == str(repo_root)
     assert payload["data"]["diagnostics"]["repo_id"] == str(repo_root)
+    assert payload["data"]["diagnostics"]["files_with_analyzer_attempts"] == 3
+    assert payload["data"]["diagnostics"]["drop_reasons"][0]["reason"] == "ambiguous_name_match"
     assert payload["metrics"]["total_call_edges"] == 9
     assert payload["metrics"]["function_coverage_ratio"] == 0.6
     assert payload["metrics"]["high_confidence_ratio"] == pytest.approx(7 / 9)
@@ -628,6 +714,7 @@ def test_init_writes_agentic_memory_env_file_for_env_backed_settings(
     monkeypatch.setenv("NEO4J_URI", "bolt://localhost:7667")
     monkeypatch.setenv("NEO4J_USERNAME", "neo4j")
     monkeypatch.setenv("NEO4J_PASSWORD", "password")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.setenv("GOOGLE_API_KEY", "google-test-key")
     monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
     monkeypatch.setattr(cli.Path, "cwd", Mock(return_value=repo_root))

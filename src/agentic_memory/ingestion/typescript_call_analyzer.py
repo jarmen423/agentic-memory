@@ -57,6 +57,10 @@ class TypeScriptOutgoingCall:
         container_name: Optional parent container such as a class name.
         qualified_name_guess: Best-effort ``container.name`` representation that
             the graph layer can try to map onto its own qualified-name scheme.
+        definition_line: 1-based line for the resolved target definition when
+            TypeScript can provide it.
+        definition_column: 1-based column for the resolved target definition
+            when TypeScript can provide it.
     """
 
     rel_path: str
@@ -64,6 +68,8 @@ class TypeScriptOutgoingCall:
     kind: str | None = None
     container_name: str | None = None
     qualified_name_guess: str | None = None
+    definition_line: int | None = None
+    definition_column: int | None = None
 
 
 @dataclass(frozen=True)
@@ -87,6 +93,7 @@ class TypeScriptFileCallAnalysis:
     rel_path: str
     functions: dict[str, TypeScriptFunctionCallAnalysis]
     diagnostics: tuple[dict[str, Any], ...] = ()
+    drop_reason_counts: dict[str, int] | None = None
 
 
 class TypeScriptCallAnalyzer:
@@ -210,6 +217,16 @@ class TypeScriptCallAnalyzer:
                             if call_row.get("qualified_name_guess") is not None
                             else None
                         ),
+                        definition_line=(
+                            int(call_row["definition_line"])
+                            if call_row.get("definition_line") is not None
+                            else None
+                        ),
+                        definition_column=(
+                            int(call_row["definition_column"])
+                            if call_row.get("definition_column") is not None
+                            else None
+                        ),
                     )
                     for call_row in function_row.get("outgoing", [])
                     if call_row.get("path") and call_row.get("name")
@@ -222,6 +239,10 @@ class TypeScriptCallAnalyzer:
                 )
 
             diagnostics = tuple(file_row.get("diagnostics", ()))
+            drop_reason_counts = {
+                str(reason): int(count)
+                for reason, count in (file_row.get("drop_reason_counts") or {}).items()
+            }
             if diagnostics:
                 logger.debug(
                     "TypeScript analyzer diagnostics for %s: %s",
@@ -234,6 +255,7 @@ class TypeScriptCallAnalyzer:
                     rel_path=rel_path,
                     functions=functions,
                     diagnostics=diagnostics,
+                    drop_reason_counts=drop_reason_counts,
                 )
 
         return results

@@ -4,6 +4,11 @@ import pytest
 from unittest.mock import Mock, patch
 
 from agentic_memory.core.runtime_embedding import EmbeddingRuntimeConfig
+from agentic_memory.ingestion.python_call_analyzer import (
+    PythonFileCallAnalysis,
+    PythonFunctionCallAnalysis,
+    PythonOutgoingCall,
+)
 from agentic_memory.ingestion.typescript_call_analyzer import (
     TypeScriptFileCallAnalysis,
     TypeScriptFunctionCallAnalysis,
@@ -181,8 +186,7 @@ const lazy = import("./lazy-module");
         (repo_root / "src" / "a.ts").write_text("export function foo() {}", encoding="utf8")
         (repo_root / "src" / "b.ts").write_text("export function bar() {}", encoding="utf8")
 
-        session.run.side_effect = [
-            [
+        initial_records = [
                 {
                     "path": "src/a.ts",
                     "funcs": [
@@ -191,6 +195,8 @@ const lazy = import("./lazy-module");
                             "sig": "src/a.ts:foo",
                             "qualified_name": "foo",
                             "parent_class": "",
+                            "name_line": 1,
+                            "name_column": 17,
                         }
                     ],
                 },
@@ -202,14 +208,13 @@ const lazy = import("./lazy-module");
                             "sig": "src/b.ts:bar",
                             "qualified_name": "bar",
                             "parent_class": "",
+                            "name_line": 1,
+                            "name_column": 17,
                         }
                     ],
                 },
-            ],
-            None,
-            None,
-            None,
         ]
+        session.run.side_effect = [initial_records] + [None] * 12
 
         parsed_by_path = {
             "src/a.ts": {
@@ -239,6 +244,11 @@ const lazy = import("./lazy-module");
                 parsed_by_path,
                 [{"path": "src/a.ts", "functions": [{"qualified_name": "foo"}]}],
             ),
+        )
+        monkeypatch.setattr(
+            builder,
+            "_prepare_python_analysis_requests",
+            lambda **_: [],
         )
 
         class _FakeAnalyzer:
@@ -281,6 +291,126 @@ const lazy = import("./lazy-module");
         assert write_calls[0].kwargs["confidence"] == pytest.approx(0.95)
         assert write_calls[0].kwargs["callee_sigs"] == ["src/b.ts:bar"]
 
+    def test_pass_4_call_graph_prefers_python_analyzer_results(
+        self,
+        builder,
+        mock_driver,
+        monkeypatch,
+        tmp_path,
+    ):
+        """Python CALLS should use semantic analyzer targets when available."""
+        _, session = mock_driver
+        repo_root = tmp_path
+        (repo_root / "pkg").mkdir()
+        (repo_root / "pkg" / "a.py").write_text("from pkg.b import bar\n\ndef foo():\n    bar()\n", encoding="utf8")
+        (repo_root / "pkg" / "b.py").write_text("def bar():\n    return 1\n", encoding="utf8")
+
+        initial_records = [
+            {
+                "path": "pkg/a.py",
+                "funcs": [
+                    {
+                        "name": "foo",
+                        "sig": "pkg/a.py:foo",
+                        "qualified_name": "foo",
+                        "parent_class": "",
+                        "name_line": 3,
+                        "name_column": 5,
+                    }
+                ],
+            },
+            {
+                "path": "pkg/b.py",
+                "funcs": [
+                    {
+                        "name": "bar",
+                        "sig": "pkg/b.py:bar",
+                        "qualified_name": "bar",
+                        "parent_class": "",
+                        "name_line": 1,
+                        "name_column": 5,
+                    }
+                ],
+            },
+        ]
+        session.run.side_effect = [initial_records] + [None] * 12
+
+        parsed_by_path = {
+            "pkg/a.py": {
+                "functions": [
+                    {
+                        "name": "foo",
+                        "qualified_name": "foo",
+                        "calls": ["bar"],
+                    }
+                ]
+            },
+            "pkg/b.py": {
+                "functions": [
+                    {
+                        "name": "bar",
+                        "qualified_name": "bar",
+                        "calls": [],
+                    }
+                ]
+            },
+        }
+
+        monkeypatch.setattr(
+            builder,
+            "_prepare_typescript_analysis_requests",
+            lambda **_: (parsed_by_path, []),
+        )
+        monkeypatch.setattr(
+            builder,
+            "_prepare_python_analysis_requests",
+            lambda **_: [{"path": "pkg/a.py", "functions": [{"qualified_name": "foo"}]}],
+        )
+
+        class _FakePythonAnalyzer:
+            def is_available(self):
+                return True
+
+            def analyze_files(self, **kwargs):
+                return {
+                    "pkg/a.py": PythonFileCallAnalysis(
+                        rel_path="pkg/a.py",
+                        functions={
+                            "foo": PythonFunctionCallAnalysis(
+                                qualified_name="foo",
+                                name="foo",
+                                outgoing_calls=(
+                                    PythonOutgoingCall(
+                                        rel_path="pkg/b.py",
+                                        name="bar",
+                                        kind="function",
+                                        container_name=None,
+                                        qualified_name_guess="bar",
+                                        definition_line=1,
+                                        definition_column=5,
+                                    ),
+                                ),
+                            )
+                        },
+                        diagnostics=(),
+                        drop_reason_counts={},
+                    )
+                }
+
+        monkeypatch.setattr(builder, "_get_python_call_analyzer", lambda: _FakePythonAnalyzer())
+
+        builder.pass_4_call_graph(repo_root)
+
+        write_calls = [
+            call
+            for call in session.run.call_args_list
+            if "SET r.source = $source" in call.args[0]
+        ]
+        assert len(write_calls) == 1
+        assert write_calls[0].kwargs["source"] == "python_service"
+        assert write_calls[0].kwargs["confidence"] == pytest.approx(0.95)
+        assert write_calls[0].kwargs["callee_sigs"] == ["pkg/b.py:bar"]
+
     def test_get_call_diagnostics_summarizes_sources_and_coverage(self, builder, mock_driver):
         """CALLS diagnostics should surface coverage and provenance ratios for one repo."""
         _, session = mock_driver
@@ -296,6 +426,8 @@ const lazy = import("./lazy-module");
                 "files_with_functions": 3,
                 "files_with_call_edges": 2,
                 "files_with_analyzer_edges": 1,
+                "files_with_analyzer_attempts": 2,
+                "files_with_drop_reasons": 1,
             })),
             [
                 {
@@ -308,6 +440,13 @@ const lazy = import("./lazy-module");
                     "edge_count": 1,
                     "avg_confidence": 0.6,
                 },
+            ],
+            [
+                {
+                    "reason": "ambiguous_name_match",
+                    "source": "typescript_service",
+                    "drop_count": 2,
+                }
             ],
         ]
 
@@ -324,9 +463,13 @@ const lazy = import("./lazy-module");
         assert diagnostics["files_with_functions"] == 3
         assert diagnostics["files_with_call_edges"] == 2
         assert diagnostics["files_with_analyzer_edges"] == 1
+        assert diagnostics["files_with_analyzer_attempts"] == 2
+        assert diagnostics["files_with_drop_reasons"] == 1
         assert diagnostics["file_coverage_ratio"] == pytest.approx(2 / 3)
         assert diagnostics["sources"][0]["source"] == "typescript_service"
         assert diagnostics["sources"][0]["avg_confidence"] == pytest.approx(0.95)
+        assert diagnostics["drop_reasons"][0]["reason"] == "ambiguous_name_match"
+        assert diagnostics["drop_reasons"][0]["drop_count"] == 2
 
     def test_get_file_dependencies_scopes_duplicate_paths_by_repo_id(self, builder, mock_driver):
         """Dependency lookups should stay pinned to one repo when paths collide.

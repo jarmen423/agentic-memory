@@ -156,6 +156,37 @@ await import("./lazy");
     assert result["imports"] == ["react", "./helpers", "fs", "./lazy"]
 
 
+def test_extract_typed_typescript_arrow_functions(parser: CodeParser) -> None:
+    """Typed TS arrow functions should still become Function rows.
+
+    This protects the Phase 11 semantic CALLS path. The plain JavaScript
+    grammar can misread TypeScript return types and generic parameters as JSX,
+    so the parser now has a TS-specific rescue pass for common
+    `const name = (): Type => {}` shapes.
+    """
+    code = """
+const pushBounded = <T>(arr: T[], entry: T, limit: number) => {
+  arr.push(entry);
+}
+
+export const isPerfDiagnosticsEnabled = (): boolean => {
+  return readPerfQueryFlag();
+}
+"""
+    result = parser.parse_file(code, ".ts")
+
+    qualified_names = [row["qualified_name"] for row in result["functions"]]
+    assert "pushBounded" in qualified_names
+    assert "isPerfDiagnosticsEnabled" in qualified_names
+
+    push_bounded = next(row for row in result["functions"] if row["qualified_name"] == "pushBounded")
+    is_enabled = next(
+        row for row in result["functions"] if row["qualified_name"] == "isPerfDiagnosticsEnabled"
+    )
+    assert push_bounded["name_line"] == 2
+    assert is_enabled["name"] == "isPerfDiagnosticsEnabled"
+
+
 def test_unsupported_extension_returns_diagnostic(parser: CodeParser) -> None:
     """Unsupported extensions should degrade cleanly instead of throwing."""
     result = parser.parse_file("hello", ".go")

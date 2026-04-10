@@ -28,6 +28,7 @@ class TestToolkit:
                 "score": 0.95,
                 "name": "test",
                 "sig": "test.py:test",
+                "path": "test.py",
             }
         ]
         mock_graph.semantic_search.return_value = mock_results
@@ -36,7 +37,9 @@ class TestToolkit:
 
         assert "test" in result
         assert "0.95" in result
-        mock_graph.semantic_search.assert_called_once_with("test function", 5)
+        assert "Retrieval policy" in result
+        assert "CALLS used for ranking" in result
+        mock_graph.semantic_search.assert_called_once_with("test function", limit=5)
 
     def test_semantic_search_empty_results(self, toolkit, mock_graph):
         """Test semantic search with no results."""
@@ -201,7 +204,14 @@ class TestSearchCodebase:
         """Test successful search."""
         mock_graph = Mock()
         mock_graph.semantic_search.return_value = [
-            {"name": "fn", "score": 0.9, "text": "def fn(): pass", "sig": "a.py:fn"}
+            {
+                "name": "fn",
+                "score": 0.9,
+                "text": "def fn(): pass",
+                "sig": "a.py:fn",
+                "path": "a.py",
+                "labels": ["Function"],
+            }
         ]
 
         with patch("agentic_memory.server.app.graph", mock_graph):
@@ -210,6 +220,8 @@ class TestSearchCodebase:
             result = search_codebase("test query", limit=10)
 
             assert "Found 1 relevant code result(s)" in result
+            assert "Policy: `safe`" in result
+            assert "`CALLS` edges used for ranking: `False`" in result
             mock_graph.semantic_search.assert_called_once_with("test query", limit=10)
 
     def test_search_codebase_error(self):
@@ -231,6 +243,18 @@ class TestSearchCodebase:
 
         assert "invalid domain" in result.lower()
         assert "code|git|hybrid" in result
+
+    def test_search_codebase_invalid_retrieval_policy(self):
+        """Test code-domain retrieval policy validation."""
+        mock_graph = Mock()
+
+        with patch("agentic_memory.server.app.graph", mock_graph):
+            from agentic_memory.server.app import search_codebase
+
+            result = search_codebase("test query", retrieval_policy="calls-everywhere")
+
+            assert "invalid retrieval_policy" in result.lower()
+            mock_graph.semantic_search.assert_not_called()
 
     def test_search_codebase_git_domain_requires_git_data(self):
         """Test git domain returns explicit error when git graph data is missing."""

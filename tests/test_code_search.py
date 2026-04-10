@@ -35,7 +35,10 @@ def test_search_code_uses_baseline_semantic_search_when_ppr_disabled():
         use_ppr=False,
     )
 
-    assert rows == [_row(sig="pkg/auth.py::login", path="pkg/auth.py", score=0.91)]
+    assert len(rows) == 1
+    assert rows[0]["sig"] == "pkg/auth.py::login"
+    assert rows[0]["retrieval_provenance"]["policy"] == "auto"
+    assert rows[0]["retrieval_provenance"]["graph_reranking_applied"] is False
     graph.semantic_search.assert_called_once_with("login flow", limit=1)
 
 
@@ -56,6 +59,7 @@ def test_search_code_uses_explicit_repo_scope_for_baseline_search():
     )
 
     assert rows[0]["sig"] == "pkg/cache.py::warm"
+    assert rows[0]["retrieval_provenance"]["policy"] == "auto"
     graph.semantic_search.assert_called_once_with(
         "warm cache",
         limit=1,
@@ -122,6 +126,12 @@ def test_search_code_ppr_reranks_with_structural_scores(monkeypatch):
         "pkg/service.py::seed",
     ]
     assert rows[0]["ppr_score"] == 0.90
+    assert rows[0]["retrieval_provenance"]["graph_reranking_applied"] is True
+    assert rows[0]["retrieval_provenance"]["graph_edge_types_used"] == [
+        "IMPORTS",
+        "HAS_METHOD",
+        "DEFINES",
+    ]
     graph.semantic_search.assert_called_once_with("shared helper", limit=6)
 
 
@@ -141,7 +151,28 @@ def test_search_code_without_repo_context_falls_back_to_baseline():
     )
 
     assert rows[0]["sig"] == "pkg/standalone.py::run"
+    assert rows[0]["retrieval_provenance"]["mode"] == "semantic_only"
     graph.semantic_search.assert_called_once_with("standalone entrypoint", limit=1)
+
+
+def test_search_code_safe_policy_ignores_graph_reranking():
+    """Agent-safe retrieval should stay on semantic search even when repo-scoped."""
+    graph = Mock()
+    graph.repo_id = "repo-alpha"
+    graph.semantic_search.return_value = [
+        _row(sig="pkg/auth.py::login", path="pkg/auth.py", score=0.91),
+    ]
+
+    rows = code_search.search_code(
+        graph,
+        query="login flow",
+        limit=1,
+        retrieval_policy="safe",
+    )
+
+    assert rows[0]["retrieval_provenance"]["policy"] == "safe"
+    assert rows[0]["retrieval_provenance"]["graph_reranking_applied"] is False
+    graph.semantic_search.assert_called_once_with("login flow", limit=1)
 
 
 def test_run_personalized_page_rank_biases_toward_seed_nodes():

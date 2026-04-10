@@ -71,7 +71,7 @@ from agentic_memory.temporal.seeds import (
 )
 from agentic_memory.web.pipeline import ResearchIngestionPipeline
 from agentic_memory.ingestion.graph import KnowledgeGraphBuilder
-from agentic_memory.server.code_search import is_code_ppr_enabled, search_code
+from agentic_memory.server.code_search import SAFE_RETRIEVAL_POLICY, search_code
 
 logger = logging.getLogger(__name__)
 
@@ -535,32 +535,55 @@ class Toolkit:
         query: str,
         limit: int = 5,
         repo_id: str | None = None,
+        retrieval_policy: str = SAFE_RETRIEVAL_POLICY,
     ) -> str:
-        """
-        Performs hybrid search and formats the result as a readable string for the Agent.
+        """Search code memory and explain the retrieval policy to the caller.
+
+        The Toolkit is used directly by scripts and MCP surfaces that feed
+        agent prompts. Defaulting to ``safe`` keeps those callers on the proven
+        semantic-search path unless they explicitly request graph reranking.
+
+        Args:
+            query: Natural-language code search request.
+            limit: Maximum number of code results to return.
+            repo_id: Optional repo scope override.
+            retrieval_policy: ``safe`` by default. ``graph_reranked`` enables
+                reranking over IMPORTS/DEFINES/HAS_METHOD without using CALLS.
         """
         try:
-            # Preserve the legacy direct-call behavior for the baseline path so
-            # existing MCP formatting and tests remain stable. Route through the
-            # new code-search module only when repo-scoped lookup is requested
-            # or the code-PPR feature flag is active.
-            if repo_id is None and not is_code_ppr_enabled():
-                results = self.graph.semantic_search(query, limit)
-            else:
-                results = search_code(
-                    self.graph,
-                    query=query,
-                    limit=limit,
-                    repo_id=repo_id,
-                )
+            results = search_code(
+                self.graph,
+                query=query,
+                limit=limit,
+                repo_id=repo_id,
+                retrieval_policy=retrieval_policy,
+            )
             if not results:
                 return "No relevant code found in the graph."
 
-            # Format for LLM consumption (Markdown)
             report = f"### Found {len(results)} relevant code snippets for '{query}':\n\n"
+            provenance = dict((results[0].get("retrieval_provenance") or {}))
+            if provenance:
+                graph_edges = provenance.get("graph_edge_types_used") or []
+                report += f"**Retrieval policy:** `{provenance.get('policy', 'unknown')}`\n"
+                report += f"**Mode:** `{provenance.get('mode', 'unknown')}`\n"
+                report += (
+                    f"**Graph reranking applied:** "
+                    f"`{bool(provenance.get('graph_reranking_applied', False))}`\n"
+                )
+                report += (
+                    f"**Structural edges used:** "
+                    f"{', '.join(f'`{edge}`' for edge in graph_edges) if graph_edges else '`none`'}\n"
+                )
+                report += "**CALLS used for ranking:** `False`\n"
+                for note in provenance.get("notes") or []:
+                    report += f"**Note:** {note}\n"
+                report += "\n"
             for r in results:
                 report += f"#### 📄 {r['name']} (Score: {r['score']:.2f})\n"
                 report += f"**Signature:** `{r['sig']}`\n"
+                if r.get("path"):
+                    report += f"**Path:** `{r['path']}`\n"
             return report
         except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
             logger.error(f"search failed:{e}")

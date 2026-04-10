@@ -161,6 +161,29 @@ class TestEmbedMethod:
             )
             assert result == mock_embedding_values
 
+    def test_embed_gemini_prefixes_custom_task_instruction(self) -> None:
+        """Gemini Embedding 2 task instructions should be prepended to the content."""
+        with patch("agentic_memory.core.embedding.genai") as mock_genai:
+            mock_client = MagicMock()
+            mock_genai.Client.return_value = mock_client
+            mock_embedding_values = [0.1] * 3072
+            mock_client.models.embed_content.return_value.embeddings = [
+                MagicMock(values=mock_embedding_values)
+            ]
+
+            service = EmbeddingService(provider="gemini", api_key="test-key")
+            result = service.embed(
+                "hello world",
+                task_instruction="task:code retrieval",
+            )
+
+            mock_client.models.embed_content.assert_called_once_with(
+                model="gemini-embedding-2-preview",
+                contents="task:code retrieval\n\nhello world",
+                config={"output_dimensionality": 3072},
+            )
+            assert result == mock_embedding_values
+
     def test_embed_with_metadata_gemini_tracks_usage_and_estimated_cost(self) -> None:
         """Gemini metadata should expose billable tokens and estimated Vertex text cost."""
         with patch("agentic_memory.core.embedding.genai") as mock_genai:
@@ -182,6 +205,31 @@ class TestEmbedMethod:
             assert metadata.total_tokens == 1000
             assert metadata.transport == "developer_api"
             assert metadata.estimated_cost_usd == pytest.approx(0.0002)
+
+    def test_embed_with_metadata_openai_ignores_task_instruction(self) -> None:
+        """OpenAI-compatible providers should ignore Gemini-only task instructions."""
+        with patch("agentic_memory.core.embedding.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_openai_cls.return_value = mock_client
+            mock_embedding = [0.1] * 3072
+            mock_client.embeddings.create.return_value.data = [
+                MagicMock(embedding=mock_embedding)
+            ]
+            mock_client.embeddings.create.return_value.usage = MagicMock(total_tokens=42)
+
+            service = EmbeddingService(provider="openai", api_key="test-key")
+            vector, metadata = service.embed_with_metadata(
+                "hello world",
+                task_instruction="task:code retrieval",
+            )
+
+            mock_client.embeddings.create.assert_called_once_with(
+                model="text-embedding-3-large",
+                input="hello world",
+                dimensions=3072,
+            )
+            assert vector == mock_embedding
+            assert metadata.transport == "openai_compatible"
 
 
 class TestEmbedBatch:

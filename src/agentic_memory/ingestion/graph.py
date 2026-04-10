@@ -149,6 +149,10 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         embedding_service (EmbeddingService | None): Provider-dispatching embedder.
             When no API key is available, this remains None and semantic search
             gracefully degrades to full-text fallback.
+        embedding_document_task_instruction (str | None): Optional Gemini
+            Embedding 2 task instruction for stored code/document vectors.
+        embedding_query_task_instruction (str | None): Optional Gemini
+            Embedding 2 task instruction for semantic search query vectors.
         parsers (Dict): Tree-sitter parsers for supported languages.
         repo_root (Path): Root path of the repository being indexed.
         token_usage (Dict): Tracks embedding calls and any provider-specific usage
@@ -252,6 +256,15 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             getattr(self.embedding_service, "_client", None)
             if self.embedding_runtime.provider == "openai" and self.embedding_service is not None
             else None
+        )
+        code_module_cfg: dict[str, Any] = {}
+        if config is not None:
+            code_module_cfg = config.get_module_config("code")
+        self.embedding_document_task_instruction = code_module_cfg.get(
+            "embedding_document_task_instruction"
+        )
+        self.embedding_query_task_instruction = code_module_cfg.get(
+            "embedding_query_task_instruction"
         )
         self.parsers = self._init_parsers()
         self.repo_root = repo_root
@@ -533,11 +546,19 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             return ""
 
     @retry_on_openai_error(max_retries=3, delay=1.0)
-    def get_embedding(self, text: str) -> List[float]:
+    def get_embedding(
+        self,
+        text: str,
+        *,
+        task_instruction: str | None = None,
+    ) -> List[float]:
         """Generate a code embedding using the configured provider.
 
         Args:
-            text: The text to embed
+            text: The text to embed.
+            task_instruction: Optional Gemini Embedding 2 task instruction. This
+                lets Agentic Memory embed stored code chunks differently from
+                user search queries so both sides of retrieval can be tuned.
 
         Returns:
             List of floats representing the embedding vector
@@ -564,13 +585,41 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         # provider-specific and is only available on some clients.
         self.token_usage["embedding_calls"] += 1
 
-        vector, metadata = self.embedding_service.embed_with_metadata(text)
+        vector, metadata = self.embedding_service.embed_with_metadata(
+            text,
+            task_instruction=task_instruction,
+        )
         billable_tokens = metadata.prompt_tokens or metadata.total_tokens
         if billable_tokens is not None:
             self.token_usage["embedding_tokens"] += int(billable_tokens)
         if metadata.estimated_cost_usd is not None:
             self.token_usage["total_cost_usd"] += float(metadata.estimated_cost_usd)
         return vector
+
+    def get_document_embedding(self, text: str) -> List[float]:
+        """Embed code/document corpus text using the configured document role.
+
+        Stored vectors represent the retrievable code corpus. For Gemini
+        Embedding 2 preview, we optionally attach the document-side task
+        instruction from config so the model can optimize for that role.
+        """
+        return self.get_embedding(
+            text,
+            task_instruction=self.embedding_document_task_instruction,
+        )
+
+    def get_query_embedding(self, text: str) -> List[float]:
+        """Embed a semantic-search query using the configured query role.
+
+        Query vectors represent operator intent rather than stored code. Keeping
+        a separate query-side task instruction lets Gemini Embedding 2 optimize
+        retrieval behavior for "find the right code for this query" instead of
+        treating queries like ordinary documents.
+        """
+        return self.get_embedding(
+            text,
+            task_instruction=self.embedding_query_task_instruction,
+        )
 
     # =========================================================================
     # PASS 1: STRUCTURE SCAN & CHANGE DETECTION
@@ -734,7 +783,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                         path=rel_path,
                         sig=class_signature,
                         text=class_code,
-                        embedding=self.get_embedding(enriched_text),
+                        embedding=self.get_document_embedding(enriched_text),
                     )
 
                 for function_row in parsed["functions"]:
@@ -798,7 +847,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                         path=rel_path,
                         sig=function_signature,
                         text=function_code,
-                        embedding=self.get_embedding(enriched_text),
+                        embedding=self.get_document_embedding(enriched_text),
                     )
 
         logger.info("✅ [Pass 2] Entities and Semantic Chunks created.")
@@ -1445,7 +1494,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             if resolved_repo_id is None:
                 raise ValueError("repo_id is required for code semantic_search")
 
-            vector = self.get_embedding(query)
+            vector = self.get_query_embedding(query)
             if not _is_valid_vector(vector):
                 logger.warning(
                     "Semantic query vector invalid (likely missing code embedding API key or zero-vector); "

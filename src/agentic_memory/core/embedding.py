@@ -1,6 +1,6 @@
 """Provider-dispatching embedding service.
 
-Wraps OpenAI, Gemini, and Nemotron behind a single ``.embed()`` interface while
+Wraps OpenAI, Gemini, and Nemotron behind a single embedding interface while
 also exposing a richer ``.embed_with_metadata()`` path for ingestion pipelines
 that need provider usage and cost diagnostics.
 
@@ -10,6 +10,19 @@ Why this file matters:
     many billable input tokens were sent and which runtime was used. This module
     is where provider-specific response shapes are normalized into one internal
     metadata contract.
+
+Gemini Embedding 2 note:
+    Google's Gemini Embedding 2 preview docs describe "custom task
+    instructions" such as ``task:code retrieval`` and ``task:search result`` as
+    a way to optimize embeddings for a specific retrieval role. The public model
+    page documents the feature, but the exact request wire shape is less
+    explicit than older ``task_type``-based embedding APIs.
+
+    Until Google publishes a clearer dedicated field for this preview model in
+    the Gen AI SDK docs, Agentic Memory treats these task instructions as a
+    Gemini-only input prefix. That keeps the behavior explicit and easy to
+    inspect, and it lets us pair query/document embeddings intentionally for
+    code search.
 """
 
 from dataclasses import dataclass
@@ -204,11 +217,48 @@ class EmbeddingService:
             transport="vertex_ai" if self.vertexai else "developer_api",
         )
 
-    def embed_with_metadata(self, text: str) -> tuple[list[float], EmbeddingMetadata]:
+    def _prepare_gemini_content(
+        self,
+        text: str,
+        *,
+        task_instruction: str | None = None,
+    ) -> str:
+        """Build the Gemini Embedding 2 input payload for one text request.
+
+        Args:
+            text: Raw text content to embed.
+            task_instruction: Optional Gemini Embedding 2 task instruction such
+                as ``task:code retrieval`` or ``task:search result``.
+
+        Returns:
+            Text payload to send to Gemini.
+
+        Why this helper exists:
+            Gemini Embedding 2 preview introduces custom task instructions on the
+            model card, but the surrounding SDK examples for this preview do not
+            yet show a dedicated strongly-typed request field for them. We
+            therefore keep the formatting in one place so it is easy to change if
+            Google later documents a more explicit SDK parameter.
+        """
+        if not task_instruction:
+            return text
+        cleaned_instruction = task_instruction.strip()
+        if not cleaned_instruction:
+            return text
+        return f"{cleaned_instruction}\n\n{text}"
+
+    def embed_with_metadata(
+        self,
+        text: str,
+        *,
+        task_instruction: str | None = None,
+    ) -> tuple[list[float], EmbeddingMetadata]:
         """Generate one embedding vector plus normalized provider metadata.
 
         Args:
             text: Input text to embed.
+            task_instruction: Optional Gemini Embedding 2 custom task
+                instruction. Ignored by non-Gemini providers.
 
         Returns:
             Tuple of ``(embedding_vector, normalized_metadata)``.
@@ -219,7 +269,10 @@ class EmbeddingService:
             # Pitfall 2 from RESEARCH.md: never rely on the API default.
             response = self._client.models.embed_content(
                 model=self.model,
-                contents=text,
+                contents=self._prepare_gemini_content(
+                    text,
+                    task_instruction=task_instruction,
+                ),
                 config={"output_dimensionality": self.dimensions},
             )
             return list(response.embeddings[0].values), self._build_gemini_metadata(response)
@@ -231,13 +284,13 @@ class EmbeddingService:
             )
             return response.data[0].embedding, self._build_openai_metadata(response)
 
-    def embed(self, text: str) -> list[float]:
+    def embed(self, text: str, *, task_instruction: str | None = None) -> list[float]:
         """Generate embedding vector for a single text string.
 
         This remains the simple public API used by legacy callers. New ingestion
         code that needs cost/usage data should call ``embed_with_metadata``.
         """
-        vector, _ = self.embed_with_metadata(text)
+        vector, _ = self.embed_with_metadata(text, task_instruction=task_instruction)
         return vector
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:

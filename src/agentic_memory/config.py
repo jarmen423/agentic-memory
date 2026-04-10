@@ -63,6 +63,12 @@ DEFAULT_CONFIG = {
             "embedding_provider": "gemini",
             "embedding_model": "gemini-embedding-2-preview",
             "embedding_dimensions": 3072,
+            # Gemini Embedding 2 preview supports custom task instructions for
+            # retrieval-oriented embedding quality. Code chunks are stored as the
+            # retrievable corpus, while semantic search queries represent the
+            # user's intent to retrieve code from that corpus.
+            "embedding_document_task_instruction": "task:search result",
+            "embedding_query_task_instruction": "task:code retrieval",
         },
         "web": {
             "embedding_provider": "gemini",

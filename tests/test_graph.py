@@ -55,21 +55,24 @@ class TestKnowledgeGraphBuilder:
     def test_get_embedding(self, builder):
         """Test embedding generation."""
         mock_embedding = [0.1] * builder.VECTOR_DIMENSIONS
-        builder.openai_client = Mock()
-        builder.openai_client.embeddings.create.return_value = Mock(
-            data=[Mock(embedding=mock_embedding)],
-            usage=Mock(total_tokens=42),
+        builder.embedding_service = Mock()
+        builder.embedding_service.embed_with_metadata.return_value = (
+            mock_embedding,
+            Mock(prompt_tokens=42, total_tokens=42, estimated_cost_usd=None),
         )
 
         result = builder.get_embedding("test text")
 
         assert result == mock_embedding
-        builder.openai_client.embeddings.create.assert_called_once()
+        builder.embedding_service.embed_with_metadata.assert_called_once_with(
+            "test text",
+            task_instruction=None,
+        )
 
     def test_get_embedding_error_handling(self, builder):
         """Test unexpected embedding errors propagate."""
-        builder.openai_client = Mock()
-        builder.openai_client.embeddings.create.side_effect = Exception("API Error")
+        builder.embedding_service = Mock()
+        builder.embedding_service.embed_with_metadata.side_effect = Exception("API Error")
         with pytest.raises(Exception, match="API Error"):
             builder.get_embedding("test text")
 
@@ -94,6 +97,40 @@ class TestKnowledgeGraphBuilder:
         assert builder.token_usage["embedding_calls"] == 1
         assert builder.token_usage["embedding_tokens"] == 1000
         assert builder.token_usage["total_cost_usd"] == pytest.approx(0.0002)
+
+    def test_get_document_embedding_passes_document_task_instruction(self, builder):
+        """Stored code embeddings should use the configured document-side task instruction."""
+        builder.embedding_document_task_instruction = "task:search result"
+        builder.embedding_service = Mock()
+        builder.embedding_service.embed_with_metadata.return_value = (
+            [0.1] * builder.VECTOR_DIMENSIONS,
+            Mock(prompt_tokens=10, total_tokens=10, estimated_cost_usd=None),
+        )
+
+        result = builder.get_document_embedding("def foo(): pass")
+
+        assert len(result) == builder.VECTOR_DIMENSIONS
+        builder.embedding_service.embed_with_metadata.assert_called_once_with(
+            "def foo(): pass",
+            task_instruction="task:search result",
+        )
+
+    def test_get_query_embedding_passes_query_task_instruction(self, builder):
+        """Semantic search queries should use the configured query-side task instruction."""
+        builder.embedding_query_task_instruction = "task:code retrieval"
+        builder.embedding_service = Mock()
+        builder.embedding_service.embed_with_metadata.return_value = (
+            [0.1] * builder.VECTOR_DIMENSIONS,
+            Mock(prompt_tokens=10, total_tokens=10, estimated_cost_usd=None),
+        )
+
+        result = builder.get_query_embedding("where is foo initialized")
+
+        assert len(result) == builder.VECTOR_DIMENSIONS
+        builder.embedding_service.embed_with_metadata.assert_called_once_with(
+            "where is foo initialized",
+            task_instruction="task:code retrieval",
+        )
 
     def test_close(self, builder):
         """Test driver cleanup."""

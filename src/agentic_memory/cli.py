@@ -323,6 +323,11 @@ def _upsert_agentic_memory_env_file(repo_root: Path, entries: dict[str, str]) ->
     return env_path
 
 
+def _prompt_defaulted_value(prompt: str, default: str) -> str:
+    """Prompt for a value while making the current default explicit."""
+    return input(f"{prompt} (default: {default}): ").strip() or default
+
+
 def cmd_init(args):
     """Initialize Agentic Memory in the current repository.
 
@@ -418,13 +423,25 @@ def cmd_init(args):
         print("   or from exported shell environment variables.")
         print("   Root repo .env files are not auto-loaded.")
         should_offer_env_file = True
+        neo4j_uri_default = os.getenv("NEO4J_URI", neo4j_config["uri"])
+        neo4j_user_default = (
+            os.getenv("NEO4J_USERNAME")
+            or os.getenv("NEO4J_USER")
+            or neo4j_config["user"]
+        )
+        neo4j_password_default = os.getenv("NEO4J_PASSWORD", neo4j_config["password"])
+        print("   Enter the values you want Agentic Memory to write into .agentic-memory/.env.")
         env_file_entries.update(
             {
-                "NEO4J_URI": os.getenv("NEO4J_URI", neo4j_config["uri"]),
-                "NEO4J_USERNAME": os.getenv("NEO4J_USERNAME")
-                or os.getenv("NEO4J_USER")
-                or neo4j_config["user"],
-                "NEO4J_PASSWORD": os.getenv("NEO4J_PASSWORD", neo4j_config["password"]),
+                "NEO4J_URI": _prompt_defaulted_value("   Enter NEO4J_URI", neo4j_uri_default),
+                "NEO4J_USERNAME": _prompt_defaulted_value(
+                    "   Enter NEO4J_USERNAME",
+                    neo4j_user_default,
+                ),
+                "NEO4J_PASSWORD": _prompt_defaulted_value(
+                    "   Enter NEO4J_PASSWORD",
+                    neo4j_password_default,
+                ),
             }
         )
 
@@ -449,7 +466,16 @@ def cmd_init(args):
     print("  2. OpenAI")
     print("  3. Keep default provider but configure the API key later")
 
-    provider_choice = input("\nChoose provider [1-3] (default: 1): ").strip() or "1"
+    raw_provider_choice = input("\nChoose provider [1-3] (default: 1): ").strip()
+    pasted_provider_key = None
+    if raw_provider_choice and raw_provider_choice not in {"1", "2", "3"}:
+        # If a user pastes a Gemini-style key at the top-level provider prompt,
+        # assume they intended to keep the default Gemini provider and store the
+        # pasted key rather than throwing them onto the wrong branch.
+        pasted_provider_key = raw_provider_choice
+        provider_choice = "1"
+    else:
+        provider_choice = raw_provider_choice or "1"
 
     openai_config = DEFAULT_CONFIG["openai"].copy()
     gemini_config = DEFAULT_CONFIG["gemini"].copy()
@@ -482,8 +508,20 @@ def cmd_init(args):
             existing_openai_key = os.getenv("OPENAI_API_KEY", "").strip()
             if existing_openai_key:
                 env_file_entries["OPENAI_API_KEY"] = existing_openai_key
+            else:
+                pasted_openai_key = input(
+                    "   Paste OPENAI_API_KEY now to save in .agentic-memory/.env (or press Enter to skip): "
+                ).strip()
+                if pasted_openai_key:
+                    env_file_entries["OPENAI_API_KEY"] = pasted_openai_key
+                    print("   ✅ Will save OPENAI_API_KEY into .agentic-memory/.env")
+                else:
+                    print("   ⚠️  No OPENAI_API_KEY captured. You'll need to set it later.")
         else:
             print("   ⚠️  Semantic code search will be disabled until a provider key is added")
+    elif provider_choice == "3":
+        print("\nKeeping the default Gemini provider. Configure the API key later.")
+        print("   You can add it later in .agentic-memory/config.json or .agentic-memory/.env")
     else:
         print("\nGemini selected for code embeddings.")
         print("Options:")
@@ -491,7 +529,10 @@ def cmd_init(args):
         print("  2. Use GEMINI_API_KEY / GOOGLE_API_KEY via .agentic-memory/.env or shell env")
         print("  3. Skip for now (semantic code search won't work)")
         gemini_choice = input("\nChoose option [1-3] (default: 2): ").strip() or "2"
-        if gemini_choice not in {"1", "2", "3"} and gemini_choice.strip():
+        if pasted_provider_key:
+            gemini_config["api_key"] = pasted_provider_key.strip()
+            print("   ✅ Detected pasted Gemini API key and stored it in config")
+        elif gemini_choice not in {"1", "2", "3"} and gemini_choice.strip():
             # Same UX guard as the OpenAI path above. A pasted Gemini/Google key
             # should be interpreted as the key itself, not as an invalid menu
             # choice that disables semantic search.
@@ -509,6 +550,15 @@ def cmd_init(args):
                 env_file_entries["GEMINI_API_KEY"] = existing_gemini_key
             elif existing_google_key:
                 env_file_entries["GOOGLE_API_KEY"] = existing_google_key
+            else:
+                pasted_gemini_key = input(
+                    "   Paste GEMINI_API_KEY or GOOGLE_API_KEY now to save in .agentic-memory/.env (or press Enter to skip): "
+                ).strip()
+                if pasted_gemini_key:
+                    env_file_entries["GOOGLE_API_KEY"] = pasted_gemini_key
+                    print("   ✅ Will save GOOGLE_API_KEY into .agentic-memory/.env")
+                else:
+                    print("   ⚠️  No Gemini API key captured. You'll need to set it later.")
         else:
             print("   ⚠️  Semantic code search will be disabled until a provider key is added")
 

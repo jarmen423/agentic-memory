@@ -587,7 +587,7 @@ def test_init_creates_new_config_when_user_declines_legacy(monkeypatch, capsys, 
         "extensions": [".py", ".js", ".ts", ".tsx", ".jsx"],
     }
 
-    responses = iter(["n", "4", "3", "3", "", "", "n"])
+    responses = iter(["n", "4", "", "", "", "3", "", "", "n"])
 
     monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
     monkeypatch.setattr(cli.Path, "cwd", Mock(return_value=repo_root))
@@ -623,7 +623,7 @@ def test_init_writes_agentic_memory_env_file_for_env_backed_settings(
     mock_cfg.config_file = repo_root / ".agentic-memory" / "config.json"
     mock_cfg.graphignore_file = repo_root / ".agentic-memory" / ".graphignore"
 
-    responses = iter(["4", "", "2", "", "", "n"])
+    responses = iter(["4", "", "", "", "1", "2", "", "", "n"])
 
     monkeypatch.setenv("NEO4J_URI", "bolt://localhost:7667")
     monkeypatch.setenv("NEO4J_USERNAME", "neo4j")
@@ -676,6 +676,49 @@ def test_init_treats_pasted_gemini_key_as_api_key(monkeypatch, capsys, tmp_path)
     assert saved_config["gemini"]["api_key"] == pasted_key
     stdout = capsys.readouterr().out
     assert "detected pasted gemini api key" in stdout.lower()
+
+
+def test_init_env_backed_gemini_prompts_for_key_when_shell_env_missing(
+    monkeypatch,
+    capsys,
+    tmp_path,
+):
+    """Env-backed Gemini setup should ask for a key when the shell does not have one."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    mock_cfg = _mock_config(exists=False)
+    mock_cfg.config_file = repo_root / ".agentic-memory" / "config.json"
+    mock_cfg.graphignore_file = repo_root / ".agentic-memory" / ".graphignore"
+
+    responses = iter(
+        [
+            "4",   # Neo4j env-backed mode
+            "",    # NEO4J_URI default
+            "",    # NEO4J_USERNAME default
+            "",    # NEO4J_PASSWORD default
+            "1",   # Gemini provider
+            "2",   # Gemini env-backed auth
+            "google-key-from-prompt",  # prompted key value
+            "",    # extensions default
+            "",    # write env file yes
+            "n",   # skip initial indexing
+        ]
+    )
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
+    monkeypatch.setattr(cli.Path, "cwd", Mock(return_value=repo_root))
+    monkeypatch.setattr(cli, "print_banner", Mock())
+    monkeypatch.setattr("builtins.input", Mock(side_effect=lambda _prompt="": next(responses)))
+
+    cli.cmd_init(argparse.Namespace())
+
+    env_text = (repo_root / ".agentic-memory" / ".env").read_text(encoding="utf-8")
+    assert "GOOGLE_API_KEY=google-key-from-prompt" in env_text
+    stdout = capsys.readouterr().out
+    assert "will save google_api_key into .agentic-memory/.env" in stdout.lower()
 
 
 def test_deps_json_success_uses_graph_method(monkeypatch, capsys, tmp_path):

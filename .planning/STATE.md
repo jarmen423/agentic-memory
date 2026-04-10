@@ -4,20 +4,20 @@ milestone: v1.0
 milestone_name: — Full Multi-Module Memory System with Temporal GraphRAG
 current_phase: 10
 status: active
-last_updated: "2026-04-01T18:30:00Z"
+last_updated: "2026-04-10T20:20:00Z"
 progress:
-  total_phases: 10
+  total_phases: 11
   completed_phases: 9
-  total_plans: 17
+  total_plans: 18
   completed_plans: 17
 ---
 
 # Agentic Memory — Project State
 
-**Last Updated:** 2026-03-28
+**Last Updated:** 2026-04-10
 **Current Phase:** 10
 **Phase Status:** Execution in progress
-**Last Session Stopped At:** Phase 10 now has the unified search core (`10-01`), config-driven embedding runtime and request-correlation hardening (`10-02`), plus committed integration/docs/UAT artifacts for `10-03`. Remaining closeout is live manual verification from the new runbooks.
+**Last Session Stopped At:** Phase 10 still needs live manual verification from the runbooks. Phase 11 is now formally queued as the next feature for code-graph generalization, safe code retrieval defaults, and analyzer-to-graph reliability hardening.
 
 ---
 
@@ -25,7 +25,7 @@ progress:
 
 **Phase 10: Cross-Module Integration & Hardening**
 
-**Next Action:** Run the manual Phase 10 full-stack checks from `docs/SETUP_FULL_STACK.md` and update `10-UAT.md` from `pending` to `pass` where verified.
+**Next Action:** Close out the manual Phase 10 full-stack verification from `docs/SETUP_FULL_STACK.md`, then advance to Phase 11 for code-graph generalization and analyzer-to-graph hardening.
 
 ---
 
@@ -52,6 +52,7 @@ progress:
 | 8 | SpacetimeDB Maintenance Layer | Complete |
 | 9 | Temporal PPR Retrieval + Benchmark | Complete |
 | 10 | Cross-Module Integration & Hardening | In Progress |
+| 11 | Code Graph Foundation and Code PPR | Planned |
 
 ---
 
@@ -81,6 +82,14 @@ progress:
 - [x] Plan 05-02: IngestClient fire-and-forget (GC-safe _pending set, silent failure); ACPProxy with full ACP routing table, buffer TTL, turn construction; 22 unit tests (2026-03-25)
 - [x] Plan 05-03: cli.py entry point with argparse, Windows ProactorEventLoop policy, setup subcommand; 19 CLI unit tests; 41 total am-proxy tests passing (2026-03-25)
 - [x] Phase 05 verified: all 6 success criteria passed, 41/41 tests green (2026-03-25)
+
+---
+
+## Accumulated Context
+
+### Roadmap Evolution
+
+- Phase 11 added: Code Graph Foundation and Code PPR
 
 ---
 

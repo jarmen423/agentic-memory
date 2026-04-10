@@ -95,10 +95,10 @@ Project scoping is now a runtime concern, not a setup-time identity. After
 setup, use:
 
 ```bash
-openclaw agentic-memory project init <project-id> --session-id <session-id>
-openclaw agentic-memory project use <project-id> --session-id <session-id>
-openclaw agentic-memory project status --session-id <session-id>
-openclaw agentic-memory project stop --session-id <session-id>
+openclaw agentic-memory project init <project-id>
+openclaw agentic-memory project use <project-id>
+openclaw agentic-memory project status
+openclaw agentic-memory project stop
 ```
 
 Command intent:
@@ -109,6 +109,10 @@ Command intent:
   - switch the current session into an existing project
 - `project start`
   - legacy alias retained for compatibility
+
+`--session-id` is still accepted as an escape hatch, but it is no longer the
+normal path. The backend now tries to infer the active OpenClaw session from
+the latest registered session for the current workspace/agent identity.
 
 The active project is resolved server-side for that specific
 `workspace_id + agent_id + session_id` tuple, so one agent can work on a

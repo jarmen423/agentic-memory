@@ -45,6 +45,8 @@ class MyClass:
     assert set(functions) == {"my_func", "MyClass.method"}
     assert functions["my_func"]["parent_class"] == ""
     assert functions["MyClass.method"]["parent_class"] == "MyClass"
+    assert functions["my_func"]["name_line"] == 2
+    assert functions["my_func"]["name_column"] == 5
 
 
 def test_extract_python_imports_preserves_relative_modules(parser: CodeParser) -> None:
@@ -116,6 +118,8 @@ class MyClass {
     assert "MyClass.constructor" in functions
     assert "MyClass.method" in functions
     assert functions["MyClass.method"]["calls"] == ["helper"]
+    assert functions["MyClass.method"]["name_line"] == 4
+    assert functions["MyClass.method"]["name_column"] == 3
 
 
 def test_extract_js_function_like_assignments(parser: CodeParser) -> None:

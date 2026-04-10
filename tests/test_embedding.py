@@ -29,6 +29,31 @@ class TestEmbeddingServiceInit:
             assert service.model == "gemini-embedding-2-preview"
             assert service.dimensions == 3072
 
+    def test_gemini_vertex_provider_init(self) -> None:
+        """Gemini can be routed through Vertex AI without a direct API key."""
+        with patch("agentic_memory.core.embedding.genai") as mock_genai, patch(
+            "agentic_memory.core.embedding.genai_types"
+        ) as mock_types:
+            mock_types.HttpOptions.return_value = "http-options"
+
+            service = EmbeddingService(
+                provider="gemini",
+                api_key=None,
+                vertexai=True,
+                project="radiology-app-486607",
+                location="us-central1",
+                api_version="v1",
+            )
+            mock_genai.Client.assert_called_once_with(
+                vertexai=True,
+                project="radiology-app-486607",
+                location="us-central1",
+                http_options="http-options",
+            )
+            assert service.vertexai is True
+            assert service.project == "radiology-app-486607"
+            assert service.location == "us-central1"
+
     def test_nemotron_provider_init(self) -> None:
         """EmbeddingService(provider='nemotron') creates OpenAI client with Nvidia base_url."""
         with patch("agentic_memory.core.embedding.OpenAI") as mock_openai_cls:
@@ -136,6 +161,28 @@ class TestEmbedMethod:
             )
             assert result == mock_embedding_values
 
+    def test_embed_with_metadata_gemini_tracks_usage_and_estimated_cost(self) -> None:
+        """Gemini metadata should expose billable tokens and estimated Vertex text cost."""
+        with patch("agentic_memory.core.embedding.genai") as mock_genai:
+            mock_client = MagicMock()
+            mock_genai.Client.return_value = mock_client
+            mock_response = MagicMock()
+            mock_response.embeddings = [MagicMock(values=[0.1] * 3072)]
+            mock_response.usage_metadata = MagicMock(
+                prompt_token_count=1000,
+                total_token_count=1000,
+            )
+            mock_client.models.embed_content.return_value = mock_response
+
+            service = EmbeddingService(provider="gemini", api_key="test-key")
+            vector, metadata = service.embed_with_metadata("hello world")
+
+            assert len(vector) == 3072
+            assert metadata.prompt_tokens == 1000
+            assert metadata.total_tokens == 1000
+            assert metadata.transport == "developer_api"
+            assert metadata.estimated_cost_usd == pytest.approx(0.0002)
+
 
 class TestEmbedBatch:
     """Tests for EmbeddingService.embed_batch() method."""
@@ -200,6 +247,9 @@ class TestModelInfo:
                 "provider": "openai",
                 "model": "text-embedding-3-large",
                 "dimensions": 3072,
+                "vertexai": False,
+                "project": None,
+                "location": None,
             }
 
     def test_model_info_gemini(self) -> None:
@@ -213,4 +263,7 @@ class TestModelInfo:
                 "provider": "gemini",
                 "model": "gemini-embedding-2-preview",
                 "dimensions": 768,
+                "vertexai": False,
+                "project": None,
+                "location": None,
             }

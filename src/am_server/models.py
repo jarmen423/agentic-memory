@@ -137,18 +137,30 @@ class OpenClawProjectScopedIdentityModel(OpenClawIdentityModel):
     """
 
 
-class OpenClawProjectActivationRequest(OpenClawIdentityModel):
+class OpenClawProjectCommandIdentityModel(OpenClawProjectScopedIdentityModel):
+    """Project-command identity where `session_id` may be inferred by the server.
+
+    Project lifecycle commands should feel like agent-level actions in
+    OpenClaw. The backend therefore accepts an omitted `session_id` and
+    resolves the latest registered live session for this workspace/agent when
+    possible.
+    """
+
+    session_id: str | None = None
+
+
+class OpenClawProjectActivationRequest(OpenClawProjectCommandIdentityModel):
     """Request body for activating a project for the current OpenClaw session."""
 
     project_id: str
     title: str | None = None
 
 
-class OpenClawProjectDeactivationRequest(OpenClawIdentityModel):
+class OpenClawProjectDeactivationRequest(OpenClawProjectCommandIdentityModel):
     """Request body for clearing the active project for the current session."""
 
 
-class OpenClawProjectStatusRequest(OpenClawIdentityModel):
+class OpenClawProjectStatusRequest(OpenClawProjectCommandIdentityModel):
     """Request body for querying the active project for the current session."""
 
 

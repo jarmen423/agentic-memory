@@ -25,7 +25,9 @@
 
 ## Wave 3
 
-- [ ] Add multi-repo stress fixtures for duplicate paths and duplicate symbol names.
+- [x] Add a TypeScript semantic call analyzer so JS/TS `CALLS` can be validated with real symbol resolution instead of parser-only fallbacks.
+- [x] Add a repo-level `call-status` diagnostic so analyzer-backed vs fallback `CALLS` coverage is measurable.
+- [x] Add multi-repo stress fixtures for duplicate paths and duplicate symbol names.
 - [ ] Benchmark exact-hit vs neighborhood-query behavior with `ENABLE_CODE_PPR=1`.
 - [ ] Decide when `CALLS` can enter the traversal graph.
 - [ ] Decide when to flip `ENABLE_CODE_PPR` on by default.

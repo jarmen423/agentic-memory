@@ -17,9 +17,9 @@ Extended:
 
 Role:
     User-facing control plane — not imported by any server or library code.
-    All commands read configuration from ``.codememory/config.json`` (or environment
-    variables as fallback) and talk directly to Neo4j plus the configured code
-    embedding provider.
+    All commands read configuration from ``.agentic-memory/config.json`` (falling
+    back to legacy ``.codememory/config.json`` when needed) and talk directly to
+    Neo4j plus the configured code embedding provider.
 
 Dependencies:
     - Neo4j 5.18+ (graph + vector index storage)
@@ -53,6 +53,11 @@ import neo4j
 
 from agentic_memory.ingestion.git_graph import GitGraphIngestor
 from agentic_memory.ingestion.graph import KnowledgeGraphBuilder
+from agentic_memory.ingestion.parser import CodeParser
+from agentic_memory.ingestion.typescript_call_analyzer import (
+    TypeScriptCallAnalyzer,
+    TypeScriptCallAnalyzerError,
+)
 from agentic_memory.ingestion.watcher import start_continuous_watch
 from agentic_memory.product.state import ProductStateStore
 from agentic_memory.config import Config, find_repo_root, DEFAULT_CONFIG
@@ -240,18 +245,44 @@ def _build_code_graph_builder(
 
 
 def cmd_init(args):
-    """Initialize Agentic Memory in the current repository."""
+    """Initialize Agentic Memory in the current repository.
+
+    Init has to handle two config-folder generations cleanly:
+
+    - repos already using ``.agentic-memory`` should be treated as initialized
+    - repos that only have legacy ``.codememory`` should prompt the operator to
+      either keep using that legacy config or create a new ``.agentic-memory``
+      config alongside it
+    """
     repo_root = Path.cwd()
 
-    # Check if already initialized
     config = Config(repo_root)
-    if config.exists():
+    if config.has_primary_config():
         print(f"⚠️  This repository is already initialized with Agentic Memory.")
         print(f"    Config location: {config.config_file}")
         print(
-            f"\n   To reconfigure, edit the config file or delete .codememory/ and run init again."
+            f"\n   To reconfigure, edit the config file or delete .agentic-memory/ and run init again."
         )
         return
+
+    if config.has_legacy_config():
+        print("⚠️  Found a legacy CodeMemory config for this repository.")
+        print(f"    Legacy config: {config.legacy_config_file}")
+        use_legacy = (
+            input("\nUse the existing .codememory config for this repo? [Y/n]: ")
+            .strip()
+            .lower()
+        )
+        if use_legacy != "n":
+            print("\n✅ Keeping the existing legacy config.")
+            print(f"   Active config: {config.legacy_config_file}")
+            print(
+                "\n   If you want to migrate later, run init again and answer 'n' to create"
+                " a new .agentic-memory config."
+            )
+            return
+
+        print("\n➡️  Creating a new .agentic-memory config and leaving .codememory untouched.")
 
     print_banner()
     print(f"🚀 Initializing Agentic Memory in: {repo_root}\n")
@@ -339,7 +370,7 @@ def cmd_init(args):
         }
         print("\nOpenAI selected for code embeddings.")
         print("Options:")
-        print("  1. Enter API key now (will be stored in .codememory/config.json)")
+        print("  1. Enter API key now (will be stored in .agentic-memory/config.json)")
         print("  2. Use environment variable OPENAI_API_KEY")
         print("  3. Skip for now (semantic code search won't work)")
         openai_choice = input("\nChoose option [1-3] (default: 2): ").strip() or "2"
@@ -353,7 +384,7 @@ def cmd_init(args):
     else:
         print("\nGemini selected for code embeddings.")
         print("Options:")
-        print("  1. Enter API key now (will be stored in .codememory/config.json)")
+        print("  1. Enter API key now (will be stored in .agentic-memory/config.json)")
         print("  2. Use environment variable GEMINI_API_KEY or GOOGLE_API_KEY")
         print("  3. Skip for now (semantic code search won't work)")
         gemini_choice = input("\nChoose option [1-3] (default: 2): ").strip() or "2"
@@ -625,7 +656,7 @@ def cmd_serve(args):
         config = Config(repo_root)
         if not config.exists():
             print(
-                f"⚠️  No .codememory/config.json found in {repo_root}, using environment variables"
+                f"⚠️  No .agentic-memory/config.json found in {repo_root}, using environment variables"
             )
     else:
         auto_root = find_repo_root()
@@ -644,7 +675,9 @@ def cmd_search(args):
     repo_root, config = _resolve_repo_and_config(args, require_initialized=True)
 
     code_runtime = resolve_embedding_runtime("code", config=config, repo_root=repo_root)
-    if not code_runtime.api_key:
+    if not code_runtime.api_key and not (
+        code_runtime.provider == "gemini" and code_runtime.use_vertexai
+    ):
         _exit_with_error(
             args,
             error=(
@@ -657,7 +690,7 @@ def cmd_search(args):
                     f"'{code_runtime.provider}'."
                 ),
                 (
-                    "   Add the provider key to .codememory/config.json or set the "
+                    "   Add the provider key to .agentic-memory/config.json or set the "
                     "matching environment variable before running semantic search."
                 ),
             ],
@@ -699,6 +732,210 @@ def cmd_search(args):
         )
     finally:
         builder.close()
+
+
+def cmd_debug_ts_calls(args):
+    """Run the TypeScript call analyzer on one JS/TS file without indexing.
+
+    This command is intentionally diagnostic. It does not write to Neo4j, does
+    not generate embeddings, and does not require a working embedding provider.
+    Its role is to answer one question quickly: "what outgoing calls can the
+    TypeScript semantic analyzer resolve for this file right now?"
+    """
+    repo_root = Path(args.repo).expanduser().resolve() if getattr(args, "repo", None) else find_repo_root()
+    if not repo_root.exists() or not repo_root.is_dir():
+        _exit_with_error(
+            args,
+            error=f"Invalid repository path: {repo_root}",
+            human_lines=[f"❌ Invalid repository path: {repo_root}"],
+        )
+
+    rel_path = str(args.path).replace("\\", "/").strip()
+    full_path = (repo_root / rel_path).resolve()
+    if not full_path.exists() or not full_path.is_file():
+        _exit_with_error(
+            args,
+            error=f"File not found: {full_path}",
+            human_lines=[f"❌ File not found: {full_path}"],
+        )
+
+    extension = full_path.suffix.lower()
+    if extension not in {".js", ".jsx", ".ts", ".tsx"}:
+        _exit_with_error(
+            args,
+            error=f"Unsupported file extension for TypeScript analyzer: {extension}",
+            human_lines=[f"❌ Unsupported file extension for TypeScript analyzer: {extension}"],
+        )
+
+    parser = CodeParser()
+    analyzer = TypeScriptCallAnalyzer()
+    code = full_path.read_text(encoding="utf8", errors="ignore")
+    parsed = parser.parse_file(code, extension)
+    request = {
+        "path": rel_path,
+        "functions": [
+            {
+                "name": row["name"],
+                "qualified_name": row["qualified_name"],
+                "parent_class": row.get("parent_class") or "",
+                "name_line": row["name_line"],
+                "name_column": row["name_column"],
+            }
+            for row in parsed["functions"]
+        ],
+    }
+
+    if not analyzer.is_available():
+        _exit_with_error(
+            args,
+            error=analyzer.disabled_reason or "TypeScript analyzer is unavailable.",
+            human_lines=[f"❌ {analyzer.disabled_reason or 'TypeScript analyzer is unavailable.'}"],
+        )
+
+    try:
+        results = analyzer.analyze_files(repo_root=repo_root, files=[request])
+    except TypeScriptCallAnalyzerError as exc:
+        _exit_with_error(
+            args,
+            error=f"TypeScript call analysis failed: {exc}",
+            human_lines=[f"❌ TypeScript call analysis failed: {exc}"],
+        )
+
+    file_result = results.get(rel_path)
+    function_rows = []
+    if file_result is not None:
+        for qualified_name, analysis in file_result.functions.items():
+            function_rows.append(
+                {
+                    "qualified_name": qualified_name,
+                    "name": analysis.name,
+                    "outgoing_calls": [
+                        {
+                            "path": call.rel_path,
+                            "name": call.name,
+                            "kind": call.kind,
+                            "container_name": call.container_name,
+                            "qualified_name_guess": call.qualified_name_guess,
+                        }
+                        for call in analysis.outgoing_calls
+                    ],
+                }
+            )
+
+    data = {
+        "repository": str(repo_root),
+        "path": rel_path,
+        "function_count": len(parsed["functions"]),
+        "functions": function_rows,
+        "diagnostics": list(file_result.diagnostics) if file_result is not None else [],
+    }
+
+    if _emit_success(
+        args,
+        data=data,
+        metrics={
+            "function_count": len(parsed["functions"]),
+            "analyzed_functions": len(function_rows),
+        },
+    ):
+        return
+
+    print(f"## TypeScript Call Analysis for `{rel_path}`\n")
+    print(f"Repository: {repo_root}")
+    print(f"Functions analyzed: {len(function_rows)} / {len(parsed['functions'])}\n")
+    if not function_rows:
+        print("No analyzer-resolved functions found.")
+        return
+
+    for row in function_rows:
+        print(f"### {row['qualified_name']}")
+        outgoing_calls = row["outgoing_calls"]
+        if not outgoing_calls:
+            print("- No outgoing calls resolved.")
+            print()
+            continue
+        for call in outgoing_calls:
+            target = call["qualified_name_guess"] or call["name"]
+            print(f"- {call['path']} :: {target}")
+        print()
+
+
+def cmd_call_status(args):
+    """Report CALLS-edge coverage and provenance for one repository.
+
+    This command turns Phase 11 call-graph quality into something measurable.
+    Instead of eyeballing Neo4j manually, operators can see how much of the
+    current repo's call graph is analyzer-backed, how much is fallback-only,
+    and how much function/file coverage we actually have before changing the
+    traversal graph or enabling PPR behavior by default.
+    """
+    repo_root, config = _resolve_repo_and_config(args, require_initialized=True)
+
+    builder = None
+    try:
+        builder = _build_code_graph_builder(repo_root=repo_root, config=config)
+        diagnostics = builder.get_call_diagnostics(repo_id=str(repo_root))
+
+        if _emit_success(
+            args,
+            data={
+                "repository": str(repo_root),
+                "diagnostics": diagnostics,
+            },
+            metrics={
+                "total_call_edges": diagnostics["total_call_edges"],
+                "function_coverage_ratio": diagnostics["function_coverage_ratio"],
+                "high_confidence_ratio": diagnostics["high_confidence_ratio"],
+            },
+        ):
+            return
+
+        print("📞 Call Graph Status")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print(f"Repository: {repo_root}")
+        print(f"Repo ID:    {diagnostics['repo_id']}")
+        print()
+        print("Coverage")
+        print(
+            f"  Functions with calls: {diagnostics['functions_with_calls']:,} / {diagnostics['total_functions']:,}"
+        )
+        print(f"  Functions without calls: {diagnostics['functions_without_calls']:,}")
+        print(f"  Function coverage ratio: {diagnostics['function_coverage_ratio']:.1%}")
+        print(
+            f"  Files with call edges: {diagnostics['files_with_call_edges']:,} / {diagnostics['files_with_functions']:,}"
+        )
+        print(f"  Files with analyzer edges: {diagnostics['files_with_analyzer_edges']:,}")
+        print(f"  File coverage ratio: {diagnostics['file_coverage_ratio']:.1%}")
+        print()
+        print("Edges")
+        print(f"  Total CALLS edges: {diagnostics['total_call_edges']:,}")
+        print(
+            f"  High-confidence edges (>= {diagnostics['high_confidence_threshold']:.2f}): {diagnostics['high_confidence_edges']:,}"
+        )
+        print(f"  High-confidence ratio: {diagnostics['high_confidence_ratio']:.1%}")
+        print()
+        print("Sources")
+        if diagnostics["sources"]:
+            for source_row in diagnostics["sources"]:
+                print(
+                    f"  {source_row['source']}: {source_row['edge_count']:,} edges "
+                    f"(avg confidence {source_row['avg_confidence']:.2f})"
+                )
+        else:
+            print("  No CALLS edges recorded yet.")
+
+    except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ServiceUnavailable) as exc:
+        _exit_with_error(
+            args,
+            error=f"Could not inspect CALLS edges: {exc}",
+            human_lines=[
+                f"❌ Could not inspect CALLS edges: {exc}",
+                "   Make sure Neo4j is running and the repo has been indexed.",
+            ],
+        )
+    finally:
+        if builder is not None:
+            builder.close()
 
 
 def cmd_deps(args):
@@ -2078,6 +2315,8 @@ Commands:
   {primary_name} watch             # Continuous monitoring
   {primary_name} serve             # Start MCP server
   {primary_name} search <query>    # Test code semantic search
+  {primary_name} debug-ts-calls    # Inspect JS/TS analyzer output for one file
+  {primary_name} call-status       # Show CALLS-edge coverage and provenance
   {primary_name} git-init          # Enable git graph integration
   {primary_name} git-sync          # Sync local git history into Neo4j
   {primary_name} git-status        # Show git graph sync status
@@ -2187,7 +2426,7 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
     serve_parser.add_argument(
         "--repo",
         type=str,
-        help="Repository root to use for .codememory/config.json resolution",
+        help="Repository root to use for .agentic-memory/config.json resolution",
     )
     serve_parser.add_argument(
         "--env-file",
@@ -2205,6 +2444,42 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
         "--limit", "-l", type=int, default=5, help="Maximum results to return"
     )
     search_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output",
+    )
+
+    # Command: debug-ts-calls (TypeScript analyzer diagnostics)
+    debug_ts_calls_parser = subparsers.add_parser(
+        "debug-ts-calls",
+        help="Run the JS/TS semantic call analyzer on one file without indexing",
+    )
+    debug_ts_calls_parser.add_argument(
+        "path",
+        help="Repo-relative path to a .js/.jsx/.ts/.tsx file",
+    )
+    debug_ts_calls_parser.add_argument(
+        "--repo",
+        type=str,
+        help="Repository root to analyze. Defaults to the detected current repo root.",
+    )
+    debug_ts_calls_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output",
+    )
+
+    # Command: call-status (CALLS diagnostics)
+    call_status_parser = subparsers.add_parser(
+        "call-status",
+        help="Show CALLS-edge coverage, provenance, and confidence for one repo",
+    )
+    call_status_parser.add_argument(
+        "--repo",
+        type=str,
+        help="Repository root path (defaults to detected current repository)",
+    )
+    call_status_parser.add_argument(
         "--json",
         action="store_true",
         help="Emit machine-readable JSON output",
@@ -2616,6 +2891,10 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
         cmd_serve(args)
     elif args.command == "search":
         cmd_search(args)
+    elif args.command == "debug-ts-calls":
+        cmd_debug_ts_calls(args)
+    elif args.command == "call-status":
+        cmd_call_status(args)
     elif args.command == "deps":
         cmd_deps(args)
     elif args.command == "impact":

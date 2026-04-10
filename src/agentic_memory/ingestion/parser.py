@@ -71,7 +71,7 @@ class CodeParser:
         Returns:
             Dict with:
             - `classes`: `[{name, code, start_line}]`
-            - `functions`: `[{name, qualified_name, parent_class, code, start_line, calls}]`
+            - `functions`: `[{name, qualified_name, parent_class, code, start_line, name_line, name_column, calls}]`
             - `imports`: `[module_specifier, ...]`
             - `calls`: flattened call-name list across the file
             - `env_vars`: Python env-var reads / dotenv loads
@@ -157,6 +157,8 @@ class CodeParser:
                         "parent_class": parent_class,
                         "code": self._node_text(node, code),
                         "start_line": node.start_point[0] + 1,
+                        "name_line": self._identifier_line(node),
+                        "name_column": self._identifier_column(node),
                         "calls": self._extract_python_calls(node, code),
                     }
                 )
@@ -225,6 +227,8 @@ class CodeParser:
                             "parent_class": "",
                             "code": self._node_text(node, code),
                             "start_line": node.start_point[0] + 1,
+                            "name_line": self._identifier_line(node),
+                            "name_column": self._identifier_column(node),
                             "calls": self._extract_js_calls(node, code),
                         }
                     )
@@ -244,6 +248,8 @@ class CodeParser:
                         "parent_class": parent_class,
                         "code": self._node_text(node, code),
                         "start_line": node.start_point[0] + 1,
+                        "name_line": self._js_method_name_line(node),
+                        "name_column": self._js_method_name_column(node),
                         "calls": self._extract_js_calls(node, code),
                     }
                 )
@@ -365,6 +371,8 @@ class CodeParser:
             "parent_class": "",
             "code": self._node_text(node, code),
             "start_line": node.start_point[0] + 1,
+            "name_line": name_node.start_point[0] + 1,
+            "name_column": name_node.start_point[1] + 1,
             "calls": self._extract_js_calls(value_node, code),
         }
 
@@ -403,6 +411,20 @@ class CodeParser:
                 return self._node_text(child, code)
         return ""
 
+    def _identifier_line(self, node: Node) -> int:
+        """Return the 1-based line number of the first identifier-like child."""
+        for child in node.children:
+            if child.type in {"identifier", "property_identifier"}:
+                return child.start_point[0] + 1
+        return node.start_point[0] + 1
+
+    def _identifier_column(self, node: Node) -> int:
+        """Return the 1-based column number of the first identifier-like child."""
+        for child in node.children:
+            if child.type in {"identifier", "property_identifier"}:
+                return child.start_point[1] + 1
+        return node.start_point[1] + 1
+
     def _dotted_name_text(self, node: Node, code: str) -> str:
         """Return the first dotted-name child text for a Python import node."""
         for child in node.children:
@@ -434,6 +456,20 @@ class CodeParser:
         if name_node is not None:
             return self._node_text(name_node, code)
         return self._identifier_text(node, code)
+
+    def _js_method_name_line(self, node: Node) -> int:
+        """Return the 1-based line number for a JS method name."""
+        name_node = node.child_by_field_name("name")
+        if name_node is not None:
+            return name_node.start_point[0] + 1
+        return self._identifier_line(node)
+
+    def _js_method_name_column(self, node: Node) -> int:
+        """Return the 1-based column number for a JS method name."""
+        name_node = node.child_by_field_name("name")
+        if name_node is not None:
+            return name_node.start_point[1] + 1
+        return self._identifier_column(node)
 
     def _callee_name(self, callee: Node | None, code: str) -> str:
         """Return a short call target name used for conservative call linking."""

@@ -3,6 +3,13 @@
 import pytest
 from unittest.mock import Mock, patch
 
+from agentic_memory.core.runtime_embedding import EmbeddingRuntimeConfig
+from agentic_memory.ingestion.typescript_call_analyzer import (
+    TypeScriptFileCallAnalysis,
+    TypeScriptFunctionCallAnalysis,
+    TypeScriptOutgoingCall,
+)
+
 # Skip if neo4j is not available
 pytestmark = [
     pytest.mark.unit,
@@ -66,6 +73,28 @@ class TestKnowledgeGraphBuilder:
         with pytest.raises(Exception, match="API Error"):
             builder.get_embedding("test text")
 
+    def test_get_embedding_tracks_gemini_usage_and_cost(self, builder):
+        """Gemini embedding metadata should increment token and cost counters."""
+        builder.embedding_runtime = EmbeddingRuntimeConfig(
+            module_name="code",
+            provider="gemini",
+            api_key="gemini-key",
+            model="gemini-embedding-2-preview",
+            dimensions=builder.VECTOR_DIMENSIONS,
+        )
+        builder.embedding_service = Mock()
+        builder.embedding_service.embed_with_metadata.return_value = (
+            [0.1] * builder.VECTOR_DIMENSIONS,
+            Mock(prompt_tokens=1000, total_tokens=1000, estimated_cost_usd=0.0002),
+        )
+
+        result = builder.get_embedding("test text")
+
+        assert len(result) == builder.VECTOR_DIMENSIONS
+        assert builder.token_usage["embedding_calls"] == 1
+        assert builder.token_usage["embedding_tokens"] == 1000
+        assert builder.token_usage["total_cost_usd"] == pytest.approx(0.0002)
+
     def test_close(self, builder):
         """Test driver cleanup."""
         builder.close()
@@ -100,6 +129,192 @@ const lazy = import("./lazy-module");
         assert "frontend/src/services/heygen_service.ts" in candidates
         assert "frontend/src/services/heygen_service.tsx" in candidates
         assert "frontend/src/services/heygen_service/index.ts" in candidates
+
+    def test_pass_4_call_graph_prefers_typescript_analyzer_results(
+        self,
+        builder,
+        mock_driver,
+        monkeypatch,
+        tmp_path,
+    ):
+        """JS/TS CALLS should use analyzer-resolved cross-file targets when available."""
+        _, session = mock_driver
+        repo_root = tmp_path
+        (repo_root / "src").mkdir()
+        (repo_root / "src" / "a.ts").write_text("export function foo() {}", encoding="utf8")
+        (repo_root / "src" / "b.ts").write_text("export function bar() {}", encoding="utf8")
+
+        session.run.side_effect = [
+            [
+                {
+                    "path": "src/a.ts",
+                    "funcs": [
+                        {
+                            "name": "foo",
+                            "sig": "src/a.ts:foo",
+                            "qualified_name": "foo",
+                            "parent_class": "",
+                        }
+                    ],
+                },
+                {
+                    "path": "src/b.ts",
+                    "funcs": [
+                        {
+                            "name": "bar",
+                            "sig": "src/b.ts:bar",
+                            "qualified_name": "bar",
+                            "parent_class": "",
+                        }
+                    ],
+                },
+            ],
+            None,
+            None,
+            None,
+        ]
+
+        parsed_by_path = {
+            "src/a.ts": {
+                "functions": [
+                    {
+                        "name": "foo",
+                        "qualified_name": "foo",
+                        "calls": [],
+                    }
+                ]
+            },
+            "src/b.ts": {
+                "functions": [
+                    {
+                        "name": "bar",
+                        "qualified_name": "bar",
+                        "calls": [],
+                    }
+                ]
+            },
+        }
+
+        monkeypatch.setattr(
+            builder,
+            "_prepare_typescript_analysis_requests",
+            lambda **_: (
+                parsed_by_path,
+                [{"path": "src/a.ts", "functions": [{"qualified_name": "foo"}]}],
+            ),
+        )
+
+        class _FakeAnalyzer:
+            def is_available(self):
+                return True
+
+            def analyze_files(self, **kwargs):
+                return {
+                    "src/a.ts": TypeScriptFileCallAnalysis(
+                        rel_path="src/a.ts",
+                        functions={
+                            "foo": TypeScriptFunctionCallAnalysis(
+                                qualified_name="foo",
+                                name="foo",
+                                outgoing_calls=(
+                                    TypeScriptOutgoingCall(
+                                        rel_path="src/b.ts",
+                                        name="bar",
+                                        kind="function",
+                                        container_name=None,
+                                        qualified_name_guess="bar",
+                                    ),
+                                ),
+                            )
+                        },
+                    )
+                }
+
+        monkeypatch.setattr(builder, "_get_typescript_call_analyzer", lambda: _FakeAnalyzer())
+
+        builder.pass_4_call_graph(repo_root)
+
+        write_calls = [
+            call
+            for call in session.run.call_args_list
+            if "SET r.source = $source" in call.args[0]
+        ]
+        assert len(write_calls) == 1
+        assert write_calls[0].kwargs["source"] == "typescript_service"
+        assert write_calls[0].kwargs["confidence"] == pytest.approx(0.95)
+        assert write_calls[0].kwargs["callee_sigs"] == ["src/b.ts:bar"]
+
+    def test_get_call_diagnostics_summarizes_sources_and_coverage(self, builder, mock_driver):
+        """CALLS diagnostics should surface coverage and provenance ratios for one repo."""
+        _, session = mock_driver
+        builder.repo_id = "repo-1"
+        session.run.side_effect = [
+            Mock(single=Mock(return_value={
+                "total_functions": 5,
+                "functions_with_calls": 3,
+                "total_call_edges": 4,
+                "high_confidence_edges": 3,
+            })),
+            Mock(single=Mock(return_value={
+                "files_with_functions": 3,
+                "files_with_call_edges": 2,
+                "files_with_analyzer_edges": 1,
+            })),
+            [
+                {
+                    "source": "typescript_service",
+                    "edge_count": 3,
+                    "avg_confidence": 0.95,
+                },
+                {
+                    "source": "static_parser",
+                    "edge_count": 1,
+                    "avg_confidence": 0.6,
+                },
+            ],
+        ]
+
+        diagnostics = builder.get_call_diagnostics()
+
+        assert diagnostics["repo_id"] == "repo-1"
+        assert diagnostics["total_functions"] == 5
+        assert diagnostics["functions_with_calls"] == 3
+        assert diagnostics["functions_without_calls"] == 2
+        assert diagnostics["function_coverage_ratio"] == pytest.approx(0.6)
+        assert diagnostics["total_call_edges"] == 4
+        assert diagnostics["high_confidence_edges"] == 3
+        assert diagnostics["high_confidence_ratio"] == pytest.approx(0.75)
+        assert diagnostics["files_with_functions"] == 3
+        assert diagnostics["files_with_call_edges"] == 2
+        assert diagnostics["files_with_analyzer_edges"] == 1
+        assert diagnostics["file_coverage_ratio"] == pytest.approx(2 / 3)
+        assert diagnostics["sources"][0]["source"] == "typescript_service"
+        assert diagnostics["sources"][0]["avg_confidence"] == pytest.approx(0.95)
+
+    def test_get_file_dependencies_scopes_duplicate_paths_by_repo_id(self, builder, mock_driver):
+        """Dependency lookups should stay pinned to one repo when paths collide.
+
+        This guards the exact case we expect in real usage: two repositories can
+        both contain `src/shared/helpers.ts`, but a dependency query must only
+        inspect the file node that matches the requested repo_id.
+        """
+        _, session = mock_driver
+        session.run.return_value.single.return_value = {
+            "imports": ["src/core/runtime.ts"],
+            "imported_by": ["src/app.ts"],
+        }
+
+        result = builder.get_file_dependencies(
+            "src/shared/helpers.ts",
+            repo_id="repo-beta",
+        )
+
+        assert result == {
+            "imports": ["src/core/runtime.ts"],
+            "imported_by": ["src/app.ts"],
+        }
+        assert session.run.call_args.kwargs["repo_id"] == "repo-beta"
+        assert session.run.call_args.kwargs["path"] == "src/shared/helpers.ts"
 
 
 class TestCypherQueries:

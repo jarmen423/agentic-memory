@@ -1,7 +1,9 @@
-"""
-Configuration management for Agentic Memory.
+"""Configuration management for Agentic Memory.
 
-Handles per-repository configuration stored in .codememory/ directory.
+New Agentic Memory repos store their local control files under
+``.agentic-memory/`` so they do not collide with older ``.codememory/``-based
+setups. The config layer still understands the legacy folder as a read fallback
+so existing repos can be upgraded in place instead of breaking immediately.
 """
 
 import os
@@ -9,6 +11,9 @@ import json
 import copy
 from pathlib import Path
 from typing import Optional, Dict, Any
+
+CONFIG_DIR_NAME = ".agentic-memory"
+LEGACY_CONFIG_DIR_NAME = ".codememory"
 
 DEFAULT_CONFIG = {
     "neo4j": {
@@ -89,6 +94,10 @@ DEFAULT_CONFIG = {
     ],
     "gemini": {
         "api_key": "",  # Empty means fall back to GEMINI_API_KEY env var
+        "use_vertexai": False,
+        "project": "",
+        "location": "global",
+        "api_version": "v1",
     },
     "nemotron": {
         "api_key": "",  # Empty means fall back to NVIDIA_API_KEY env var
@@ -98,7 +107,17 @@ DEFAULT_CONFIG = {
 
 
 class Config:
-    """Manages Agentic Memory configuration for a repository."""
+    """Manages Agentic Memory configuration for a repository.
+
+    The config layer has to bridge two local folder conventions:
+
+    - ``.codememory``: legacy CodeMemory repos
+    - ``.agentic-memory``: current Agentic Memory repos
+
+    New writes should go to ``.agentic-memory``. Reads can still fall back to the
+    legacy folder so older repos remain usable until the operator decides to
+    migrate them.
+    """
 
     def __init__(self, repo_root: Path):
         """
@@ -108,13 +127,35 @@ class Config:
             repo_root: Path to the repository root
         """
         self.repo_root = repo_root
-        self.config_dir = repo_root / ".codememory"
+        self.config_dir = repo_root / CONFIG_DIR_NAME
+        self.legacy_config_dir = repo_root / LEGACY_CONFIG_DIR_NAME
         self.config_file = self.config_dir / "config.json"
+        self.legacy_config_file = self.legacy_config_dir / "config.json"
         self.graphignore_file = self.config_dir / ".graphignore"
+        self.legacy_graphignore_file = self.legacy_config_dir / ".graphignore"
 
     def exists(self) -> bool:
         """Check if config exists for this repo."""
+        return self.config_file.exists() or self.legacy_config_file.exists()
+
+    def has_primary_config(self) -> bool:
+        """Return whether the repo already has the new ``.agentic-memory`` config."""
         return self.config_file.exists()
+
+    def has_legacy_config(self) -> bool:
+        """Return whether the repo still only has the legacy ``.codememory`` config."""
+        return self.legacy_config_file.exists()
+
+    def active_config_file(self) -> Path:
+        """Return the config file path this repo currently loads from.
+
+        The current repo convention wins when both folders exist. This lets the
+        CLI show operators the exact path that will be used without duplicating
+        config-selection logic across commands.
+        """
+        if self.has_primary_config():
+            return self.config_file
+        return self.legacy_config_file
 
     def load(self) -> Dict[str, Any]:
         """Load config from file, or return defaults if not exists."""
@@ -122,12 +163,13 @@ class Config:
             return copy.deepcopy(DEFAULT_CONFIG)
 
         try:
-            with open(self.config_file, "r") as f:
+            source = self.config_file if self.config_file.exists() else self.legacy_config_file
+            with open(source, "r") as f:
                 config = json.load(f)
                 # Merge with defaults to handle missing keys
                 return self._merge_defaults(config)
         except (json.JSONDecodeError, IOError) as e:
-            raise RuntimeError(f"Failed to load config from {self.config_file}: {e}")
+            raise RuntimeError(f"Failed to load config from {source}: {e}")
 
     def save(self, config: Dict[str, Any]) -> None:
         """Save config to file."""
@@ -147,12 +189,12 @@ class Config:
 
     def ensure_graphignore(self, ignore_dirs: Optional[list[str]] = None) -> None:
         """Create .graphignore with sensible defaults if it does not exist."""
-        if self.graphignore_file.exists():
+        if self.graphignore_file.exists() or self.legacy_graphignore_file.exists():
             return
 
         ignore_dirs = ignore_dirs or self.load().get("indexing", {}).get("ignore_dirs", [])
         lines = [
-            "# Patterns to exclude from codememory indexing",
+            "# Patterns to exclude from Agentic Memory indexing",
             "# Supports simple glob-style patterns.",
             "# Examples: .venv*/, node_modules/, *.min.js",
             "",
@@ -175,10 +217,15 @@ class Config:
 
     def get_graphignore_patterns(self) -> list[str]:
         """Load non-empty, non-comment patterns from .graphignore."""
-        if not self.graphignore_file.exists():
+        graphignore_path = (
+            self.graphignore_file
+            if self.graphignore_file.exists()
+            else self.legacy_graphignore_file
+        )
+        if not graphignore_path.exists():
             return []
         patterns: list[str] = []
-        with open(self.graphignore_file, "r") as f:
+        with open(graphignore_path, "r") as f:
             for raw in f:
                 line = raw.strip()
                 if not line or line.startswith("#"):
@@ -324,7 +371,7 @@ class Config:
 
 def find_repo_root(start_path: Path = None) -> Optional[Path]:
     """
-    Find the repository root by looking for .codememory directory.
+    Find the repository root by looking for Agentic Memory config directories.
 
     Args:
         start_path: Path to start searching from (defaults to cwd)
@@ -335,10 +382,12 @@ def find_repo_root(start_path: Path = None) -> Optional[Path]:
     start_path = start_path or Path.cwd()
     current = start_path.resolve()
 
-    # Walk up directories looking for .codememory
+    # Prefer the renamed Agentic Memory config root, but continue honoring the
+    # legacy CodeMemory folder so older repos still resolve correctly.
     while current != current.parent:
-        codememory_dir = current / ".codememory"
-        if codememory_dir.exists():
+        if (current / CONFIG_DIR_NAME).exists():
+            return current
+        if (current / LEGACY_CONFIG_DIR_NAME).exists():
             return current
         current = current.parent
 
@@ -358,12 +407,13 @@ def load_config_for_current_dir() -> Optional[Config]:
     Load config for the current directory.
 
     Returns:
-        Config object, or None if not in a codememory-initialized repo
+        Config object, or None if not in an Agentic Memory-initialized repo
     """
     repo_root = find_repo_root()
-    codememory_dir = repo_root / ".codememory"
+    config_dir = repo_root / CONFIG_DIR_NAME
+    legacy_dir = repo_root / LEGACY_CONFIG_DIR_NAME
 
-    if not codememory_dir.exists():
+    if not config_dir.exists() and not legacy_dir.exists():
         return None
 
     return Config(repo_root)

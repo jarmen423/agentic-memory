@@ -28,12 +28,12 @@ def test_product_state_defaults_and_touch(monkeypatch, tmp_path):
 
 
 def test_product_state_upsert_repo_tracks_initialized_repo(tmp_path):
-    """Repo upserts resolve the path and capture codememory init status."""
+    """Repo upserts resolve the path and capture Agentic Memory init status."""
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    codememory_dir = repo_root / ".codememory"
-    codememory_dir.mkdir()
-    (codememory_dir / "config.json").write_text("{}", encoding="utf-8")
+    config_dir = repo_root / ".agentic-memory"
+    config_dir.mkdir()
+    (config_dir / "config.json").write_text("{}", encoding="utf-8")
 
     store = ProductStateStore(tmp_path / "state.json")
     repo = store.upsert_repo(str(repo_root), label="Main Repo", metadata={"source": "dogfood"})
@@ -141,6 +141,32 @@ def test_product_state_can_clear_active_project_binding(tmp_path):
             session_id="sess-1",
         )
         is None
+    )
+
+
+def test_product_state_can_resolve_latest_openclaw_session_from_registration(tmp_path):
+    """Project commands can infer session id from the last registered agent session."""
+
+    store = ProductStateStore(tmp_path / "state.json")
+    store.upsert_integration(
+        surface="openclaw",
+        target="work-home:laptop-01:claw-main",
+        status="connected",
+        config={
+            "workspace_id": "work-home",
+            "device_id": "laptop-01",
+            "agent_id": "claw-main",
+            "session_id": "session-42",
+        },
+    )
+
+    assert (
+        store.resolve_openclaw_session_id(
+            workspace_id="work-home",
+            agent_id="claw-main",
+            device_id="laptop-01",
+        )
+        == "session-42"
     )
 
 

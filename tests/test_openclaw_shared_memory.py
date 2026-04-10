@@ -34,8 +34,8 @@ def test_openclaw_shared_workspace_stress_preserves_identity(tmp_path):
 
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    (repo_root / ".codememory").mkdir()
-    (repo_root / ".codememory" / "config.json").write_text("{}", encoding="utf-8")
+    (repo_root / ".agentic-memory").mkdir()
+    (repo_root / ".agentic-memory" / "config.json").write_text("{}", encoding="utf-8")
     store.upsert_repo(str(repo_root), label="Workspace Repo", metadata=workload[0].repo_metadata())
     store.upsert_integration(
         surface="openclaw",
@@ -115,8 +115,8 @@ async def test_openclaw_product_routes_preserve_identity_metadata(monkeypatch, t
 
     repo_root = tmp_path / "workspace"
     repo_root.mkdir()
-    (repo_root / ".codememory").mkdir()
-    (repo_root / ".codememory" / "config.json").write_text("{}", encoding="utf-8")
+    (repo_root / ".agentic-memory").mkdir()
+    (repo_root / ".agentic-memory" / "config.json").write_text("{}", encoding="utf-8")
     repo_resp = await product_routes.upsert_product_repo(
         ProductRepoUpsertRequest(
             repo_path=str(repo_root),

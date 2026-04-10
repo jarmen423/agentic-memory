@@ -467,7 +467,13 @@ def cmd_init(args):
         print("  2. Use OPENAI_API_KEY via .agentic-memory/.env or exported shell env")
         print("  3. Skip for now (semantic code search won't work)")
         openai_choice = input("\nChoose option [1-3] (default: 2): ").strip() or "2"
-        if openai_choice == "1":
+        if openai_choice not in {"1", "2", "3"} and openai_choice.strip():
+            # Operators often paste the API key directly at the menu prompt.
+            # Treat that as "enter API key now" instead of silently falling into
+            # the skip branch.
+            openai_config["api_key"] = openai_choice.strip()
+            print("   ✅ Detected pasted OpenAI API key and stored it in config")
+        elif openai_choice == "1":
             api_key = input("   Enter OpenAI API key (sk-...): ").strip()
             openai_config["api_key"] = api_key
         elif openai_choice == "2":
@@ -485,7 +491,13 @@ def cmd_init(args):
         print("  2. Use GEMINI_API_KEY / GOOGLE_API_KEY via .agentic-memory/.env or shell env")
         print("  3. Skip for now (semantic code search won't work)")
         gemini_choice = input("\nChoose option [1-3] (default: 2): ").strip() or "2"
-        if gemini_choice == "1":
+        if gemini_choice not in {"1", "2", "3"} and gemini_choice.strip():
+            # Same UX guard as the OpenAI path above. A pasted Gemini/Google key
+            # should be interpreted as the key itself, not as an invalid menu
+            # choice that disables semantic search.
+            gemini_config["api_key"] = gemini_choice.strip()
+            print("   ✅ Detected pasted Gemini API key and stored it in config")
+        elif gemini_choice == "1":
             api_key = input("   Enter Gemini API key: ").strip()
             gemini_config["api_key"] = api_key
         elif gemini_choice == "2":

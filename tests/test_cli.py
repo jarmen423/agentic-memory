@@ -648,6 +648,36 @@ def test_init_writes_agentic_memory_env_file_for_env_backed_settings(
     assert ".agentic-memory/.env" in stdout
 
 
+def test_init_treats_pasted_gemini_key_as_api_key(monkeypatch, capsys, tmp_path):
+    """Pasting a Gemini key at the option prompt should store it instead of skipping.
+
+    This covers the exact user failure mode where a human sees the provider
+    options, pastes the key immediately, and expects the wizard to do the right
+    thing. Falling into the "skip" branch here is a UX bug.
+    """
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    mock_cfg = _mock_config(exists=False)
+    mock_cfg.config_file = repo_root / ".agentic-memory" / "config.json"
+    mock_cfg.graphignore_file = repo_root / ".agentic-memory" / ".graphignore"
+
+    pasted_key = "gemini-test-key-from-paste"
+    responses = iter(["1", "", "1", pasted_key, "", "n"])
+
+    monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
+    monkeypatch.setattr(cli.Path, "cwd", Mock(return_value=repo_root))
+    monkeypatch.setattr(cli, "print_banner", Mock())
+    monkeypatch.setattr("builtins.input", Mock(side_effect=lambda _prompt="": next(responses)))
+
+    cli.cmd_init(argparse.Namespace())
+
+    saved_config = mock_cfg.save.call_args.args[0]
+    assert saved_config["gemini"]["api_key"] == pasted_key
+    stdout = capsys.readouterr().out
+    assert "detected pasted gemini api key" in stdout.lower()
+
+
 def test_deps_json_success_uses_graph_method(monkeypatch, capsys, tmp_path):
     """Deps command uses graph dependency method and returns JSON envelope."""
     repo_root = tmp_path / "repo"

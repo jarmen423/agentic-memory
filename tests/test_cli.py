@@ -208,11 +208,13 @@ def test_index_json_success_envelope(monkeypatch, capsys, tmp_path):
     }
 
 
-def test_index_loads_gemini_key_from_repo_dotenv(monkeypatch, tmp_path):
-    """Index loads GEMINI_API_KEY from <repo>/.env before building the graph."""
+def test_index_loads_gemini_key_from_agentic_memory_dotenv(monkeypatch, tmp_path):
+    """Index loads GEMINI_API_KEY from <repo>/.agentic-memory/.env before building the graph."""
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    (repo_root / ".env").write_text("GEMINI_API_KEY=from-index-dotenv\n", encoding="utf-8")
+    config_dir = repo_root / ".agentic-memory"
+    config_dir.mkdir()
+    (config_dir / ".env").write_text("GEMINI_API_KEY=from-index-dotenv\n", encoding="utf-8")
 
     mock_cfg = Mock()
     mock_cfg.exists.return_value = True
@@ -295,11 +297,13 @@ def test_search_json_success_envelope(monkeypatch, capsys, tmp_path):
     assert payload["metrics"] == {"result_count": 1}
 
 
-def test_search_loads_gemini_key_from_repo_dotenv(monkeypatch, tmp_path):
-    """Search loads GEMINI_API_KEY from <repo>/.env before validating config."""
+def test_search_loads_gemini_key_from_agentic_memory_dotenv(monkeypatch, tmp_path):
+    """Search loads GEMINI_API_KEY from <repo>/.agentic-memory/.env before validating config."""
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    (repo_root / ".env").write_text("GEMINI_API_KEY=from-search-dotenv\n", encoding="utf-8")
+    config_dir = repo_root / ".agentic-memory"
+    config_dir.mkdir()
+    (config_dir / ".env").write_text("GEMINI_API_KEY=from-search-dotenv\n", encoding="utf-8")
     monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
     monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
     monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
@@ -729,11 +733,13 @@ def test_serve_loads_openai_key_from_explicit_env_file(monkeypatch, tmp_path):
     run_server.assert_called_once_with(port=8000, repo_root=repo_root.resolve())
 
 
-def test_serve_loads_openai_key_from_repo_dotenv(monkeypatch, tmp_path):
-    """Serve defaults to <repo>/.env when --repo is provided and --env-file is omitted."""
+def test_serve_loads_openai_key_from_agentic_memory_dotenv(monkeypatch, tmp_path):
+    """Serve auto-loads <repo>/.agentic-memory/.env when --env-file is omitted."""
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    (repo_root / ".env").write_text("OPENAI_API_KEY=from-repo-dotenv\n", encoding="utf-8")
+    config_dir = repo_root / ".agentic-memory"
+    config_dir.mkdir()
+    (config_dir / ".env").write_text("OPENAI_API_KEY=from-agentic-memory-dotenv\n", encoding="utf-8")
 
     run_server = _patch_server_module(monkeypatch)
     mock_cfg = _mock_config(exists=True)
@@ -748,15 +754,17 @@ def test_serve_loads_openai_key_from_repo_dotenv(monkeypatch, tmp_path):
         )
     )
 
-    assert os.environ.get("OPENAI_API_KEY") == "from-repo-dotenv"
+    assert os.environ.get("OPENAI_API_KEY") == "from-agentic-memory-dotenv"
     run_server.assert_called_once_with(port=8000, repo_root=repo_root.resolve())
 
 
-def test_watch_loads_gemini_key_from_repo_dotenv(monkeypatch, tmp_path):
-    """Watch defaults to <repo>/.env when GEMINI_API_KEY is not already exported."""
+def test_watch_loads_gemini_key_from_agentic_memory_dotenv(monkeypatch, tmp_path):
+    """Watch auto-loads <repo>/.agentic-memory/.env when GEMINI_API_KEY is absent."""
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    (repo_root / ".env").write_text("GEMINI_API_KEY=from-watch-dotenv\n", encoding="utf-8")
+    config_dir = repo_root / ".agentic-memory"
+    config_dir.mkdir()
+    (config_dir / ".env").write_text("GEMINI_API_KEY=from-watch-dotenv\n", encoding="utf-8")
 
     mock_cfg = Mock()
     mock_cfg.exists.return_value = True
@@ -804,6 +812,41 @@ def test_watch_loads_gemini_key_from_repo_dotenv(monkeypatch, tmp_path):
     )
 
 
+def test_index_does_not_load_generic_repo_dotenv(monkeypatch, tmp_path):
+    """Index should ignore a target repo's generic .env to avoid provider collisions.
+
+    This protects Agentic Memory from application repos that already use broad
+    env names like EMBEDDING_PROVIDER for their own stack. Those values should
+    not silently override .agentic-memory/config.json during indexing.
+    """
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / ".env").write_text("EMBEDDING_PROVIDER=openai\n", encoding="utf-8")
+
+    mock_cfg = Mock()
+    mock_cfg.exists.return_value = True
+    mock_cfg.get_indexing_config.return_value = {
+        "ignore_dirs": [],
+        "ignore_files": [],
+        "extensions": [".py"],
+    }
+    mock_cfg.get_graphignore_patterns.return_value = []
+
+    builder = Mock()
+    builder.run_pipeline.return_value = {"embedding_calls": 0, "cost_usd": 0.0}
+    builder.close = Mock()
+
+    monkeypatch.setattr(cli, "find_repo_root", Mock(return_value=repo_root))
+    monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
+    monkeypatch.setattr(cli, "_build_code_graph_builder", Mock(return_value=builder))
+    monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
+
+    cli.cmd_index(argparse.Namespace(repo=None, env_file=None, quiet=True, json=False))
+
+    assert os.environ.get("EMBEDDING_PROVIDER") is None
+    cli._build_code_graph_builder.assert_called_once()
+
+
 def test_git_init_json_success_envelope(monkeypatch, capsys, tmp_path):
     """git-init emits standard JSON envelope and enables git config."""
     repo_root = tmp_path / "repo"
@@ -849,11 +892,13 @@ def test_git_init_json_success_envelope(monkeypatch, capsys, tmp_path):
     mock_ingestor.close.assert_called_once()
 
 
-def test_git_init_loads_repo_dotenv_for_env_backed_neo4j_config(monkeypatch, tmp_path):
-    """git-init loads env-backed Neo4j config from <repo>/.env when --repo is used."""
+def test_git_init_loads_agentic_memory_dotenv_for_env_backed_neo4j_config(monkeypatch, tmp_path):
+    """git-init loads env-backed Neo4j config from <repo>/.agentic-memory/.env."""
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    (repo_root / ".env").write_text("NEO4J_URI=bolt://from-dotenv:7687\n", encoding="utf-8")
+    config_dir = repo_root / ".agentic-memory"
+    config_dir.mkdir()
+    (config_dir / ".env").write_text("NEO4J_URI=bolt://from-dotenv:7687\n", encoding="utf-8")
 
     mock_cfg = Mock()
     mock_cfg.exists.return_value = True

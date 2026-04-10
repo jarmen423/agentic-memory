@@ -36,10 +36,7 @@ Key Technologies:
     Neo4j Python driver, tree-sitter (via ingestion pipeline).
 """
 
-# Load .env BEFORE any other imports that might need environment variables
 from dotenv import load_dotenv
-
-load_dotenv()
 
 import argparse
 import json
@@ -60,7 +57,13 @@ from agentic_memory.ingestion.typescript_call_analyzer import (
 )
 from agentic_memory.ingestion.watcher import start_continuous_watch
 from agentic_memory.product.state import ProductStateStore
-from agentic_memory.config import Config, find_repo_root, DEFAULT_CONFIG
+from agentic_memory.config import (
+    CONFIG_DIR_NAME,
+    LEGACY_CONFIG_DIR_NAME,
+    Config,
+    DEFAULT_CONFIG,
+    find_repo_root,
+)
 from agentic_memory.core.runtime_embedding import resolve_embedding_runtime
 from agentic_memory.telemetry import TelemetryStore, resolve_telemetry_db_path
 
@@ -91,7 +94,29 @@ def print_banner():
 
 
 def _load_repo_env(repo_root: Optional[Path], env_file_arg: Optional[str] = None) -> None:
-    """Load an explicit env file or the repository-local .env if present."""
+    """Load Agentic Memory runtime env vars from an explicit or namespaced file.
+
+    Why this helper is strict about which dotenv files it touches:
+
+    - Target repositories often already have an application-level ``.env`` for
+      their own stack.
+    - Those files may legitimately define generic variables such as
+      ``EMBEDDING_PROVIDER`` that are unrelated to Agentic Memory.
+    - If the CLI blindly loads ``<repo>/.env`` before runtime resolution, those
+      generic variables can silently override ``.agentic-memory/config.json`` and
+      make indexing talk to the wrong provider.
+
+    To avoid cross-project configuration collisions, Agentic Memory only auto-
+    loads env files that it owns:
+
+    - explicit ``--env-file``
+    - ``<repo>/.agentic-memory/.env``
+    - legacy fallback ``<repo>/.codememory/.env``
+
+    The user's shell environment still wins naturally, and operators can always
+    point at a custom dotenv file with ``--env-file`` when they intentionally
+    want repo-root or shared env behavior.
+    """
     if env_file_arg:
         env_file = Path(env_file_arg).expanduser().resolve()
         if not env_file.exists():
@@ -101,9 +126,14 @@ def _load_repo_env(repo_root: Optional[Path], env_file_arg: Optional[str] = None
         return
 
     if repo_root:
-        repo_env = repo_root / ".env"
-        if repo_env.exists():
-            load_dotenv(dotenv_path=repo_env, override=False)
+        candidate_env_files = (
+            repo_root / CONFIG_DIR_NAME / ".env",
+            repo_root / LEGACY_CONFIG_DIR_NAME / ".env",
+        )
+        for env_file in candidate_env_files:
+            if env_file.exists():
+                load_dotenv(dotenv_path=env_file, override=False)
+                return
 
 
 def _is_json_mode(args: argparse.Namespace) -> bool:

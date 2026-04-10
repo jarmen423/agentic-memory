@@ -274,6 +274,55 @@ def _build_code_graph_builder(
     )
 
 
+def _upsert_agentic_memory_env_file(repo_root: Path, entries: dict[str, str]) -> Path:
+    """Create or update ``.agentic-memory/.env`` with the provided entries.
+
+    The init wizard offers "use environment variables" as a configuration mode.
+    Agentic Memory now intentionally ignores a target repo's generic root
+    ``.env`` to avoid collisions with application-specific variables such as
+    ``EMBEDDING_PROVIDER``. That means the wizard needs a first-class place to
+    write env-backed settings that *will* be read later.
+
+    Args:
+        repo_root: Repository root that owns the Agentic Memory config folder.
+        entries: Mapping of environment variable names to desired values.
+
+    Returns:
+        Absolute path to the ``.agentic-memory/.env`` file.
+    """
+    env_path = repo_root / CONFIG_DIR_NAME / ".env"
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+
+    existing_lines: list[str] = []
+    if env_path.exists():
+        existing_lines = env_path.read_text(encoding="utf-8").splitlines()
+
+    remaining = dict(entries)
+    output_lines: list[str] = []
+
+    for line in existing_lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            output_lines.append(line)
+            continue
+
+        key, _value = line.split("=", 1)
+        key = key.strip()
+        if key in remaining:
+            output_lines.append(f"{key}={remaining.pop(key)}")
+        else:
+            output_lines.append(line)
+
+    if output_lines and output_lines[-1].strip():
+        output_lines.append("")
+
+    for key, value in remaining.items():
+        output_lines.append(f"{key}={value}")
+
+    env_path.write_text("\n".join(output_lines).rstrip() + "\n", encoding="utf-8")
+    return env_path
+
+
 def cmd_init(args):
     """Initialize Agentic Memory in the current repository.
 
@@ -334,6 +383,8 @@ def cmd_init(args):
     neo_choice = input("\nChoose Neo4j setup [1-4] (default: 1): ").strip() or "1"
 
     neo4j_config = DEFAULT_CONFIG["neo4j"].copy()
+    env_file_entries: dict[str, str] = {}
+    should_offer_env_file = False
 
     if neo_choice == "1":
         print("\n📦 Using local Neo4j (Docker)")
@@ -362,8 +413,20 @@ def cmd_init(args):
 
     else:  # choice == "4"
         print("\n🔐 Using environment variables")
-        print("   Set NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD in your environment")
-        print("   (These will override config file values)")
+        print("   Agentic Memory reads env-backed Neo4j settings from:")
+        print(f"   {repo_root / CONFIG_DIR_NAME / '.env'}")
+        print("   or from exported shell environment variables.")
+        print("   Root repo .env files are not auto-loaded.")
+        should_offer_env_file = True
+        env_file_entries.update(
+            {
+                "NEO4J_URI": os.getenv("NEO4J_URI", neo4j_config["uri"]),
+                "NEO4J_USERNAME": os.getenv("NEO4J_USERNAME")
+                or os.getenv("NEO4J_USER")
+                or neo4j_config["user"],
+                "NEO4J_PASSWORD": os.getenv("NEO4J_PASSWORD", neo4j_config["password"]),
+            }
+        )
 
     # ============================================================
     # Step 2: Code Embedding Provider
@@ -401,28 +464,39 @@ def cmd_init(args):
         print("\nOpenAI selected for code embeddings.")
         print("Options:")
         print("  1. Enter API key now (will be stored in .agentic-memory/config.json)")
-        print("  2. Use environment variable OPENAI_API_KEY")
+        print("  2. Use OPENAI_API_KEY via .agentic-memory/.env or exported shell env")
         print("  3. Skip for now (semantic code search won't work)")
         openai_choice = input("\nChoose option [1-3] (default: 2): ").strip() or "2"
         if openai_choice == "1":
             api_key = input("   Enter OpenAI API key (sk-...): ").strip()
             openai_config["api_key"] = api_key
         elif openai_choice == "2":
-            print("   ✅ Will use OPENAI_API_KEY environment variable")
+            print("   ✅ Will use OPENAI_API_KEY from .agentic-memory/.env or shell env")
+            should_offer_env_file = True
+            existing_openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+            if existing_openai_key:
+                env_file_entries["OPENAI_API_KEY"] = existing_openai_key
         else:
             print("   ⚠️  Semantic code search will be disabled until a provider key is added")
     else:
         print("\nGemini selected for code embeddings.")
         print("Options:")
         print("  1. Enter API key now (will be stored in .agentic-memory/config.json)")
-        print("  2. Use environment variable GEMINI_API_KEY or GOOGLE_API_KEY")
+        print("  2. Use GEMINI_API_KEY / GOOGLE_API_KEY via .agentic-memory/.env or shell env")
         print("  3. Skip for now (semantic code search won't work)")
         gemini_choice = input("\nChoose option [1-3] (default: 2): ").strip() or "2"
         if gemini_choice == "1":
             api_key = input("   Enter Gemini API key: ").strip()
             gemini_config["api_key"] = api_key
         elif gemini_choice == "2":
-            print("   ✅ Will use GEMINI_API_KEY or GOOGLE_API_KEY")
+            print("   ✅ Will use GEMINI_API_KEY or GOOGLE_API_KEY from .agentic-memory/.env or shell env")
+            should_offer_env_file = True
+            existing_gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
+            existing_google_key = os.getenv("GOOGLE_API_KEY", "").strip()
+            if existing_gemini_key:
+                env_file_entries["GEMINI_API_KEY"] = existing_gemini_key
+            elif existing_google_key:
+                env_file_entries["GOOGLE_API_KEY"] = existing_google_key
         else:
             print("   ⚠️  Semantic code search will be disabled until a provider key is added")
 
@@ -468,6 +542,17 @@ def cmd_init(args):
 
     print(f"✅ Configuration saved to: {config.config_file}")
     print(f"✅ Ignore patterns saved to: {config.graphignore_file}")
+    if should_offer_env_file:
+        write_env_choice = (
+            input(
+                f"Write env-backed settings to {repo_root / CONFIG_DIR_NAME / '.env'} now? [Y/n]: "
+            )
+            .strip()
+            .lower()
+        )
+        if write_env_choice != "n":
+            env_path = _upsert_agentic_memory_env_file(repo_root, env_file_entries)
+            print(f"✅ Environment file saved to: {env_path}")
 
     # ============================================================
     # Step 5: Test Connection & Initial Index

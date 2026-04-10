@@ -587,7 +587,7 @@ def test_init_creates_new_config_when_user_declines_legacy(monkeypatch, capsys, 
         "extensions": [".py", ".js", ".ts", ".tsx", ".jsx"],
     }
 
-    responses = iter(["n", "4", "3", "3", "", "n"])
+    responses = iter(["n", "4", "3", "3", "", "", "n"])
 
     monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
     monkeypatch.setattr(cli.Path, "cwd", Mock(return_value=repo_root))
@@ -603,6 +603,49 @@ def test_init_creates_new_config_when_user_declines_legacy(monkeypatch, capsys, 
     saved_config = mock_cfg.save.call_args.args[0]
     assert saved_config["modules"]["code"]["embedding_provider"] == "gemini"
     assert saved_config["gemini"]["api_key"] == ""
+
+
+def test_init_writes_agentic_memory_env_file_for_env_backed_settings(
+    monkeypatch,
+    capsys,
+    tmp_path,
+):
+    """Init should write .agentic-memory/.env when env-backed options are chosen.
+
+    This protects the CLI UX after we stopped auto-loading a target repo's root
+    .env. If the setup wizard offers an env-backed configuration path, it must
+    write those values to the env file Agentic Memory actually reads.
+    """
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    mock_cfg = _mock_config(exists=False)
+    mock_cfg.config_file = repo_root / ".agentic-memory" / "config.json"
+    mock_cfg.graphignore_file = repo_root / ".agentic-memory" / ".graphignore"
+
+    responses = iter(["4", "", "2", "", "", "n"])
+
+    monkeypatch.setenv("NEO4J_URI", "bolt://localhost:7667")
+    monkeypatch.setenv("NEO4J_USERNAME", "neo4j")
+    monkeypatch.setenv("NEO4J_PASSWORD", "password")
+    monkeypatch.setenv("GOOGLE_API_KEY", "google-test-key")
+    monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
+    monkeypatch.setattr(cli.Path, "cwd", Mock(return_value=repo_root))
+    monkeypatch.setattr(cli, "print_banner", Mock())
+    monkeypatch.setattr("builtins.input", Mock(side_effect=lambda _prompt="": next(responses)))
+
+    cli.cmd_init(argparse.Namespace())
+
+    env_path = repo_root / ".agentic-memory" / ".env"
+    assert env_path.exists()
+    env_text = env_path.read_text(encoding="utf-8")
+    assert "NEO4J_URI=bolt://localhost:7667" in env_text
+    assert "NEO4J_USERNAME=neo4j" in env_text
+    assert "NEO4J_PASSWORD=password" in env_text
+    assert "GOOGLE_API_KEY=google-test-key" in env_text
+
+    stdout = capsys.readouterr().out
+    assert ".agentic-memory/.env" in stdout
 
 
 def test_deps_json_success_uses_graph_method(monkeypatch, capsys, tmp_path):

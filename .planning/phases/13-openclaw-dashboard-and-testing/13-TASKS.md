@@ -10,7 +10,7 @@
 
 - [x] Add backend dashboard APIs, response models, and backend contract coverage.
 - [x] Replace the static desktop shell with the `am-dashboard` workspace.
-- [ ] Add OpenClaw E2E, load, and chaos harnesses.
+- [x] Add OpenClaw E2E, load, and chaos harnesses.
 
 ## Wave 2
 

@@ -84,7 +84,7 @@
     {
       "id": "W13-OC-03",
       "title": "Add OpenClaw E2E, load, and chaos harnesses",
-      "status": "pending",
+      "status": "completed",
       "owner": "verification-harness",
       "depends_on": [
         "W13-OC-00"

@@ -27,6 +27,28 @@ def _single_result(payload):
     return result
 
 
+def _assert_error_envelope(
+    response,
+    *,
+    code: str,
+    status_code: int | None = None,
+    message_contains: str | None = None,
+):
+    """Assert the shared am-server error envelope shape."""
+
+    if status_code is not None:
+        assert response.status_code == status_code
+
+    body = response.json()
+    assert "error" in body
+    error = body["error"]
+    assert error["code"] == code
+    assert error["request_id"]
+    if message_contains:
+        assert message_contains in error["message"]
+    return error
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -107,7 +129,7 @@ def test_ingest_no_auth(client):
         "source_agent": "claude",
     }
     resp = client.post("/ingest/research", json=payload)
-    assert resp.status_code == 401
+    _assert_error_envelope(resp, code="auth_missing_api_key", status_code=401)
 
 
 def test_ingest_bad_token(client):
@@ -124,7 +146,7 @@ def test_ingest_bad_token(client):
         json=payload,
         headers={"Authorization": "Bearer wrong-key"},
     )
-    assert resp.status_code == 401
+    _assert_error_envelope(resp, code="auth_invalid_api_key", status_code=401)
 
 
 def test_ingest_research_ok(client, auth_headers):
@@ -144,7 +166,7 @@ def test_ingest_conversation_invalid_source_key_returns_422(client, auth_headers
     """POST /ingest/conversation rejects unknown source_key values."""
     pipeline = dependencies.get_conversation_pipeline()
     pipeline.ingest.side_effect = ValueError(
-        "Invalid source_key 'manual_test'. Must be one of: ['chat_cli', 'chat_ext', 'chat_mcp', 'chat_openclaw', 'chat_proxy']"
+        "Invalid source_key 'manual_test'. Must be one of: ['chat_cli', 'chat_codex_rollout', 'chat_ext', 'chat_mcp', 'chat_openclaw', 'chat_proxy']"
     )
     payload = {
         "role": "user",
@@ -155,8 +177,13 @@ def test_ingest_conversation_invalid_source_key_returns_422(client, auth_headers
         "source_key": "manual_test",
     }
     resp = client.post("/ingest/conversation", json=payload, headers=auth_headers)
-    assert resp.status_code == 422
-    assert "source_key" in resp.json()["detail"]
+    error = _assert_error_envelope(
+        resp,
+        code="validation_error",
+        status_code=422,
+        message_contains="Invalid source_key",
+    )
+    assert "source_key" in error["message"]
 
 
 def test_ingest_delegates(client, auth_headers):
@@ -275,7 +302,7 @@ def test_search_research_ok(client, auth_headers):
 def test_search_no_auth(client):
     """GET /search/research without auth returns 401."""
     resp = client.get("/search/research?q=test")
-    assert resp.status_code == 401
+    _assert_error_envelope(resp, code="auth_missing_api_key", status_code=401)
 
 
 def test_selectors_shape(client):
@@ -297,6 +324,7 @@ def test_auth_missing_key(monkeypatch):
     """When AM_SERVER_API_KEY is not set, authenticated endpoint returns 503."""
     # Ensure no API key in environment
     monkeypatch.delenv("AM_SERVER_API_KEY", raising=False)
+    monkeypatch.delenv("AM_SERVER_API_KEYS", raising=False)
     # Still need other env vars to avoid pipeline crash (lifespan is fault-tolerant)
     monkeypatch.setenv("NEO4J_URI", "bolt://localhost:7687")
     monkeypatch.setenv("NEO4J_USER", "neo4j")
@@ -325,7 +353,63 @@ def test_auth_missing_key(monkeypatch):
             json=payload,
             headers={"Authorization": "Bearer anything"},
         )
-    assert resp.status_code == 503
+    _assert_error_envelope(resp, code="auth_not_configured", status_code=503)
+
+
+def test_metrics_requires_auth(client):
+    """GET /metrics stays authenticated even though /health is public."""
+
+    resp = client.get("/metrics")
+    _assert_error_envelope(resp, code="auth_missing_api_key", status_code=401)
+
+
+def test_metrics_returns_prometheus_payload(client, auth_headers):
+    """GET /metrics returns Prometheus-style text with request and error series."""
+
+    client.get("/health")
+    client.get("/search/research?q=test")
+
+    resp = client.get("/metrics", headers=auth_headers)
+
+    assert resp.status_code == 200
+    assert "am_http_requests_total" in resp.text
+    assert "am_http_request_duration_seconds_count" in resp.text
+    assert "am_api_error_responses_total" in resp.text
+
+
+def test_rotated_api_keys_accept_any_configured_key(monkeypatch):
+    """AM_SERVER_API_KEYS supports key rotation without breaking clients."""
+
+    monkeypatch.delenv("AM_SERVER_API_KEY", raising=False)
+    monkeypatch.setenv("AM_SERVER_API_KEYS", "old-key,new-key")
+    monkeypatch.setenv("NEO4J_URI", "bolt://localhost:7687")
+    monkeypatch.setenv("NEO4J_USER", "neo4j")
+    monkeypatch.setenv("NEO4J_PASSWORD", "test")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini")
+    monkeypatch.setenv("GROQ_API_KEY", "fake-groq")
+
+    mock_pipeline = MagicMock()
+    monkeypatch.setattr(
+        "am_server.dependencies.ResearchIngestionPipeline",
+        lambda *args, **kwargs: mock_pipeline,
+    )
+
+    dependencies.get_pipeline.cache_clear()
+    app = create_app()
+    with TestClient(app, raise_server_exceptions=False) as c:
+        for key in ("old-key", "new-key"):
+            resp = c.post(
+                "/ingest/research",
+                json={
+                    "type": "report",
+                    "content": "Test",
+                    "project_id": "proj-1",
+                    "session_id": "sess-1",
+                    "source_agent": "claude",
+                },
+                headers={"Authorization": f"Bearer {key}"},
+            )
+            assert resp.status_code == 202
 
 
 def test_mcp_mounted(client):
@@ -988,6 +1072,63 @@ def test_openclaw_context_resolve_formats_context_blocks(client, auth_headers, m
     assert body["system_prompt_addition"]
 
 
+def test_openclaw_validation_errors_use_machine_readable_envelope(client, auth_headers):
+    """OpenClaw payload validation failures expose stable error metadata."""
+
+    resp = client.post(
+        "/openclaw/project/activate",
+        headers=auth_headers,
+        json={
+            "workspace_id": "workspace-1",
+            "device_id": "device-a",
+            "agent_id": "agent-x",
+        },
+    )
+
+    error = _assert_error_envelope(
+        resp,
+        code="validation_error",
+        status_code=422,
+        message_contains="Request validation failed.",
+    )
+    assert error["details"]
+
+
+def test_openclaw_runtime_failures_use_machine_readable_envelope(
+    client, auth_headers, monkeypatch
+):
+    """Unexpected OpenClaw backend failures are normalized by the app layer."""
+
+    monkeypatch.setattr(openclaw, "get_graph", lambda: object())
+    monkeypatch.setattr(openclaw, "get_pipeline", lambda: "research-pipeline")
+    monkeypatch.setattr(openclaw, "get_conversation_pipeline", lambda: "conversation-pipeline")
+    monkeypatch.setattr(
+        openclaw,
+        "search_all_memory_sync",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    resp = client.post(
+        "/openclaw/memory/search",
+        headers=auth_headers,
+        json={
+            "workspace_id": "workspace-1",
+            "device_id": "device-a",
+            "agent_id": "agent-x",
+            "session_id": "session-1",
+            "query": "where did we leave off?",
+        },
+    )
+
+    error = _assert_error_envelope(
+        resp,
+        code="internal_server_error",
+        status_code=500,
+        message_contains="Internal server error.",
+    )
+    assert error["details"]["exception_type"] == "RuntimeError"
+
+
 def test_openclaw_memory_read_returns_canonical_conversation_text(
     client, auth_headers, monkeypatch
 ):
@@ -1065,5 +1206,9 @@ def test_openclaw_memory_read_rejects_unsupported_paths(client, auth_headers):
         },
     )
 
-    assert resp.status_code == 404
-    assert "conversation-turn" in resp.json()["detail"]
+    _assert_error_envelope(
+        resp,
+        code="not_found",
+        status_code=404,
+        message_contains="conversation-turn",
+    )

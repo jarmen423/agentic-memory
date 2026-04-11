@@ -15,6 +15,27 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
+class ApiErrorModel(BaseModel):
+    """Machine-readable API error payload used by the FastAPI exception layer.
+
+    The OpenClaw foundation wave standardizes errors so operators and clients
+    can reliably branch on `code` while still seeing the request correlation id
+    that ties UI failures back to server logs.
+    """
+
+    code: str
+    message: str
+    request_id: str
+    status: int
+    details: Any | None = None
+
+
+class ApiErrorEnvelopeModel(BaseModel):
+    """Top-level error response envelope returned by am-server."""
+
+    error: ApiErrorModel
+
+
 class CitationModel(BaseModel):
     """A citation reference for a research finding."""
 

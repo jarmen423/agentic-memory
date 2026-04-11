@@ -204,6 +204,43 @@ export function createDefaultWorkspaceId(agentId?: string): string {
 }
 
 /**
+ * Best-effort parsing of an OpenClaw session id into workspace/device/agent.
+ *
+ * The current local test harness and product assumptions use the stable form:
+ *
+ *   `<workspace_id>:<device_id>:<agent_id>`
+ *
+ * If the host emits some other opaque session id, the parser returns null and
+ * the runtime falls back to the persisted plugin config.
+ */
+export function parseOpenClawSessionIdentity(
+  sessionId?: string,
+): OpenClawIdentity | null {
+  const normalized = sessionId?.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const pieces = normalized.split(":");
+  if (pieces.length < 3) {
+    return null;
+  }
+
+  const agentId = pieces.at(-1)?.trim();
+  const deviceId = pieces.at(-2)?.trim();
+  const workspaceId = pieces.slice(0, -2).join(":").trim();
+  if (!workspaceId || !deviceId || !agentId) {
+    return null;
+  }
+
+  return {
+    workspaceId,
+    deviceId,
+    agentId,
+  };
+}
+
+/**
  * Resolve plugin configuration from the OpenClaw plugin config payload.
  *
  * The plugin prefers explicit plugin config because both the Python helper and
@@ -215,14 +252,15 @@ export function resolveAgenticMemoryPluginConfig(
   pluginConfig: Record<string, unknown>,
   agentIdFromHost?: string,
 ): ResolvedPluginConfig {
+  const resolvedAgentId = agentIdFromHost?.trim() || asString(pluginConfig.agentId) || "default-agent";
   const mode: "capture_only" | "augment_context" =
     pluginConfig.mode === "augment_context" ? "augment_context" : "capture_only";
   const resolved = {
     backendUrl: asString(pluginConfig.backendUrl) ?? DEFAULT_BACKEND_URL,
     apiKey: asString(pluginConfig.apiKey) ?? null,
-    workspaceId: asString(pluginConfig.workspaceId) ?? "default-workspace",
+    workspaceId: asString(pluginConfig.workspaceId) ?? createDefaultWorkspaceId(resolvedAgentId),
     deviceId: asString(pluginConfig.deviceId) ?? "default-device",
-    agentId: asString(pluginConfig.agentId) ?? agentIdFromHost ?? "default-agent",
+    agentId: resolvedAgentId,
     projectId: asString(pluginConfig.projectId) ?? null,
     contextEngineId: asString(pluginConfig.contextEngineId) ?? DEFAULT_CONTEXT_ENGINE_ID,
     mode,

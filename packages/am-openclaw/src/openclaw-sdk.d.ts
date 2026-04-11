@@ -120,3 +120,9 @@ declare module "openclaw/plugin-sdk" {
     dispose?(): Promise<void>;
   }
 }
+
+declare module "openclaw/plugin-sdk/config-runtime" {
+  export function updateConfig(
+    mutate: (config: Record<string, unknown>) => Record<string, unknown>,
+  ): Promise<void>;
+}

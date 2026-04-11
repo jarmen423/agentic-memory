@@ -9,7 +9,6 @@
 
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
-import { updateConfig } from "openclaw/plugin-sdk/config-runtime";
 import { AgenticMemoryBackendClient } from "./backend-client.js";
 import {
   asRecord,
@@ -283,6 +282,19 @@ type ProjectCommandOptions = {
 
 type ProjectStopOptions = Omit<ProjectCommandOptions, "automation">;
 
+async function persistOpenClawConfig(
+  mutate: (config: OpenClawConfig) => OpenClawConfig,
+): Promise<void> {
+  /**
+   * `updateConfig` lives in the OpenClaw host runtime package, which is not
+   * present in normal package-local test environments. Loading it lazily keeps
+   * this module importable for unit tests while preserving the real host
+   * behavior at command execution time.
+   */
+  const { updateConfig } = await import("openclaw/plugin-sdk/config-runtime");
+  await updateConfig(mutate);
+}
+
 function resolveProjectCommandConfig(
   currentConfig: OpenClawConfig,
   options: ProjectCommandOptions | ProjectStopOptions,
@@ -420,7 +432,7 @@ export function registerAgenticMemoryCli(ctx: AgenticMemoryCliContext): void {
     .option("--json", "Print machine-readable JSON", false)
     .action(async (options: SetupCommandOptions) => {
       const values = await resolveSetupValues(ctx.config, options);
-      await updateConfig((config) => mergeAgenticMemoryPluginConfigIntoOpenClawConfig(config, values));
+      await persistOpenClawConfig((config) => mergeAgenticMemoryPluginConfigIntoOpenClawConfig(config, values));
       printSetupResult(ctx, values, options);
     });
 

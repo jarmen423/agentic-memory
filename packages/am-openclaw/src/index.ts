@@ -42,7 +42,18 @@ export default definePluginEntry({
   id: PLUGIN_ID,
   name: "Agentic Memory",
   description: "Shared Agentic Memory runtime and context engine for OpenClaw.",
-  kind: "memory",
+  /**
+   * The runtime intentionally exposes both plugin capabilities:
+   *
+   * - `memory`: retrieval, canonical reads, and capture plumbing
+   * - `context-engine`: optional context assembly plus the current
+   *   OpenClaw lifecycle hook surface used for turn capture
+   *
+   * OpenClaw doctor compares this exported kind against the manifest kind, so
+   * the entrypoint must advertise the same multi-kind surface as
+   * `openclaw.plugin.json`.
+   */
+  kind: ["memory", "context-engine"] as any,
   configSchema: PLUGIN_CONFIG_SCHEMA,
   register(api: any) {
     api.registerCli(({ program, config, workspaceDir, logger }: AgenticMemoryCliContext) => {

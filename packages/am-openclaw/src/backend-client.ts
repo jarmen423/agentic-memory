@@ -8,6 +8,64 @@
 
 import type { PluginLogger, ResolvedPluginConfig } from "./shared.js";
 
+const TRANSIENT_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const MAX_RETRY_ATTEMPTS = 3;
+const RETRY_BASE_DELAY_MS = 150;
+
+type BackendErrorEnvelope = {
+  error?: {
+    code?: string;
+    message?: string;
+    request_id?: string;
+    status?: number;
+    details?: unknown;
+  };
+};
+
+/**
+ * Stable backend error type used by the plugin runtime and setup commands.
+ *
+ * The backend now returns a machine-readable error envelope. This class keeps
+ * that data structured so callers can decide whether to retry, fall back, or
+ * surface a clearer operator-facing message.
+ */
+export class AgenticMemoryBackendError extends Error {
+  constructor(
+    message: string,
+    readonly options: {
+      status?: number | undefined;
+      code?: string | undefined;
+      requestId?: string | undefined;
+      details?: unknown;
+      retryable?: boolean | undefined;
+      path: string;
+    },
+  ) {
+    super(message);
+    this.name = "AgenticMemoryBackendError";
+  }
+
+  get status(): number | undefined {
+    return this.options.status;
+  }
+
+  get code(): string | undefined {
+    return this.options.code;
+  }
+
+  get requestId(): string | undefined {
+    return this.options.requestId;
+  }
+
+  get details(): unknown {
+    return this.options.details;
+  }
+
+  get retryable(): boolean {
+    return Boolean(this.options.retryable);
+  }
+}
+
 export class AgenticMemoryBackendClient {
   private readonly logger: PluginLogger | undefined;
 
@@ -16,6 +74,14 @@ export class AgenticMemoryBackendClient {
     logger?: PluginLogger,
   ) {
     this.logger = logger;
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private retryDelayMs(attempt: number): number {
+    return RETRY_BASE_DELAY_MS * (2 ** attempt);
   }
 
   private buildHeaders(): Record<string, string> {
@@ -28,27 +94,130 @@ export class AgenticMemoryBackendClient {
     return headers;
   }
 
+  private shouldRetryStatus(status: number): boolean {
+    return TRANSIENT_STATUS_CODES.has(status);
+  }
+
+  private parseBackendErrorBody(rawBody: string): BackendErrorEnvelope["error"] | null {
+    if (!rawBody.trim()) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(rawBody) as BackendErrorEnvelope;
+      if (parsed && typeof parsed === "object" && parsed.error && typeof parsed.error === "object") {
+        return parsed.error;
+      }
+    } catch {
+      // Some failures will still return plain text from upstream proxies or
+      // older backends. In that case we fall back to the raw body below.
+    }
+
+    return null;
+  }
+
+  private async buildResponseError(path: string, response: Response): Promise<AgenticMemoryBackendError> {
+    const rawBody = await response.text();
+    const parsed = this.parseBackendErrorBody(rawBody);
+    const status = response.status;
+    const requestId = parsed?.request_id;
+    const code = parsed?.code ?? `http_${status}`;
+    const message = parsed?.message ?? (rawBody || `HTTP ${status}`);
+    const formatted = requestId
+      ? `Agentic Memory backend request failed (${status} ${code}, request ${requestId}): ${message}`
+      : `Agentic Memory backend request failed (${status} ${code}): ${message}`;
+
+    return new AgenticMemoryBackendError(formatted, {
+      status,
+      code,
+      requestId,
+      details: parsed?.details,
+      retryable: this.shouldRetryStatus(status),
+      path,
+    });
+  }
+
+  private buildTransportError(path: string, error: unknown): AgenticMemoryBackendError {
+    const message = error instanceof Error ? error.message : String(error);
+    return new AgenticMemoryBackendError(
+      `Agentic Memory backend request failed (network_error): ${message}`,
+      {
+        code: "network_error",
+        retryable: true,
+        details: { cause: message },
+        path,
+      },
+    );
+  }
+
   /**
    * Send a typed POST request to the Agentic Memory backend.
    */
   async post<T>(path: string, payload: Record<string, unknown>): Promise<T> {
     const url = new URL(path, this.config.backendUrl).toString();
-    const response = await fetch(url, {
-      method: "POST",
-      headers: this.buildHeaders(),
-      body: JSON.stringify(payload),
-    });
+    let lastError: AgenticMemoryBackendError | null = null;
 
-    if (!response.ok) {
-      const detail = await response.text();
-      this.logger?.warn?.("Agentic Memory backend request failed", {
-        path,
-        status: response.status,
-        detail,
-      });
-      throw new Error(`Agentic Memory backend request failed (${response.status}): ${detail}`);
+    for (let attempt = 0; attempt < MAX_RETRY_ATTEMPTS; attempt += 1) {
+      try {
+        const response = await fetch(url, {
+          method: "POST",
+          headers: this.buildHeaders(),
+          body: JSON.stringify(payload),
+        });
+
+        if (!response.ok) {
+          const error = await this.buildResponseError(path, response);
+          if (!error.retryable || attempt === MAX_RETRY_ATTEMPTS - 1) {
+            this.logger?.warn?.("Agentic Memory backend request failed", {
+              path,
+              status: error.status,
+              code: error.code,
+              requestId: error.requestId,
+            });
+            throw error;
+          }
+
+          lastError = error;
+          this.logger?.warn?.("Agentic Memory backend transient failure; retrying", {
+            path,
+            status: error.status,
+            code: error.code,
+            requestId: error.requestId,
+            attempt: attempt + 1,
+            maxAttempts: MAX_RETRY_ATTEMPTS,
+          });
+          await this.sleep(this.retryDelayMs(attempt));
+          continue;
+        }
+
+        return (await response.json()) as T;
+      } catch (error) {
+        const backendError =
+          error instanceof AgenticMemoryBackendError ? error : this.buildTransportError(path, error);
+        if (!backendError.retryable || attempt === MAX_RETRY_ATTEMPTS - 1) {
+          this.logger?.warn?.("Agentic Memory backend transport failed", {
+            path,
+            code: backendError.code,
+            requestId: backendError.requestId,
+          });
+          throw backendError;
+        }
+
+        lastError = backendError;
+        this.logger?.warn?.("Agentic Memory backend transport failed; retrying", {
+          path,
+          code: backendError.code,
+          attempt: attempt + 1,
+          maxAttempts: MAX_RETRY_ATTEMPTS,
+        });
+        await this.sleep(this.retryDelayMs(attempt));
+      }
     }
 
-    return (await response.json()) as T;
+    throw lastError ?? new AgenticMemoryBackendError("Agentic Memory backend request failed.", {
+      code: "unknown_error",
+      retryable: false,
+      path,
+    });
   }
 }

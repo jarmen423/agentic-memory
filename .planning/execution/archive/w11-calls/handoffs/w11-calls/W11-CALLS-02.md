@@ -12,7 +12,7 @@
   - `definition_line`
   - `definition_column`
 - The helper now reports explicit dropped-target counts for non-repo or
-unsupported targets instead of silently discarding them.
+  unsupported targets instead of silently discarding them.
 - The Python wrapper now parses and exposes those drop-reason counts.
 
 ## Verified
@@ -22,7 +22,7 @@ unsupported targets instead of silently discarding them.
 ## Residual risks
 
 - The TypeScript analyzer still depends on the Agentic Memory repo having a
-usable local TypeScript runtime in `node_modules`.
+  usable local TypeScript runtime in `node_modules`.
 - Graph-side symbol matching still has to map analyzer targets onto function
-nodes; this handoff improved the data quality for that step but did not own
-`graph.py`.
+  nodes; this handoff improved the data quality for that step but did not own
+  `graph.py`.

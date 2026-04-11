@@ -2,30 +2,30 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: — Full Multi-Module Memory System with Temporal GraphRAG
-current_phase: 10
+current_phase: 12
 status: active
-last_updated: "2026-04-10T20:20:00Z"
+last_updated: "2026-04-11T14:30:00Z"
 progress:
-  total_phases: 11
-  completed_phases: 9
-  total_plans: 18
-  completed_plans: 17
+  total_phases: 12
+  completed_phases: 10
+  total_plans: 19
+  completed_plans: 18
 ---
 
 # Agentic Memory — Project State
 
-**Last Updated:** 2026-04-10
-**Current Phase:** 10
-**Phase Status:** Execution in progress
-**Last Session Stopped At:** Phase 10 still needs live manual verification from the runbooks. Phase 11 is now formally queued as the next feature for code-graph generalization, safe code retrieval defaults, and analyzer-to-graph reliability hardening.
+**Last Updated:** 2026-04-11
+**Current Phase:** 12
+**Phase Status:** Complete
+**Last Session Stopped At:** Phase 12 merge gates passed. Phase 10 still needs live manual verification from the runbooks, and Phase 11 has an archived execution registry under `.planning/execution/archive/w11-calls/`. Both paused tracks remain resumable.
 
 ---
 
 ## Active Phase
 
-**Phase 10: Cross-Module Integration & Hardening**
+**Phase 12: OpenClaw Foundation**
 
-**Next Action:** Close out the manual Phase 10 full-stack verification from `docs/SETUP_FULL_STACK.md`, then advance to Phase 11 for code-graph generalization and analyzer-to-graph hardening.
+**Next Action:** Choose the next delivery track: resume Phase 10 manual verification, resume Phase 11 code-graph hardening from the archived registry, or start the next OpenClaw wave.
 
 ---
 
@@ -33,7 +33,7 @@ progress:
 
 | Branch | Description |
 |--------|-------------|
-| `main` | Full v1 with temporal GraphRAG (Phases 6-10) — active development |
+| `main` | Full v1 with temporal GraphRAG plus the active OpenClaw foundation wave |
 | `v1-baseline` | Frozen at Phase 5 completion — finish original Phase 6 + 7 here for A/B comparison |
 
 ---
@@ -51,8 +51,9 @@ progress:
 | 7 | Temporal Schema + Claim Extraction + Research Scheduling | Complete |
 | 8 | SpacetimeDB Maintenance Layer | Complete |
 | 9 | Temporal PPR Retrieval + Benchmark | Complete |
-| 10 | Cross-Module Integration & Hardening | In Progress |
-| 11 | Code Graph Foundation and Code PPR | Planned |
+| 10 | Cross-Module Integration & Hardening | Paused pending manual verification |
+| 11 | Code Graph Foundation and Code PPR | Paused with archived `w11-calls` registry |
+| 12 | OpenClaw Foundation | Complete |
 
 ---
 
@@ -90,6 +91,7 @@ progress:
 ### Roadmap Evolution
 
 - Phase 11 added: Code Graph Foundation and Code PPR
+- Phase 12 added: OpenClaw Foundation
 
 ---
 

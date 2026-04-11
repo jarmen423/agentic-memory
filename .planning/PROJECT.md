@@ -60,6 +60,13 @@ AI agents get seamless, persistent memory that works regardless of content type 
 - [ ] CLI commands: web-init, web-ingest, web-search, chat-init, chat-ingest
 - [ ] Documentation for module setup and configuration
 
+**OpenClaw Foundation Wave (`w12-openclaw-foundation`):**
+- [ ] Make OpenClaw the active next delivery track in planning and execution artifacts
+- [ ] Harden `am-server` for the current `/openclaw/*` contract: multi-key auth, request-id-bearing machine-readable errors, authenticated `/metrics`
+- [ ] Replace local JSON product state with SQLite-backed persistence without changing the `ProductStateStore` public method surface
+- [ ] Add retry/backoff and package-local tests to `packages/am-openclaw`
+- [ ] Add explicit OpenClaw contract coverage and minimal TypeScript CI gates
+
 ### Out of Scope
 
 - Web UI dashboard — Nice-to-have, not v1 priority
@@ -68,7 +75,7 @@ AI agents get seamless, persistent memory that works regardless of content type 
 - Real-time collaboration features — Single-user focus for v1
 - Advanced conversation analytics (sentiment, topic modeling) — Basic retrieval first
 - Video/audio transcription — Rely on external tools, ingest transcripts only
-- OpenClaw/Codex-specific adapters — Universal adapter layer is post-v1
+- Broad universal adapter expansion beyond the current shipped integrations — post-v1. The targeted OpenClaw foundation hardening wave is active now.
 - Simple cron scheduling (repeat same query) — Replaced by smart scheduled research with LLM-driven variable substitution
 
 ## Context
@@ -116,4 +123,4 @@ AI agents get seamless, persistent memory that works regardless of content type 
 | Modular architecture | Each module independently usable, scales to future content types | ✓ Confirmed |
 
 ---
-*Last updated: 2026-03-22 after Phase 4 (Conversation Memory Core) completion*
+*Last updated: 2026-04-11 after the OpenClaw foundation wave was activated and implemented*

@@ -2,8 +2,8 @@
 
 **Project:** Modular Knowledge Graph (Code + Web Research + Conversation Memory)
 **Created:** 2026-03-20
-**Last Updated:** 2026-04-01
-**Status:** Active — Phase 9 complete; Phase 10 implementation landed, final manual verification pending
+**Last Updated:** 2026-04-11
+**Status:** Active — OpenClaw foundation wave is now the active delivery track; Phase 10 and Phase 11 are paused but preserved
 
 ---
 
@@ -417,5 +417,41 @@ Plans:
 - Monorepo/project-layout variance making analyzer coverage look repo-specific when the real problem is generic mapping
 - Prematurely enabling `CALLS` in traversal before analyzer-backed precision is high enough
 
+### Phase 12: OpenClaw Foundation
+
+**Goal:** Turn the existing OpenClaw integration from a functional prototype into a stable operator-facing foundation by locking execution ownership, hardening the backend contract, replacing fragile local state persistence, adding plugin transport retries/tests, and enforcing minimal TypeScript CI.
+
+**Plans:** 1 execution plan + wave registry
+
+Plans:
+- [x] 12-01-PLAN.md — OpenClaw foundation wave: registry alignment, backend hardening, product-state durability, plugin transport robustness, and CI/contract gates
+
+**Deliverables:**
+- `.planning` truth updated so OpenClaw is the active delivery track and the previous `w11-calls` registry is archived, not lost
+- `am-server` accepts `AM_SERVER_API_KEYS` with backward compatibility for `AM_SERVER_API_KEY`
+- error responses across auth/validation/runtime failures use one machine-readable envelope that includes the request id
+- authenticated `/metrics` endpoint for foundation observability
+- `ProductStateStore` uses SQLite-backed persistence behind the same method contract used by routes and CLI
+- `packages/am-openclaw` retries transient backend failures, preserves non-retry behavior for 4xx responses, and has package-local TypeScript tests
+- CI validates Python coverage against the current package names and enforces the OpenClaw TypeScript build/test gate
+
+**Success Criteria:**
+- OpenClaw planning state is truthful in `PROJECT.md`, `ROADMAP.md`, `STATE.md`, and `.planning/execution/*`
+- rotated and missing backend API keys behave correctly under the new auth contract
+- all OpenClaw error responses expose a request id and stable error code
+- SQLite-backed product state preserves session/project semantics and survives repeated updates without JSON corruption risk
+- `packages/am-openclaw` has passing transport/runtime/setup tests
+- merge gates pass:
+  - `python -m pytest tests/test_am_server.py tests/test_openclaw_shared_memory.py tests/test_product_state.py -q`
+  - `python -m pytest tests/test_openclaw_contract.py -q`
+  - `npm run test --workspace agentic-memory`
+  - `npm run build --workspace agentic-memory`
+  - `npm run typecheck --workspace agentic-memory`
+
+**Key Risks:**
+- global error-envelope changes can unintentionally break older API tests if not normalized carefully
+- switching local product state from JSON to SQLite must preserve current callers and migrate existing state safely
+- the plugin package already has local in-flight changes, so transport hardening must avoid trampling unrelated edits
+
 ---
-*Last updated: 2026-04-10 after Phase 11 was formalized for code-graph generalization and code-side PPR hardening (total phases: 11)*
+*Last updated: 2026-04-11 after Phase 12 was added as the active OpenClaw foundation wave (total phases: 12)*

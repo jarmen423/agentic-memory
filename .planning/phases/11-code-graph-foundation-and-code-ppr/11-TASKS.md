@@ -46,3 +46,4 @@
 - [x] Batch large Python analyzer runs so Pass 4 shows progress after TS batches complete and can preserve partial semantic results instead of appearing frozen on Python-heavy repos.
 - [x] Retry timed-out TypeScript analyzer batches in smaller groups so VM-scale TS repos can still salvage semantic results instead of failing each coarse 10-file batch.
 - [ ] Re-run real-repo indexing on both `D:\code\agentic-memory` and `/home/josh/m26pipeline` to verify analyzer-backed `CALLS` survive full indexing.
+- [ ] Replace path-based `repo_id` with a stable git-derived repository identity, and add a separate `checkout_id` for per-clone absolute path scoping.

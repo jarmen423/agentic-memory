@@ -10,7 +10,7 @@
 
 - Python now has a language-server-backed semantic call analyzer.
 - The analyzer uses AST call-site positions plus
-`basedpyright-langserver --stdio` `textDocument/definition` requests.
+  `basedpyright-langserver --stdio` `textDocument/definition` requests.
 - Output is repo-local and shaped for the graph layer:
   - `rel_path`
   - `name`
@@ -26,6 +26,6 @@
 ## Residual risks
 
 - Python analysis depends on `basedpyright-langserver` being installed in the
-runtime environment.
+  runtime environment.
 - Some dynamic Python dispatch patterns still will not resolve semantically,
-which is expected; those should degrade into explicit drop reasons.
+  which is expected; those should degrade into explicit drop reasons.

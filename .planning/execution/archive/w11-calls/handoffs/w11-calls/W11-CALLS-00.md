@@ -9,7 +9,7 @@
   - `.planning/execution/ROADMAP.md`
   - `.planning/execution/tasks.json`
 - Updated Phase 11 context, UAT, and task registry to reflect the remaining
-semantic `CALLS` generalization work.
+  semantic `CALLS` generalization work.
 
 ## Verified
 
@@ -21,4 +21,4 @@ semantic `CALLS` generalization work.
 - `graph.py` remains the merge boundary and must stay orchestrator-owned.
 - Python semantic analysis is still unimplemented at this point.
 - TS/JS analyzer output still needs better drop visibility before real-repo
-indexing can be trusted.
+  indexing can be trusted.

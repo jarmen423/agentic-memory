@@ -1,68 +1,25 @@
 # Wave Roadmap
 
-## Active Track: `w11-calls`
+## Active Track: `w12-openclaw-foundation`
 
-### Wave 0: Contract lock
+### Wave 0: Orchestrator lock
 
-- Lock Phase 11 plan update for semantic `CALLS` generalization.
-- Freeze worker ownership and merge gates in `tasks.json`.
-- Keep shared graph integration local to the orchestrator.
+- `W12-OC-00`: archive the existing `w11-calls` registry, update `.planning`
+  truth, and freeze write ownership and merge gates for the OpenClaw wave.
 
-### Wave 1: Parallel analyzer work
+### Wave 1: Foundation threads
 
-- `W11-CALLS-01`: Python semantic analyzer scaffold and fixtures.
-- `W11-CALLS-02`: JS/TS analyzer identity and diagnostics hardening.
-- `W11-CALLS-03`: Shared graph integration, CLI diagnostics, and merge tests.
+- `W12-OC-01`: backend auth, machine-readable errors, `/metrics`, and backend tests.
+- `W12-OC-02`: SQLite-backed `ProductStateStore` plus durability/concurrency tests.
+- `W12-OC-03`: `packages/am-openclaw` retry/backoff hardening and package-local TypeScript tests.
 
-### Wave 2: Integration review
+### Wave 2: Integration gate
 
-- Merge worker outputs through the shared graph contract.
-- Reconcile diagnostics naming, confidence rules, and repo-level reporting.
+- `W12-OC-04`: reconcile shared contracts, add explicit OpenClaw contract tests,
+  and update CI to enforce Python + TypeScript merge gates.
 
 ### Wave 3: Verification
 
-- Run analyzer unit suites.
-- Run graph and CLI regression suites.
-- Reassess whether `CALLS` is trustworthy enough for later ranking work.
-
-### Wave 4: Parser contract stabilization
-
-- `W11-CALLS-04`: Fix Unicode-safe parser slicing so Python symbol identity stays
-  stable when semantic analyzers run on real repo files.
-- Align packaging metadata so the new Python analyzer dependency is present in
-  both `pyproject.toml` and `requirements.txt`.
-
-### Wave 5: Python diagnostic cleanup
-
-- `W11-CALLS-05`: Distinguish repo-external Python calls from repo-local
-  constructor/class targets so the unresolved bucket only represents real
-  mapping debt.
-
-### Wave 6: Durable failure reporting
-
-- `W11-CALLS-06`: Persist analyzer batch failures and unavailability states so
-  `call-status` reports them after long indexing runs without requiring log
-  babysitting.
-
-### Wave 7: Incremental full-index orchestration
-
-- `W11-CALLS-07`: Reuse Pass 1's changed-file set so full `index` runs stop
-  re-embedding unchanged files before the call-graph stage.
-
-### Wave 8: TypeScript analyzer batch execution
-
-- `W11-CALLS-08`: Split large JS/TS analyzer runs into smaller batches, keep
-  partial semantic results when a batch times out, and surface partial failures
-  back through repo-level diagnostics.
-
-### Wave 9: Python analyzer batch execution
-
-- `W11-CALLS-09`: Split large Python analyzer runs into smaller batches, emit
-  visible progress for Pass 4, keep partial semantic results when a batch
-  fails, and surface partial failures back through repo-level diagnostics.
-
-### Wave 10: Adaptive TypeScript timeout recovery
-
-- `W11-CALLS-10`: Retry timed-out TypeScript analyzer batches in progressively
-  smaller groups so slow VM repos can still salvage semantic results instead of
-  failing every 10-file batch wholesale.
+- run the Python merge gates for backend, shared-memory, product-state, and OpenClaw contract tests
+- run the OpenClaw package build/typecheck/test gates
+- update task registry statuses and handoffs so paused Phase 10/11 work remains resumable

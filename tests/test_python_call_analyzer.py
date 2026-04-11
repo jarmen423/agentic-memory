@@ -13,7 +13,13 @@ from pathlib import Path
 import pytest
 
 from agentic_memory.ingestion.parser import CodeParser
-from agentic_memory.ingestion.python_call_analyzer import PythonCallAnalyzer
+from agentic_memory.ingestion.python_call_analyzer import (
+    _AnalyzerConfig,
+    PythonCallAnalyzer,
+    PythonCallAnalyzerError,
+    PythonFileCallAnalysis,
+    PythonFunctionCallAnalysis,
+)
 
 
 def _build_analyzer_request(code_parser: CodeParser, rel_path: str, code: str) -> dict[str, object]:
@@ -175,3 +181,52 @@ def test_python_call_analyzer_reports_external_targets_separately(tmp_path: Path
     assert analysis.functions["run"].outgoing_calls == ()
     assert (analysis.drop_reason_counts or {}).get("external_target", 0) >= 2
     assert not (analysis.drop_reason_counts or {}).get("unresolved_target_symbol", 0)
+
+
+def test_python_call_analyzer_batches_and_preserves_partial_results(tmp_path: Path) -> None:
+    """Partial Python batch failures should not discard successful batch output."""
+    analyzer = PythonCallAnalyzer()
+    analyzer._config = _AnalyzerConfig(command=("basedpyright-langserver", "--stdio"), disabled_reason=None)  # noqa: SLF001
+
+    files = [
+        {"path": "pkg/a.py", "functions": [{"qualified_name": "foo", "name": "foo"}]},
+        {"path": "pkg/b.py", "functions": [{"qualified_name": "bar", "name": "bar"}]},
+    ]
+
+    call_log: list[list[str]] = []
+
+    def _fixed_batch(*, repo_root: Path, files: list[dict[str, object]], timeout_seconds: int):
+        batch_paths = [str(row["path"]) for row in files]
+        call_log.append(batch_paths)
+        if batch_paths == ["pkg/b.py"]:
+            raise PythonCallAnalyzerError("Python call analyzer batch timed out after 30s.")
+        return {
+            "pkg/a.py": PythonFileCallAnalysis(
+                rel_path="pkg/a.py",
+                functions={
+                    "foo": PythonFunctionCallAnalysis(
+                        qualified_name="foo",
+                        name="foo",
+                        outgoing_calls=(),
+                    )
+                },
+                diagnostics=(),
+                drop_reason_counts={},
+            )
+        }
+
+    analyzer._analyze_batch = _fixed_batch  # noqa: SLF001
+
+    results = analyzer.analyze_files(
+        repo_root=tmp_path,
+        files=files,
+        batch_size=1,
+        continue_on_batch_failure=True,
+    )
+
+    assert call_log == [["pkg/a.py"], ["pkg/b.py"]]
+    assert "pkg/a.py" in results
+    assert "pkg/b.py" in results
+    assert results["pkg/b.py"].diagnostics[0]["kind"] == "batch_failed"
+    assert analyzer.last_run_issues
+    assert analyzer.last_run_issues[0].total_batches == 2

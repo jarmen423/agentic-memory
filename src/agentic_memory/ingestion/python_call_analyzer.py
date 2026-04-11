@@ -95,6 +95,17 @@ class PythonFileCallAnalysis:
 
 
 @dataclass(frozen=True)
+class PythonAnalyzerIssue:
+    """One batch-level analyzer problem from a multi-batch Python run."""
+
+    batch_index: int
+    total_batches: int
+    file_count: int
+    status: str
+    message: str
+
+
+@dataclass(frozen=True)
 class _ResolvedDefinitionTarget:
     """Result of mapping one LSP definition lookup back to repo-local symbols.
 
@@ -377,6 +388,7 @@ class PythonCallAnalyzer:
 
     def __init__(self, config: _AnalyzerConfig | None = None) -> None:
         self._config = config or self._build_config()
+        self._last_run_issues: tuple[PythonAnalyzerIssue, ...] = ()
 
     def is_available(self) -> bool:
         """Return ``True`` when the local Python analyzer can run."""
@@ -387,12 +399,19 @@ class PythonCallAnalyzer:
         """Human-readable reason the Python analyzer is unavailable, if any."""
         return self._config.disabled_reason
 
+    @property
+    def last_run_issues(self) -> tuple[PythonAnalyzerIssue, ...]:
+        """Batch issues recorded during the most recent analyze_files call."""
+        return self._last_run_issues
+
     def analyze_files(
         self,
         *,
         repo_root: Path,
         files: list[dict[str, Any]],
         timeout_seconds: int = 60,
+        batch_size: int | None = None,
+        continue_on_batch_failure: bool = False,
     ) -> dict[str, PythonFileCallAnalysis]:
         """Resolve outgoing calls for a batch of Python files.
 
@@ -400,26 +419,130 @@ class PythonCallAnalyzer:
             repo_root: Absolute repository root.
             files: Parser-driven request rows with ``path`` plus function
                 metadata (`qualified_name`, `name`, `name_line`, `name_column`).
-            timeout_seconds: Reserved for API parity with the TS analyzer. The
-                current implementation uses a long-lived stdio process instead of
-                one subprocess per request, so timeout handling is delegated to
-                the caller/process boundary for now.
+            timeout_seconds: Reserved for API parity with the TS analyzer. This
+                Python path still uses a long-lived stdio language-server
+                session per batch, so timeout enforcement remains cooperative
+                rather than a hard subprocess kill.
+            batch_size: Optional maximum files per basedpyright session.
+                Smaller batches improve progress visibility and isolate failures
+                so one slow repo segment does not mask the rest of Pass 4.
+            continue_on_batch_failure: When ``True``, failed Python batches are
+                recorded in ``last_run_issues`` and empty per-file results are
+                returned for those files so callers can fall back selectively.
 
         Returns:
             Mapping of repo-relative file paths to analyzer results.
         """
-        _ = timeout_seconds
         if not files:
             return {}
+        self._last_run_issues = ()
 
         if not self.is_available():
             raise PythonCallAnalyzerUnavailableError(
                 self.disabled_reason or "Python call analyzer is unavailable."
             )
 
-        client = _LspClient(self._config.command)
+        normalized_batch_size = max(int(batch_size or len(files) or 1), 1)
+        batches = [
+            files[index : index + normalized_batch_size]
+            for index in range(0, len(files), normalized_batch_size)
+        ]
         results: dict[str, PythonFileCallAnalysis] = {}
+        issues: list[PythonAnalyzerIssue] = []
+        for batch_number, batch_files in enumerate(batches, start=1):
+            logger.info(
+                "Python call analyzer batch %s/%s starting (%s files).",
+                batch_number,
+                len(batches),
+                len(batch_files),
+            )
+            try:
+                batch_results = self._analyze_batch(
+                    repo_root=repo_root,
+                    files=batch_files,
+                    timeout_seconds=timeout_seconds,
+                )
+            except PythonCallAnalyzerError as exc:
+                issue = PythonAnalyzerIssue(
+                    batch_index=batch_number,
+                    total_batches=len(batches),
+                    file_count=len(batch_files),
+                    status="failed",
+                    message=str(exc),
+                )
+                issues.append(issue)
+                logger.warning(
+                    "Python call analyzer batch %s/%s failed (%s files): %s",
+                    batch_number,
+                    len(batches),
+                    len(batch_files),
+                    exc,
+                )
+                if not continue_on_batch_failure:
+                    self._last_run_issues = tuple(issues)
+                    raise
+                for file_request in batch_files:
+                    rel_path = str(file_request.get("path") or "")
+                    functions = {
+                        str(
+                            function_row.get("qualified_name")
+                            or function_row.get("name")
+                            or ""
+                        ): PythonFunctionCallAnalysis(
+                            qualified_name=str(
+                                function_row.get("qualified_name")
+                                or function_row.get("name")
+                                or ""
+                            ),
+                            name=str(
+                                function_row.get("name")
+                                or function_row.get("qualified_name")
+                                or ""
+                            ),
+                            outgoing_calls=(),
+                        )
+                        for function_row in file_request.get("functions", [])
+                        if function_row.get("qualified_name") or function_row.get("name")
+                    }
+                    results[rel_path] = PythonFileCallAnalysis(
+                        rel_path=rel_path,
+                        functions=functions,
+                        diagnostics=(
+                            {
+                                "kind": "batch_failed",
+                                "level": "warning",
+                                "batch_index": batch_number,
+                                "total_batches": len(batches),
+                                "message": str(exc),
+                            },
+                        ),
+                        drop_reason_counts={},
+                    )
+                continue
+
+            logger.info(
+                "Python call analyzer batch %s/%s completed (%s files).",
+                batch_number,
+                len(batches),
+                len(batch_files),
+            )
+            results.update(batch_results)
+
+        self._last_run_issues = tuple(issues)
+        return results
+
+    def _analyze_batch(
+        self,
+        *,
+        repo_root: Path,
+        files: list[dict[str, Any]],
+        timeout_seconds: int,
+    ) -> dict[str, PythonFileCallAnalysis]:
+        """Analyze one bounded batch of Python files in a fresh LSP session."""
+        _ = timeout_seconds
+        client = _LspClient(self._config.command)
         symbol_cache: dict[str, _FileSymbolIndex] = {}
+        results: dict[str, PythonFileCallAnalysis] = {}
 
         try:
             client.initialize(repo_root)
@@ -517,7 +640,6 @@ class PythonCallAnalyzer:
                     diagnostics=tuple(diagnostics),
                     drop_reason_counts=drop_reason_counts,
                 )
-
         finally:
             client.close()
 

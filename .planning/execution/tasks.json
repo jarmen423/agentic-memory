@@ -179,6 +179,26 @@
         "python -m pytest tests/test_graph.py -k \"pass_4_records_typescript_analyzer_batch_failures or pass_4_records_partial_typescript_batch_failures or call_diagnostics\" -q"
       ],
       "handoff_path": ".planning/execution/handoffs/w11-calls/W11-CALLS-08.md"
+    },
+    {
+      "id": "W11-CALLS-09",
+      "title": "Batch Python analyzer work and preserve partial results",
+      "status": "completed",
+      "owner": "orchestrator",
+      "depends_on": [
+        "W11-CALLS-08"
+      ],
+      "write_scope": [
+        "src/agentic_memory/ingestion/python_call_analyzer.py",
+        "src/agentic_memory/ingestion/graph.py",
+        "tests/test_python_call_analyzer.py",
+        "tests/test_graph.py"
+      ],
+      "verify": [
+        "python -m pytest tests/test_python_call_analyzer.py -q",
+        "python -m pytest tests/test_graph.py -k \"pass_4_records_partial_python_batch_failures or pass_4_records_partial_typescript_batch_failures or call_diagnostics\" -q"
+      ],
+      "handoff_path": ".planning/execution/handoffs/w11-calls/W11-CALLS-09.md"
     }
   ],
   "merge_gates": [

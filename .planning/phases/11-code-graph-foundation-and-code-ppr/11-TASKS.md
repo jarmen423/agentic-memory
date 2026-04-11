@@ -43,4 +43,5 @@
 - [x] Persist analyzer batch failures and unavailable states so `call-status` shows them after a long indexing run even if the operator missed the logs.
 - [x] Make full `index` runs reuse Pass 1 change detection so unchanged files are not re-embedded before Pass 4.
 - [x] Batch large TypeScript analyzer runs so Pass 4 can preserve partial semantic results instead of timing out one giant repo-wide request.
+- [x] Batch large Python analyzer runs so Pass 4 shows progress after TS batches complete and can preserve partial semantic results instead of appearing frozen on Python-heavy repos.
 - [ ] Re-run real-repo indexing on both `D:\code\agentic-memory` and `/home/josh/m26pipeline` to verify analyzer-backed `CALLS` survive full indexing.

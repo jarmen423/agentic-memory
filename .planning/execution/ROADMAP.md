@@ -54,3 +54,9 @@
 - `W11-CALLS-08`: Split large JS/TS analyzer runs into smaller batches, keep
   partial semantic results when a batch times out, and surface partial failures
   back through repo-level diagnostics.
+
+### Wave 9: Python analyzer batch execution
+
+- `W11-CALLS-09`: Split large Python analyzer runs into smaller batches, emit
+  visible progress for Pass 4, keep partial semantic results when a batch
+  fails, and surface partial failures back through repo-level diagnostics.

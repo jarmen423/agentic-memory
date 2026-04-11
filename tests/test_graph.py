@@ -737,6 +737,147 @@ const lazy = import("./lazy-module");
         assert record_issue_calls
         assert record_issue_calls[0].kwargs["status"] == "partial_failure"
 
+    def test_pass_4_records_partial_python_batch_failures(
+        self,
+        builder,
+        mock_driver,
+        monkeypatch,
+        tmp_path,
+    ):
+        """Partial Python batch failures should still be persisted after fallback continues."""
+        _, session = mock_driver
+        repo_root = tmp_path
+        (repo_root / "pkg").mkdir()
+        (repo_root / "pkg" / "a.py").write_text("def foo():\n    return 1\n", encoding="utf8")
+        (repo_root / "pkg" / "b.py").write_text("def bar():\n    return 2\n", encoding="utf8")
+        builder.repo_root = repo_root
+        builder.repo_id = str(repo_root)
+
+        initial_records = [
+            {
+                "path": "pkg/a.py",
+                "funcs": [
+                    {
+                        "name": "foo",
+                        "sig": "pkg/a.py:foo",
+                        "qualified_name": "foo",
+                        "parent_class": "",
+                        "name_line": 1,
+                        "name_column": 5,
+                    }
+                ],
+            },
+            {
+                "path": "pkg/b.py",
+                "funcs": [
+                    {
+                        "name": "bar",
+                        "sig": "pkg/b.py:bar",
+                        "qualified_name": "bar",
+                        "parent_class": "",
+                        "name_line": 1,
+                        "name_column": 5,
+                    }
+                ],
+            },
+        ]
+
+        def _run_side_effect(*args, **kwargs):
+            cypher = args[0]
+            if "MATCH (f:File" in cypher and "collect({" in cypher:
+                return initial_records
+            return Mock()
+
+        session.run.side_effect = _run_side_effect
+
+        parsed_by_path = {
+            "pkg/a.py": {"functions": [{"name": "foo", "qualified_name": "foo", "calls": []}]},
+            "pkg/b.py": {"functions": [{"name": "bar", "qualified_name": "bar", "calls": []}]},
+        }
+        monkeypatch.setattr(
+            builder,
+            "_build_function_signature_indexes",
+            lambda *args, **kwargs: (
+                {"pkg/b.py": {"bar": "pkg/b.py:bar"}},
+                {"pkg/b.py": {"bar": ["pkg/b.py:bar"]}},
+                {"pkg/b.py": {(1, 5): "pkg/b.py:bar"}},
+            ),
+        )
+        monkeypatch.setattr(
+            builder,
+            "_prepare_typescript_analysis_requests",
+            lambda **_: (parsed_by_path, []),
+        )
+        monkeypatch.setattr(
+            builder,
+            "_prepare_python_analysis_requests",
+            lambda **_: [
+                {"path": "pkg/a.py", "functions": [{"qualified_name": "foo", "name": "foo"}]},
+                {"path": "pkg/b.py", "functions": [{"qualified_name": "bar", "name": "bar"}]},
+            ],
+        )
+        monkeypatch.setattr(builder, "_clear_call_analysis_artifacts", lambda *args, **kwargs: None)
+        monkeypatch.setattr(builder, "_write_call_drop_reasons", lambda *args, **kwargs: None)
+        monkeypatch.setattr(builder, "_write_call_edges", lambda *args, **kwargs: None)
+
+        class _PartialPyAnalyzer:
+            disabled_reason = None
+
+            def __init__(self):
+                self.last_run_issues = (
+                    Mock(total_batches=2, message="Python call analyzer batch timed out after 30s."),
+                )
+
+            def is_available(self):
+                return True
+
+            def analyze_files(self, **kwargs):
+                return {
+                    "pkg/a.py": PythonFileCallAnalysis(
+                        rel_path="pkg/a.py",
+                        functions={
+                            "foo": PythonFunctionCallAnalysis(
+                                qualified_name="foo",
+                                name="foo",
+                                outgoing_calls=(),
+                            )
+                        },
+                        diagnostics=(
+                            {
+                                "kind": "batch_failed",
+                                "level": "warning",
+                                "message": "Python call analyzer batch timed out after 30s.",
+                            },
+                        ),
+                        drop_reason_counts={},
+                    ),
+                    "pkg/b.py": PythonFileCallAnalysis(
+                        rel_path="pkg/b.py",
+                        functions={
+                            "bar": PythonFunctionCallAnalysis(
+                                qualified_name="bar",
+                                name="bar",
+                                outgoing_calls=(),
+                            )
+                        },
+                        diagnostics=(),
+                        drop_reason_counts={},
+                    ),
+                }
+
+        monkeypatch.setattr(builder, "_get_python_call_analyzer", lambda: _PartialPyAnalyzer())
+
+        builder.pass_4_call_graph(repo_root)
+
+        record_issue_calls = [
+            call
+            for call in session.run.call_args_list
+            if "CallAnalysisIssue" in call.args[0]
+            and call.kwargs.get("source") == "python_service"
+        ]
+        assert record_issue_calls
+        assert record_issue_calls[0].kwargs["status"] == "partial_failure"
+
     def test_get_file_dependencies_scopes_duplicate_paths_by_repo_id(self, builder, mock_driver):
         """Dependency lookups should stay pinned to one repo when paths collide.
 

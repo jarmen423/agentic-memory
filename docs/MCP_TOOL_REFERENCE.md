@@ -16,6 +16,27 @@ This document describes the primary MCP surfaces exposed by the current server i
 - `get_file_info(file_path, domain="code")`
   Returns structure and metadata for a file.
 
+- `trace_execution_path(start_symbol, max_depth=2, force_refresh=False, repo_id=None)`
+  Traces one function's likely execution neighborhood on demand. This is the
+  preferred behavioral exploration path now that normal indexing stops after
+  structural graph construction instead of building repo-wide `CALLS` by default.
+
+## Code-memory behavior model
+
+The code-memory system now has two separate layers:
+
+- structural graph
+  - built by normal `index` and `watch`
+  - includes files, entities, chunks, and imports
+- behavioral tracing
+  - built only when requested
+  - uses `trace_execution_path(...)`
+
+The older repo-wide analyzer-backed `CALLS` path still exists, but it is now an
+explicit experimental CLI workflow:
+
+- `agentic-memory build-calls`
+
 ## Research-memory tools
 
 - `memory_ingest_research(...)`

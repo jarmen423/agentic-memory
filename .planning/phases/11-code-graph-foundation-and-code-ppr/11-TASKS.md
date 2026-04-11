@@ -25,7 +25,24 @@
 
 ## Wave 3
 
-- [ ] Add multi-repo stress fixtures for duplicate paths and duplicate symbol names.
+- [x] Add a TypeScript semantic call analyzer so JS/TS `CALLS` can be validated with real symbol resolution instead of parser-only fallbacks.
+- [x] Add a repo-level `call-status` diagnostic so analyzer-backed vs fallback `CALLS` coverage is measurable.
+- [x] Add multi-repo stress fixtures for duplicate paths and duplicate symbol names.
 - [ ] Benchmark exact-hit vs neighborhood-query behavior with `ENABLE_CODE_PPR=1`.
 - [ ] Decide when `CALLS` can enter the traversal graph.
 - [ ] Decide when to flip `ENABLE_CODE_PPR` on by default.
+
+## Wave 4
+
+- [x] Add a Python semantic call analyzer with a repo-local debug surface and fixtures.
+- [x] Harden JS/TS analyzer-to-graph target resolution without relying on repo-specific symbol rules.
+- [x] Record analyzer drop reasons so failed semantic edges are inspectable by file, function, and reason.
+- [x] Extend `call-status` / debug tooling so Python and JS/TS analyzer coverage can be compared by repo.
+- [x] Stabilize parser symbol extraction so semantic analyzers keep correct names when repo files contain Unicode text before later definitions.
+- [x] Classify Python builtin/library calls and repo-local class constructor hits separately so unresolved diagnostics only represent real mapping debt.
+- [x] Persist analyzer batch failures and unavailable states so `call-status` shows them after a long indexing run even if the operator missed the logs.
+- [x] Make full `index` runs reuse Pass 1 change detection so unchanged files are not re-embedded before Pass 4.
+- [x] Batch large TypeScript analyzer runs so Pass 4 can preserve partial semantic results instead of timing out one giant repo-wide request.
+- [x] Batch large Python analyzer runs so Pass 4 shows progress after TS batches complete and can preserve partial semantic results instead of appearing frozen on Python-heavy repos.
+- [x] Retry timed-out TypeScript analyzer batches in smaller groups so VM-scale TS repos can still salvage semantic results instead of failing each coarse 10-file batch.
+- [ ] Re-run real-repo indexing on both `D:\code\agentic-memory` and `/home/josh/m26pipeline` to verify analyzer-backed `CALLS` survive full indexing.

@@ -12,6 +12,7 @@ another supported provider when explicitly requested).
 """
 
 import os
+import json
 import hashlib
 import logging
 import time
@@ -19,6 +20,7 @@ import fnmatch
 import math
 import posixpath
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Any, List, Dict, Optional, Tuple, Set
 from functools import wraps
@@ -33,6 +35,17 @@ from agentic_memory.core.embedding import EmbeddingService
 from agentic_memory.core.registry import register_source
 from agentic_memory.core.runtime_embedding import EmbeddingRuntimeConfig, resolve_embedding_runtime
 from agentic_memory.ingestion.parser import CodeParser
+from agentic_memory.ingestion.python_call_analyzer import (
+    PythonCallAnalyzer,
+    PythonCallAnalyzerError,
+    PythonFileCallAnalysis,
+)
+from agentic_memory.ingestion.typescript_call_analyzer import (
+    TypeScriptCallAnalyzer,
+    TypeScriptCallAnalyzerError,
+    TypeScriptFileCallAnalysis,
+    TypeScriptOutgoingCall,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +156,10 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         embedding_service (EmbeddingService | None): Provider-dispatching embedder.
             When no API key is available, this remains None and semantic search
             gracefully degrades to full-text fallback.
+        embedding_document_task_instruction (str | None): Optional Gemini
+            Embedding 2 task instruction for stored code/document vectors.
+        embedding_query_task_instruction (str | None): Optional Gemini
+            Embedding 2 task instruction for semantic search query vectors.
         parsers (Dict): Tree-sitter parsers for supported languages.
         repo_root (Path): Root path of the repository being indexed.
         token_usage (Dict): Tracks embedding calls and any provider-specific usage
@@ -225,13 +242,19 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             output_dimensions=embedding_dimensions,
         )
         self.embedding_service: EmbeddingService | None = None
-        if self.embedding_runtime.api_key:
+        if self.embedding_runtime.api_key or (
+            self.embedding_runtime.provider == "gemini" and self.embedding_runtime.use_vertexai
+        ):
             self.embedding_service = EmbeddingService(
                 provider=self.embedding_runtime.provider,
                 api_key=self.embedding_runtime.api_key,
                 model=self.embedding_runtime.model,
                 base_url=self.embedding_runtime.base_url,
                 output_dimensions=self.embedding_runtime.dimensions,
+                vertexai=self.embedding_runtime.use_vertexai,
+                project=self.embedding_runtime.project,
+                location=self.embedding_runtime.location,
+                api_version=self.embedding_runtime.api_version,
             )
         self.EMBEDDING_MODEL = self.embedding_runtime.model
         self.VECTOR_DIMENSIONS = self.embedding_runtime.dimensions
@@ -240,6 +263,15 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             getattr(self.embedding_service, "_client", None)
             if self.embedding_runtime.provider == "openai" and self.embedding_service is not None
             else None
+        )
+        code_module_cfg: dict[str, Any] = {}
+        if config is not None:
+            code_module_cfg = config.get_module_config("code")
+        self.embedding_document_task_instruction = code_module_cfg.get(
+            "embedding_document_task_instruction"
+        )
+        self.embedding_query_task_instruction = code_module_cfg.get(
+            "embedding_query_task_instruction"
         )
         self.parsers = self._init_parsers()
         self.repo_root = repo_root
@@ -351,6 +383,28 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             self._code_parser = parser
             self.parsers = parser.parsers
         return parser
+
+    def _get_typescript_call_analyzer(self) -> TypeScriptCallAnalyzer:
+        """Return the cached TypeScript call analyzer helper.
+
+        The analyzer is created lazily so unit tests that patch graph-builder
+        initialization do not need to also patch Node helper setup. This keeps
+        the dependency boundary narrow: the graph layer asks for semantic JS/TS
+        call targets only when Pass 4 actually needs them.
+        """
+        analyzer = getattr(self, "_typescript_call_analyzer", None)
+        if analyzer is None:
+            analyzer = TypeScriptCallAnalyzer()
+            self._typescript_call_analyzer = analyzer
+        return analyzer
+
+    def _get_python_call_analyzer(self) -> PythonCallAnalyzer:
+        """Return the cached Python semantic call analyzer helper."""
+        analyzer = getattr(self, "_python_call_analyzer", None)
+        if analyzer is None:
+            analyzer = PythonCallAnalyzer()
+            self._python_call_analyzer = analyzer
+        return analyzer
 
     def _set_repo_context(self, repo_path: Path) -> tuple[Path, str]:
         """Persist the active repo root and return its stable repo_id."""
@@ -471,6 +525,10 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                 "CREATE CONSTRAINT class_repo_name_unique IF NOT EXISTS "
                 "FOR (c:Class) REQUIRE (c.repo_id, c.qualified_name) IS UNIQUE"
             ),
+            (
+                "CREATE CONSTRAINT code_trace_run_unique IF NOT EXISTS "
+                "FOR (t:CodeTraceRun) REQUIRE (t.repo_id, t.root_signature) IS UNIQUE"
+            ),
             # 2. Vector Index for Hybrid Search
             f"""
             CREATE VECTOR INDEX code_embeddings IF NOT EXISTS
@@ -507,11 +565,19 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             return ""
 
     @retry_on_openai_error(max_retries=3, delay=1.0)
-    def get_embedding(self, text: str) -> List[float]:
+    def get_embedding(
+        self,
+        text: str,
+        *,
+        task_instruction: str | None = None,
+    ) -> List[float]:
         """Generate a code embedding using the configured provider.
 
         Args:
-            text: The text to embed
+            text: The text to embed.
+            task_instruction: Optional Gemini Embedding 2 task instruction. This
+                lets Agentic Memory embed stored code chunks differently from
+                user search queries so both sides of retrieval can be tuned.
 
         Returns:
             List of floats representing the embedding vector
@@ -538,15 +604,41 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         # provider-specific and is only available on some clients.
         self.token_usage["embedding_calls"] += 1
 
-        if self.embedding_runtime.provider == "openai":
-            client = self.openai_client or getattr(self.embedding_service, "_client", None)
-            response = client.embeddings.create(input=[text], model=self.EMBEDDING_MODEL)
-            usage = getattr(response, "usage", None)
-            if usage is not None and getattr(usage, "total_tokens", None) is not None:
-                self.token_usage["embedding_tokens"] += int(usage.total_tokens)
-            return response.data[0].embedding
+        vector, metadata = self.embedding_service.embed_with_metadata(
+            text,
+            task_instruction=task_instruction,
+        )
+        billable_tokens = metadata.prompt_tokens or metadata.total_tokens
+        if billable_tokens is not None:
+            self.token_usage["embedding_tokens"] += int(billable_tokens)
+        if metadata.estimated_cost_usd is not None:
+            self.token_usage["total_cost_usd"] += float(metadata.estimated_cost_usd)
+        return vector
 
-        return self.embedding_service.embed(text)
+    def get_document_embedding(self, text: str) -> List[float]:
+        """Embed code/document corpus text using the configured document role.
+
+        Stored vectors represent the retrievable code corpus. For Gemini
+        Embedding 2 preview, we optionally attach the document-side task
+        instruction from config so the model can optimize for that role.
+        """
+        return self.get_embedding(
+            text,
+            task_instruction=self.embedding_document_task_instruction,
+        )
+
+    def get_query_embedding(self, text: str) -> List[float]:
+        """Embed a semantic-search query using the configured query role.
+
+        Query vectors represent operator intent rather than stored code. Keeping
+        a separate query-side task instruction lets Gemini Embedding 2 optimize
+        retrieval behavior for "find the right code for this query" instead of
+        treating queries like ordinary documents.
+        """
+        return self.get_embedding(
+            text,
+            task_instruction=self.embedding_query_task_instruction,
+        )
 
     # =========================================================================
     # PASS 1: STRUCTURE SCAN & CHANGE DETECTION
@@ -554,7 +646,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
 
     def pass_1_structure_scan(
         self, repo_path: Optional[Path] = None, supported_extensions: Optional[Set[str]] = None
-    ):
+    ) -> list[str]:
         """
         Scans the directory structure.
         Creates File nodes if they are new or modified. Skips if oHash matches.
@@ -562,6 +654,16 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         Args:
             repo_path: Path to repository root (defaults to self.repo_root)
             supported_extensions: Set of file extensions to process
+
+        Returns:
+            Repo-relative paths that are new or whose content hash changed.
+
+        Why this matters:
+            Phase 11 exposed that `agentic-memory index` was still re-running
+            Pass 2 for every file even when Pass 1 had already proven the file
+            was unchanged. Returning the changed-file set lets later passes
+            scope expensive work, especially embeddings, to only the files that
+            actually need rebuilding.
         """
         repo_path, repo_id = self._require_repo_context(repo_path)
         supported_extensions = supported_extensions or {".py", ".js", ".ts", ".tsx", ".jsx"}
@@ -570,6 +672,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
 
         count = 0
         pruned_count = 0
+        changed_paths: list[str] = []
         with self.driver.session() as session:
             for root, dirs, files in os.walk(repo_path):
                 # Filter directories
@@ -610,6 +713,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                         ohash=current_ohash,
                     )
                     count += 1
+                    changed_paths.append(rel_path)
 
             # Prune File nodes that are no longer indexable under current rules.
             existing_paths = [
@@ -627,12 +731,18 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         logger.info(f"✅ [Pass 1] Processed {count} new/modified files.")
         if pruned_count:
             logger.info(f"🧹 [Pass 1] Pruned {pruned_count} excluded/stale files from graph.")
+        return changed_paths
 
     # =========================================================================
     # PASS 2: ENTITY DEFINITION & HYBRID CHUNKING
     # =========================================================================
 
-    def pass_2_entity_definition(self, repo_path: Optional[Path] = None):
+    def pass_2_entity_definition(
+        self,
+        repo_path: Optional[Path] = None,
+        *,
+        target_paths: Optional[Set[str] | list[str]] = None,
+    ):
         """
         Parses files using Tree-sitter.
         1. Extracts Classes/Functions.
@@ -640,18 +750,33 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
 
         Args:
             repo_path: Path to repository root (defaults to self.repo_root)
+            target_paths: Optional repo-relative file paths to rebuild. When
+                omitted, Pass 2 rebuilds every indexed file in the repo. When
+                provided, only those files are reparsed and re-embedded.
         """
         repo_path, repo_id = self._require_repo_context(repo_path)
 
         logger.info("🧠 [Pass 2] Extracting Entities & Creating Chunks...")
 
         with self.driver.session() as session:
-            # Fetch all files that need indexing
-            result = session.run(
-                "MATCH (f:File {repo_id: $repo_id}) RETURN f.path as path",
-                repo_id=repo_id,
-            )
-            files_to_process = [record["path"] for record in result]
+            if target_paths is None:
+                result = session.run(
+                    "MATCH (f:File {repo_id: $repo_id}) RETURN f.path as path",
+                    repo_id=repo_id,
+                )
+                files_to_process = [record["path"] for record in result]
+            else:
+                files_to_process = sorted(
+                    {
+                        self._normalize_rel_path(path)
+                        for path in target_paths
+                        if self._normalize_rel_path(path)
+                    }
+                )
+
+            if not files_to_process:
+                logger.info("⏭️ [Pass 2] No changed files require entity/chunk rebuild.")
+                return
 
             for i, rel_path in enumerate(files_to_process):
                 print(f"[{i+1}/{len(files_to_process)}] 🧠 Processing: {rel_path}...", end="\r")
@@ -710,7 +835,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                         path=rel_path,
                         sig=class_signature,
                         text=class_code,
-                        embedding=self.get_embedding(enriched_text),
+                        embedding=self.get_document_embedding(enriched_text),
                     )
 
                 for function_row in parsed["functions"]:
@@ -727,6 +852,8 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                         SET fn.name = $name,
                             fn.qualified_name = $qualified_name,
                             fn.parent_class = $parent_class,
+                            fn.name_line = $name_line,
+                            fn.name_column = $name_column,
                             fn.code = $code,
                             fn.path = $path
                         MERGE (f)-[:DEFINES]->(fn)
@@ -737,6 +864,8 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                         name=function_name,
                         qualified_name=qualified_name,
                         parent_class=parent_class,
+                        name_line=function_row.get("name_line"),
+                        name_column=function_row.get("name_column"),
                         code=function_code,
                     )
 
@@ -774,7 +903,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                         path=rel_path,
                         sig=function_signature,
                         text=function_code,
-                        embedding=self.get_embedding(enriched_text),
+                        embedding=self.get_document_embedding(enriched_text),
                     )
 
         logger.info("✅ [Pass 2] Entities and Semantic Chunks created.")
@@ -888,13 +1017,21 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             return ""
         return spec
 
-    def pass_3_imports(self, repo_path: Optional[Path] = None):
+    def pass_3_imports(
+        self,
+        repo_path: Optional[Path] = None,
+        *,
+        target_paths: Optional[Set[str] | list[str]] = None,
+    ):
         """
         Analyzes import statements to link File nodes.
         Supports Python and JS/TS import patterns.
 
         Args:
             repo_path: Path to repository root (defaults to self.repo_root)
+            target_paths: Optional source files whose outgoing IMPORTS edges
+                should be rebuilt. This is enough for incremental indexing
+                because IMPORTS are stored from the source file to its targets.
         """
         repo_path, repo_id = self._require_repo_context(repo_path)
 
@@ -909,6 +1046,17 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             all_paths = [r["path"] for r in result]
             path_set = set(all_paths)
             files = [path for path in all_paths if Path(path).suffix in supported_exts]
+            if target_paths is not None:
+                normalized_targets = {
+                    self._normalize_rel_path(path)
+                    for path in target_paths
+                    if self._normalize_rel_path(path)
+                }
+                files = [path for path in files if path in normalized_targets]
+
+            if not files:
+                logger.info("⏭️ [Pass 3] No changed files require import relinking.")
+                return
 
             for rel_path in files:
                 full_path = repo_path / rel_path
@@ -960,14 +1108,377 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
 
             logger.info("✅ [Pass 3] Import graph built.")
 
+    def _build_function_signature_indexes(
+        self,
+        file_records: list[neo4j.Record],
+    ) -> tuple[
+        dict[str, dict[str, str]],
+        dict[str, dict[str, list[str]]],
+        dict[str, dict[tuple[int, int], str]],
+    ]:
+        """Build lookup tables for repo-scoped function signatures.
+
+        Pass 4 needs to translate analyzer output back into the graph's stable
+        function identity scheme. The graph stores function nodes as
+        ``repo_id + signature`` where the signature is ``path:qualified_name``.
+        TypeScript's call hierarchy gives us target file paths plus symbol
+        names/container names, so we build exact and fallback indexes here.
+
+        Some semantic analyzers can also point at the exact definition line and
+        column for the target symbol. The positional index gives Pass 4 one more
+        repo-generic way to disambiguate collisions inside a single file before
+        it falls back to the noisy short-name heuristic.
+        """
+        qualified_index: dict[str, dict[str, str]] = {}
+        name_index: dict[str, dict[str, list[str]]] = {}
+        position_index: dict[str, dict[tuple[int, int], str]] = {}
+
+        for record in file_records:
+            rel_path = record["path"]
+            per_path_qualified: dict[str, str] = {}
+            per_path_name: dict[str, list[str]] = {}
+            per_path_position: dict[tuple[int, int], str] = {}
+
+            for function_row in record["funcs"]:
+                signature = str(function_row["sig"])
+                qualified_name = str(
+                    function_row.get("qualified_name") or function_row.get("name") or ""
+                )
+                function_name = str(function_row.get("name") or qualified_name)
+                if qualified_name:
+                    per_path_qualified[qualified_name] = signature
+                if function_name:
+                    per_path_name.setdefault(function_name, []).append(signature)
+                name_line = function_row.get("name_line")
+                name_column = function_row.get("name_column")
+                if isinstance(name_line, int) and isinstance(name_column, int):
+                    per_path_position[(name_line, name_column)] = signature
+
+            qualified_index[rel_path] = per_path_qualified
+            name_index[rel_path] = per_path_name
+            position_index[rel_path] = per_path_position
+
+        return qualified_index, name_index, position_index
+
+    def _prepare_typescript_analysis_requests(
+        self,
+        *,
+        repo_path: Path,
+        file_records: list[neo4j.Record],
+    ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+        """Parse JS/TS files once and prepare analyzer input rows.
+
+        Returns:
+            A tuple of:
+            - parsed rows keyed by repo-relative path
+            - JS/TS analyzer requests keyed by the parser's function contract
+        """
+        parsed_by_path: dict[str, dict[str, Any]] = {}
+        analyzer_requests: list[dict[str, Any]] = []
+        js_like_extensions = {".js", ".jsx", ".ts", ".tsx"}
+
+        for record in file_records:
+            rel_path = record["path"]
+            full_path = repo_path / rel_path
+            if not full_path.exists():
+                continue
+
+            _, parsed = self._parse_source_file(full_path)
+            parsed_by_path[rel_path] = parsed
+
+            if full_path.suffix not in js_like_extensions or not parsed["functions"]:
+                continue
+
+            analyzer_requests.append(
+                {
+                    "path": rel_path,
+                    "functions": [
+                        {
+                            "name": function_row["name"],
+                            "qualified_name": function_row.get("qualified_name")
+                            or function_row["name"],
+                            "parent_class": function_row.get("parent_class") or "",
+                            "name_line": function_row.get("name_line"),
+                            "name_column": function_row.get("name_column"),
+                        }
+                        for function_row in parsed["functions"]
+                    ],
+                }
+            )
+
+        return parsed_by_path, analyzer_requests
+
+    def _prepare_python_analysis_requests(
+        self,
+        *,
+        file_records: list[neo4j.Record],
+        parsed_by_path: dict[str, dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Prepare Python semantic-analyzer requests from the shared parser rows."""
+        analyzer_requests: list[dict[str, Any]] = []
+
+        for record in file_records:
+            rel_path = record["path"]
+            if Path(rel_path).suffix.lower() != ".py":
+                continue
+
+            parsed = parsed_by_path.get(rel_path)
+            if not parsed or not parsed["functions"]:
+                continue
+
+            analyzer_requests.append(
+                {
+                    "path": rel_path,
+                    "functions": [
+                        {
+                            "name": function_row["name"],
+                            "qualified_name": function_row.get("qualified_name")
+                            or function_row["name"],
+                            "parent_class": function_row.get("parent_class") or "",
+                            "name_line": function_row.get("name_line"),
+                            "name_column": function_row.get("name_column"),
+                        }
+                        for function_row in parsed["functions"]
+                    ],
+                }
+            )
+
+        return analyzer_requests
+
+    def _resolve_semantic_call_target(
+        self,
+        call_target: Any,
+        *,
+        qualified_index: dict[str, dict[str, str]],
+        name_index: dict[str, dict[str, list[str]]],
+        position_index: dict[str, dict[tuple[int, int], str]],
+    ) -> tuple[str | None, str]:
+        """Map one semantic analyzer target back to a graph function signature.
+
+        This shared helper keeps Python and JS/TS analyzers on the same graph
+        contract. The caller can still label the edge source separately, but the
+        matching logic should stay generic so real repos fail for understandable
+        reasons rather than language-specific copy-paste divergence.
+        """
+        target_path = getattr(call_target, "rel_path", None)
+        if not target_path:
+            return None, "missing_target_path"
+
+        per_path_qualified = qualified_index.get(target_path, {})
+        per_path_name = name_index.get(target_path, {})
+        per_path_position = position_index.get(target_path, {})
+        if not per_path_qualified and not per_path_name and not per_path_position:
+            return None, "target_path_not_indexed"
+
+        qualified_name_guess = getattr(call_target, "qualified_name_guess", None)
+        if qualified_name_guess:
+            exact_signature = per_path_qualified.get(qualified_name_guess)
+            if exact_signature:
+                return exact_signature, "matched_qualified_name"
+
+        target_line = (
+            getattr(call_target, "definition_line", None)
+            or getattr(call_target, "target_line", None)
+            or getattr(call_target, "name_line", None)
+        )
+        target_column = (
+            getattr(call_target, "definition_column", None)
+            or getattr(call_target, "target_column", None)
+            or getattr(call_target, "name_column", None)
+        )
+        if isinstance(target_line, int) and isinstance(target_column, int):
+            position_signature = per_path_position.get((target_line, target_column))
+            if position_signature:
+                return position_signature, "matched_target_position"
+
+        target_name = getattr(call_target, "name", "")
+        name_candidates = per_path_name.get(target_name, [])
+        if len(name_candidates) == 1:
+            return name_candidates[0], "matched_unique_name"
+        if len(name_candidates) > 1:
+            return None, "ambiguous_short_name"
+
+        return None, "no_matching_symbol"
+
+    def _resolve_typescript_call_target(
+        self,
+        call_target: TypeScriptOutgoingCall,
+        *,
+        qualified_index: dict[str, dict[str, str]],
+        name_index: dict[str, dict[str, list[str]]],
+        position_index: dict[str, dict[tuple[int, int], str]],
+    ) -> tuple[str | None, str]:
+        """Compatibility wrapper for the shared semantic-target matcher."""
+        return self._resolve_semantic_call_target(
+            call_target,
+            qualified_index=qualified_index,
+            name_index=name_index,
+            position_index=position_index,
+        )
+
+    def _write_call_edges(
+        self,
+        session: neo4j.Session,
+        *,
+        repo_id: str,
+        caller_signature: str,
+        callee_signatures: list[str],
+        source: str,
+        confidence: float,
+    ) -> None:
+        """Write repo-scoped CALLS edges with provenance metadata."""
+        if not callee_signatures:
+            return
+
+        session.run(
+            """
+            MATCH (caller:Function {repo_id: $repo_id, signature: $caller_sig})
+            UNWIND $callee_sigs as callee_sig
+            MATCH (callee:Function {repo_id: $repo_id, signature: callee_sig})
+            MERGE (caller)-[r:CALLS]->(callee)
+            SET r.source = $source,
+                r.confidence = $confidence,
+                r.last_updated = datetime()
+            """,
+            repo_id=repo_id,
+            caller_sig=caller_signature,
+            callee_sigs=callee_signatures,
+            source=source,
+            confidence=confidence,
+        )
+
+    def _clear_call_analysis_artifacts(
+        self,
+        session: neo4j.Session,
+        *,
+        repo_id: str,
+        rel_path: str,
+    ) -> None:
+        """Delete one file's outgoing CALLS edges and drop diagnostics.
+
+        Pass 4 is an idempotent rebuild step. Re-indexing a file should replace
+        both its outgoing `CALLS` edges and any persisted semantic-analysis drop
+        reasons from the previous run. Keeping both cleanup operations together
+        avoids stale diagnostics that would otherwise make `call-status` look
+        worse than the current code actually is.
+        """
+        session.run(
+            """
+            MATCH (:File {repo_id: $repo_id, path: $path})-[:DEFINES]->(fn:Function)-[r:CALLS]->()
+            DELETE r
+            """,
+            repo_id=repo_id,
+            path=rel_path,
+        )
+        session.run(
+            """
+            MATCH (:File {repo_id: $repo_id, path: $path})-[r:CALL_ANALYSIS_DROP]->(:CallDropReason)
+            DELETE r
+            """,
+            repo_id=repo_id,
+            path=rel_path,
+        )
+
+    def _write_call_drop_reasons(
+        self,
+        session: neo4j.Session,
+        *,
+        repo_id: str,
+        rel_path: str,
+        source: str,
+        drop_reasons: dict[str, int],
+    ) -> None:
+        """Persist per-file semantic-analysis drop reasons for later diagnostics.
+
+        The important operational question after indexing is not just
+        "how many `CALLS` edges do we have?" but also "why did semantic targets
+        fail to become edges?". We store those reasons on the file node so
+        `call-status` can aggregate them without re-running the analyzers.
+        """
+        if not drop_reasons:
+            return
+
+        rows = [
+            {"reason": reason, "count": int(count)}
+            for reason, count in sorted(drop_reasons.items())
+            if count
+        ]
+        if not rows:
+            return
+
+        session.run(
+            """
+            MATCH (file:File {repo_id: $repo_id, path: $path})
+            UNWIND $rows as row
+            MERGE (reason:CallDropReason {name: row.reason})
+            MERGE (file)-[r:CALL_ANALYSIS_DROP {source: $source}]->(reason)
+            SET r.count = row.count,
+                r.last_updated = datetime()
+            """,
+            repo_id=repo_id,
+            path=rel_path,
+            source=source,
+            rows=rows,
+        )
+
+    def _record_call_analyzer_issue(
+        self,
+        session: neo4j.Session,
+        *,
+        repo_id: str,
+        source: str,
+        status: str,
+        message: str,
+    ) -> None:
+        """Persist one repo-level analyzer issue for later inspection."""
+        session.run(
+            """
+            MERGE (issue:CallAnalysisIssue {repo_id: $repo_id, source: $source})
+            SET issue.status = $status,
+                issue.message = $message,
+                issue.updated_at = datetime()
+            """,
+            repo_id=repo_id,
+            source=source,
+            status=status,
+            message=message,
+        )
+
+    def _clear_call_analyzer_issue(
+        self,
+        session: neo4j.Session,
+        *,
+        repo_id: str,
+        source: str,
+    ) -> None:
+        """Remove any stale repo-level analyzer issue after a healthy run."""
+        session.run(
+            """
+            MATCH (issue:CallAnalysisIssue {repo_id: $repo_id, source: $source})
+            DETACH DELETE issue
+            """,
+            repo_id=repo_id,
+            source=source,
+        )
+
     # =========================================================================
     # PASS 4: CALL GRAPH (OPTIMIZED)
     # =========================================================================
 
     def pass_4_call_graph(self, repo_path: Optional[Path] = None):
         """
-        Links functions based on calls.
-        Optimized to parse each file once, then process all functions within it.
+        Link functions based on calls.
+
+        The call graph now has three resolution modes:
+        - Python when available: basedpyright-backed semantic analysis.
+        - JS/TS when available: TypeScript semantic call analysis across the repo.
+        - Fallback for any unsupported/unavailable case: conservative parser-only
+          same-file linking.
+
+        This keeps Pass 4 safe by preferring exact analyzer-backed targets when
+        the local language-service helper can resolve them, while still
+        preserving a deterministic static fallback when semantic analysis is
+        unavailable.
 
         Args:
             repo_path: Path to repository root (defaults to self.repo_root)
@@ -980,12 +1491,163 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             result = session.run(
                 """
                 MATCH (f:File {repo_id: $repo_id})-[:DEFINES]->(fn:Function)
-                RETURN f.path as path, collect({name: fn.name, sig: fn.signature}) as funcs
+                RETURN f.path as path,
+                       collect({
+                           name: fn.name,
+                           sig: fn.signature,
+                           qualified_name: fn.qualified_name,
+                           parent_class: fn.parent_class,
+                           name_line: fn.name_line,
+                           name_column: fn.name_column
+                       }) as funcs
                 """,
                 repo_id=repo_id,
             )
             file_records = list(result)
             total_files = len(file_records)
+            qualified_index, name_index, position_index = self._build_function_signature_indexes(
+                file_records
+            )
+            parsed_by_path, analyzer_requests = self._prepare_typescript_analysis_requests(
+                repo_path=repo_path,
+                file_records=file_records,
+            )
+            python_requests = self._prepare_python_analysis_requests(
+                file_records=file_records,
+                parsed_by_path=parsed_by_path,
+            )
+            typescript_results: dict[str, TypeScriptFileCallAnalysis] = {}
+            python_results: dict[str, PythonFileCallAnalysis] = {}
+
+            if analyzer_requests:
+                analyzer = self._get_typescript_call_analyzer()
+                if analyzer.is_available():
+                    try:
+                        typescript_results = analyzer.analyze_files(
+                            repo_root=repo_path,
+                            files=analyzer_requests,
+                            timeout_seconds=30,
+                            batch_size=10,
+                            continue_on_batch_failure=True,
+                        )
+                        analyzer_issues = list(getattr(analyzer, "last_run_issues", []) or [])
+                        if analyzer_issues:
+                            failed_batches = len(analyzer_issues)
+                            total_batches = max(
+                                issue.total_batches for issue in analyzer_issues
+                            )
+                            latest_issue = analyzer_issues[-1]
+                            self._record_call_analyzer_issue(
+                                session,
+                                repo_id=repo_id,
+                                source="typescript_service",
+                                status="partial_failure",
+                                message=(
+                                    f"{failed_batches}/{total_batches} TypeScript analyzer batches failed. "
+                                    f"Latest: {latest_issue.message}"
+                                ),
+                            )
+                        else:
+                            self._clear_call_analyzer_issue(
+                                session,
+                                repo_id=repo_id,
+                                source="typescript_service",
+                            )
+                    except TypeScriptCallAnalyzerError as exc:
+                        logger.warning(
+                            "⚠️ TypeScript call analyzer failed; falling back to parser-only CALLS: %s",
+                            exc,
+                        )
+                        self._record_call_analyzer_issue(
+                            session,
+                            repo_id=repo_id,
+                            source="typescript_service",
+                            status="failed",
+                            message=str(exc),
+                        )
+                else:
+                    logger.info(
+                        "TypeScript call analyzer unavailable; using parser-only CALLS. Reason: %s",
+                        analyzer.disabled_reason,
+                    )
+                    self._record_call_analyzer_issue(
+                        session,
+                        repo_id=repo_id,
+                        source="typescript_service",
+                        status="unavailable",
+                        message=str(analyzer.disabled_reason or "Analyzer unavailable."),
+                    )
+            else:
+                self._clear_call_analyzer_issue(
+                    session,
+                    repo_id=repo_id,
+                    source="typescript_service",
+                )
+
+            if python_requests:
+                analyzer = self._get_python_call_analyzer()
+                if analyzer.is_available():
+                    try:
+                        python_results = analyzer.analyze_files(
+                            repo_root=repo_path,
+                            files=python_requests,
+                            timeout_seconds=30,
+                            batch_size=25,
+                            continue_on_batch_failure=True,
+                        )
+                        analyzer_issues = list(getattr(analyzer, "last_run_issues", []) or [])
+                        if analyzer_issues:
+                            failed_batches = len(analyzer_issues)
+                            total_batches = max(
+                                issue.total_batches for issue in analyzer_issues
+                            )
+                            latest_issue = analyzer_issues[-1]
+                            self._record_call_analyzer_issue(
+                                session,
+                                repo_id=repo_id,
+                                source="python_service",
+                                status="partial_failure",
+                                message=(
+                                    f"{failed_batches}/{total_batches} Python analyzer batches failed. "
+                                    f"Latest: {latest_issue.message}"
+                                ),
+                            )
+                        else:
+                            self._clear_call_analyzer_issue(
+                                session,
+                                repo_id=repo_id,
+                                source="python_service",
+                            )
+                    except PythonCallAnalyzerError as exc:
+                        logger.warning(
+                            "⚠️ Python call analyzer failed; falling back to parser-only CALLS: %s",
+                            exc,
+                        )
+                        self._record_call_analyzer_issue(
+                            session,
+                            repo_id=repo_id,
+                            source="python_service",
+                            status="failed",
+                            message=str(exc),
+                        )
+                else:
+                    logger.info(
+                        "Python call analyzer unavailable; using parser-only CALLS. Reason: %s",
+                        analyzer.disabled_reason,
+                    )
+                    self._record_call_analyzer_issue(
+                        session,
+                        repo_id=repo_id,
+                        source="python_service",
+                        status="unavailable",
+                        message=str(analyzer.disabled_reason or "Analyzer unavailable."),
+                    )
+            else:
+                self._clear_call_analyzer_issue(
+                    session,
+                    repo_id=repo_id,
+                    source="python_service",
+                )
 
             for i, record in enumerate(file_records):
                 rel_path = record["path"]
@@ -998,20 +1660,19 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                     continue
 
                 try:
-                    _, parsed = self._parse_source_file(full_path)
+                    parsed = parsed_by_path.get(rel_path)
+                    if parsed is None:
+                        _, parsed = self._parse_source_file(full_path)
                     function_rows = parsed["functions"]
                     if not function_rows:
                         continue
 
-                    # Clear outgoing calls for functions defined in this file so
-                    # the call graph stays idempotent across rebuilds.
-                    session.run(
-                        """
-                        MATCH (:File {repo_id: $repo_id, path: $path})-[:DEFINES]->(fn:Function)-[r:CALLS]->()
-                        DELETE r
-                        """,
+                    # Clear outgoing calls and drop diagnostics for this file so
+                    # Pass 4 remains idempotent across rebuilds.
+                    self._clear_call_analysis_artifacts(
+                        session,
                         repo_id=repo_id,
-                        path=rel_path,
+                        rel_path=rel_path,
                     )
 
                     local_candidates: dict[str, list[str]] = {}
@@ -1021,28 +1682,103 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                             function_signature
                         )
 
+                    typescript_file_result = typescript_results.get(rel_path)
+                    python_file_result = python_results.get(rel_path)
+                    typescript_drop_reasons: Counter[str] = Counter()
+                    python_drop_reasons: Counter[str] = Counter(
+                        (python_file_result.drop_reason_counts or {})
+                        if python_file_result is not None
+                        else {}
+                    )
                     for function_row in function_rows:
                         caller_signature = f"{rel_path}:{function_row['qualified_name']}"
-                        resolved_calls = []
-                        for called_name in function_row.get("calls", []):
-                            candidate_sigs = local_candidates.get(called_name, [])
-                            if len(candidate_sigs) == 1 and candidate_sigs[0] != caller_signature:
-                                resolved_calls.append(candidate_sigs[0])
+                        resolved_calls: list[str] = []
+                        call_source = "static_parser"
+                        call_confidence = 0.6
 
-                        if not resolved_calls:
+                        python_function_result = None
+                        typescript_function_result = None
+                        if typescript_file_result is not None:
+                            typescript_function_result = typescript_file_result.functions.get(
+                                function_row["qualified_name"]
+                            )
+                        if python_file_result is not None:
+                            python_function_result = python_file_result.functions.get(
+                                function_row["qualified_name"]
+                            )
+
+                        if python_function_result is not None:
+                            call_source = "python_service"
+                            call_confidence = 0.95
+                            for call_target in python_function_result.outgoing_calls:
+                                candidate_sig, reason = self._resolve_semantic_call_target(
+                                    call_target,
+                                    qualified_index=qualified_index,
+                                    name_index=name_index,
+                                    position_index=position_index,
+                                )
+                                if candidate_sig and candidate_sig != caller_signature:
+                                    resolved_calls.append(candidate_sig)
+                                elif candidate_sig == caller_signature:
+                                    python_drop_reasons["self_edge"] += 1
+                                else:
+                                    python_drop_reasons[reason] += 1
+                        elif typescript_function_result is not None:
+                            call_source = "typescript_service"
+                            call_confidence = 0.95
+                            for call_target in typescript_function_result.outgoing_calls:
+                                candidate_sig, reason = self._resolve_typescript_call_target(
+                                    call_target,
+                                    qualified_index=qualified_index,
+                                    name_index=name_index,
+                                    position_index=position_index,
+                                )
+                                if candidate_sig and candidate_sig != caller_signature:
+                                    resolved_calls.append(candidate_sig)
+                                elif candidate_sig == caller_signature:
+                                    typescript_drop_reasons["self_edge"] += 1
+                                else:
+                                    typescript_drop_reasons[reason] += 1
+                        else:
+                            if python_file_result is not None:
+                                python_drop_reasons["missing_function_analysis"] += 1
+                            elif typescript_file_result is not None:
+                                typescript_drop_reasons["missing_function_analysis"] += 1
+                            for called_name in function_row.get("calls", []):
+                                candidate_sigs = local_candidates.get(called_name, [])
+                                if (
+                                    len(candidate_sigs) == 1
+                                    and candidate_sigs[0] != caller_signature
+                                ):
+                                    resolved_calls.append(candidate_sigs[0])
+
+                        deduped_calls = sorted(set(resolved_calls))
+                        if not deduped_calls:
                             continue
 
-                        session.run(
-                            """
-                            MATCH (caller:Function {repo_id: $repo_id, signature: $caller_sig})
-                            UNWIND $callee_sigs as callee_sig
-                            MATCH (callee:Function {repo_id: $repo_id, signature: callee_sig})
-                            MERGE (caller)-[:CALLS]->(callee)
-                            """,
+                        self._write_call_edges(
+                            session,
                             repo_id=repo_id,
-                            caller_sig=caller_signature,
-                            callee_sigs=sorted(set(resolved_calls)),
+                            caller_signature=caller_signature,
+                            callee_signatures=deduped_calls,
+                            source=call_source,
+                            confidence=call_confidence,
                         )
+
+                    self._write_call_drop_reasons(
+                        session,
+                        repo_id=repo_id,
+                        rel_path=rel_path,
+                        source="typescript_service",
+                        drop_reasons=dict(typescript_drop_reasons),
+                    )
+                    self._write_call_drop_reasons(
+                        session,
+                        repo_id=repo_id,
+                        rel_path=rel_path,
+                        source="python_service",
+                        drop_reasons=dict(python_drop_reasons),
+                    )
 
                 except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
                     logger.warning(f"⚠️ Failed to process calls in {rel_path}: {e}")
@@ -1080,12 +1816,12 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                 ohash=file_hash,
             )
 
-        # Reuse the multi-pass logic for one file by re-running the passes on the
-        # repo. This keeps the watcher behavior aligned with the main pipeline
-        # until a dedicated incremental graph-updater is carved out.
-        self.pass_2_entity_definition(repo_path)
-        self.pass_3_imports(repo_path)
-        self.pass_4_call_graph(repo_path)
+        # Reuse the multi-pass logic for one changed file. The JIT tracing pivot
+        # keeps structural graph rebuilds cheap by stopping at Pass 3; call-path
+        # exploration now happens on demand through the trace service instead of
+        # forcing every file change to re-run repo-wide CALLS analysis.
+        self.pass_2_entity_definition(repo_path, target_paths={normalized_path})
+        self.pass_3_imports(repo_path, target_paths={normalized_path})
 
     def delete_file(
         self,
@@ -1109,7 +1845,12 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         supported_extensions: Optional[Set[str]] = None,
     ) -> Dict:
         """
-        Executes the full 4-pass pipeline with cost tracking.
+        Execute the default code-ingestion pipeline with cost tracking.
+
+        The default pipeline intentionally stops after Pass 3. Repo-wide CALLS
+        reconstruction is now an explicit opt-in operation because it is too
+        expensive and too repo-fragile to be part of normal indexing or file
+        watch flows.
 
         Args:
             repo_path: Path to repository root (defaults to self.repo_root)
@@ -1126,10 +1867,12 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         print("=" * 60)
 
         self.setup_database()
-        self.pass_1_structure_scan(repo_path, supported_extensions=supported_extensions)
-        self.pass_2_entity_definition(repo_path)
-        self.pass_3_imports(repo_path)
-        self.pass_4_call_graph(repo_path)
+        changed_paths = self.pass_1_structure_scan(
+            repo_path,
+            supported_extensions=supported_extensions,
+        )
+        self.pass_2_entity_definition(repo_path, target_paths=changed_paths)
+        self.pass_3_imports(repo_path, target_paths=changed_paths)
 
         elapsed = time.time() - start_time
 
@@ -1152,6 +1895,458 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             "tokens_used": self.token_usage["embedding_tokens"],
             "cost_usd": self.token_usage["total_cost_usd"],
         }
+
+    def build_calls(
+        self,
+        repo_path: Optional[Path] = None,
+    ) -> None:
+        """Run the experimental repo-wide CALLS build explicitly.
+
+        Normal indexing deliberately skips Pass 4. This wrapper keeps the older
+        CALLS pipeline available for diagnostics and experimentation without
+        making it part of the default ingestion tax.
+        """
+        self.pass_4_call_graph(repo_path)
+
+    def resolve_function_symbol(
+        self,
+        symbol: str,
+        *,
+        repo_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Resolve one user-facing symbol string to a repo-local function node.
+
+        Resolution order is intentionally deterministic:
+        1. exact ``path:qualified_name`` signature
+        2. unique repo-local ``qualified_name``
+        3. unique repo-local short ``name``
+
+        If a lookup remains ambiguous, the method returns candidate functions
+        instead of guessing. The JIT trace service depends on that behavior so
+        it can avoid inventing paths when the graph cannot pick one symbol safely.
+        """
+
+        def _execute_resolution() -> dict[str, Any]:
+            resolved_repo_id = repo_id or self.repo_id
+            if resolved_repo_id is None:
+                raise ValueError("repo_id is required for function symbol resolution")
+
+            normalized_symbol = str(symbol).strip()
+            if not normalized_symbol:
+                return {
+                    "status": "not_found",
+                    "match_type": "empty",
+                    "input": normalized_symbol,
+                    "candidates": [],
+                }
+
+            with self.driver.session() as session:
+                exact = session.run(
+                    """
+                    MATCH (fn:Function {repo_id: $repo_id, signature: $signature})
+                    RETURN fn.signature as signature,
+                           fn.qualified_name as qualified_name,
+                           fn.name as name,
+                           fn.parent_class as parent_class,
+                           fn.path as path
+                    """,
+                    repo_id=resolved_repo_id,
+                    signature=normalized_symbol.replace("\\", "/"),
+                ).single()
+                if exact:
+                    return {
+                        "status": "resolved",
+                        "match_type": "signature",
+                        "input": normalized_symbol,
+                        "candidate": dict(exact),
+                    }
+
+                qualified_rows = [
+                    dict(row)
+                    for row in session.run(
+                        """
+                        MATCH (fn:Function {repo_id: $repo_id, qualified_name: $qualified_name})
+                        RETURN fn.signature as signature,
+                               fn.qualified_name as qualified_name,
+                               fn.name as name,
+                               fn.parent_class as parent_class,
+                               fn.path as path
+                        ORDER BY fn.path ASC, fn.signature ASC
+                        """,
+                        repo_id=resolved_repo_id,
+                        qualified_name=normalized_symbol,
+                    )
+                ]
+                if len(qualified_rows) == 1:
+                    return {
+                        "status": "resolved",
+                        "match_type": "qualified_name",
+                        "input": normalized_symbol,
+                        "candidate": qualified_rows[0],
+                    }
+                if len(qualified_rows) > 1:
+                    return {
+                        "status": "ambiguous",
+                        "match_type": "qualified_name",
+                        "input": normalized_symbol,
+                        "candidates": qualified_rows,
+                    }
+
+                name_rows = [
+                    dict(row)
+                    for row in session.run(
+                        """
+                        MATCH (fn:Function {repo_id: $repo_id, name: $name})
+                        RETURN fn.signature as signature,
+                               fn.qualified_name as qualified_name,
+                               fn.name as name,
+                               fn.parent_class as parent_class,
+                               fn.path as path
+                        ORDER BY fn.path ASC, fn.signature ASC
+                        """,
+                        repo_id=resolved_repo_id,
+                        name=normalized_symbol,
+                    )
+                ]
+                if len(name_rows) == 1:
+                    return {
+                        "status": "resolved",
+                        "match_type": "name",
+                        "input": normalized_symbol,
+                        "candidate": name_rows[0],
+                    }
+                if len(name_rows) > 1:
+                    return {
+                        "status": "ambiguous",
+                        "match_type": "name",
+                        "input": normalized_symbol,
+                        "candidates": name_rows,
+                    }
+
+            return {
+                "status": "not_found",
+                "match_type": "none",
+                "input": normalized_symbol,
+                "candidates": [],
+            }
+
+        return self.circuit_breaker.call(_execute_resolution)
+
+    def get_function_trace_context(
+        self,
+        signature: str,
+        *,
+        repo_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Return the graph context package used by JIT function tracing.
+
+        The trace service needs enough deterministic structure to ground the LLM
+        before it reasons about behavioral edges. This method deliberately
+        returns:
+        - the root function node and source code
+        - file-level imports / reverse imports
+        - sibling functions and classes in the same file
+        - candidate target functions from the same file and directly imported files
+        """
+
+        def _execute_context_lookup() -> dict[str, Any] | None:
+            resolved_repo_id = repo_id or self.repo_id
+            if resolved_repo_id is None:
+                raise ValueError("repo_id is required for trace context lookup")
+
+            with self.driver.session() as session:
+                root = session.run(
+                    """
+                    MATCH (fn:Function {repo_id: $repo_id, signature: $signature})
+                    MATCH (file:File {repo_id: $repo_id, path: fn.path})
+                    OPTIONAL MATCH (file)-[:IMPORTS]->(imported:File {repo_id: $repo_id})
+                    OPTIONAL MATCH (dependent:File {repo_id: $repo_id})-[:IMPORTS]->(file)
+                    RETURN fn.signature as signature,
+                           fn.qualified_name as qualified_name,
+                           fn.name as name,
+                           fn.parent_class as parent_class,
+                           fn.path as path,
+                           fn.code as code,
+                           file.ohash as file_ohash,
+                           collect(DISTINCT imported.path) as imports,
+                           collect(DISTINCT dependent.path) as imported_by
+                    """,
+                    repo_id=resolved_repo_id,
+                    signature=signature,
+                ).single()
+                if not root:
+                    return None
+
+                file_path = str(root["path"])
+                siblings = [
+                    dict(row)
+                    for row in session.run(
+                        """
+                        MATCH (:File {repo_id: $repo_id, path: $path})-[:DEFINES]->(fn:Function {repo_id: $repo_id})
+                        RETURN fn.signature as signature,
+                               fn.qualified_name as qualified_name,
+                               fn.name as name,
+                               fn.parent_class as parent_class
+                        ORDER BY fn.signature ASC
+                        """,
+                        repo_id=resolved_repo_id,
+                        path=file_path,
+                    )
+                ]
+                classes = [
+                    dict(row)
+                    for row in session.run(
+                        """
+                        MATCH (:File {repo_id: $repo_id, path: $path})-[:DEFINES]->(cls:Class {repo_id: $repo_id})
+                        RETURN cls.qualified_name as qualified_name,
+                               cls.name as name
+                        ORDER BY cls.qualified_name ASC
+                        """,
+                        repo_id=resolved_repo_id,
+                        path=file_path,
+                    )
+                ]
+                candidate_paths = {file_path}
+                candidate_paths.update(path for path in (root["imports"] or []) if path)
+                candidate_functions = [
+                    dict(row)
+                    for row in session.run(
+                        """
+                        MATCH (file:File {repo_id: $repo_id})-[:DEFINES]->(fn:Function {repo_id: $repo_id})
+                        WHERE file.path IN $paths
+                        RETURN file.path as path,
+                               fn.signature as signature,
+                               fn.qualified_name as qualified_name,
+                               fn.name as name,
+                               fn.parent_class as parent_class
+                        ORDER BY file.path ASC, fn.signature ASC
+                        """,
+                        repo_id=resolved_repo_id,
+                        paths=sorted(candidate_paths),
+                    )
+                ]
+
+            return {
+                "root": dict(root),
+                "siblings": siblings,
+                "classes": classes,
+                "candidate_functions": candidate_functions,
+            }
+
+        return self.circuit_breaker.call(_execute_context_lookup)
+
+    def get_cached_jit_trace(
+        self,
+        root_signature: str,
+        *,
+        repo_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Return one reusable cached JIT trace when the root file hash still matches."""
+
+        def _execute_cache_lookup() -> dict[str, Any] | None:
+            resolved_repo_id = repo_id or self.repo_id
+            if resolved_repo_id is None:
+                raise ValueError("repo_id is required for JIT trace cache lookup")
+
+            with self.driver.session() as session:
+                trace = session.run(
+                    """
+                    MATCH (trace:CodeTraceRun {repo_id: $repo_id, root_signature: $root_signature, status: 'completed'})
+                    MATCH (root:Function {repo_id: $repo_id, signature: $root_signature})
+                    MATCH (file:File {repo_id: $repo_id, path: root.path})
+                    WHERE trace.root_file_ohash = file.ohash
+                    RETURN trace.trace_id as trace_id,
+                           trace.root_signature as root_signature,
+                           trace.root_file_ohash as root_file_ohash,
+                           trace.model as model,
+                           trace.max_depth as max_depth,
+                           trace.created_at as created_at,
+                           trace.unresolved_json as unresolved_json
+                    """,
+                    repo_id=resolved_repo_id,
+                    root_signature=root_signature,
+                ).single()
+                if not trace:
+                    return None
+
+                edges = [
+                    dict(row)
+                    for row in session.run(
+                        """
+                        MATCH (caller:Function {repo_id: $repo_id, signature: $root_signature})-[r]->(callee:Function {repo_id: $repo_id})
+                        WHERE type(r) IN ['JIT_CALLS_DIRECT', 'JIT_CALLS_CALLBACK', 'JIT_MESSAGE_FLOW']
+                          AND r.trace_id = $trace_id
+                        RETURN type(r) as relationship_type,
+                               caller.signature as caller_signature,
+                               callee.signature as callee_signature,
+                               callee.qualified_name as callee_qualified_name,
+                               callee.name as callee_name,
+                               callee.path as callee_path,
+                               coalesce(r.edge_type, '') as edge_type,
+                               coalesce(r.confidence, 0.0) as confidence,
+                               coalesce(r.rationale, '') as rationale,
+                               coalesce(r.evidence, '') as evidence
+                        ORDER BY callee.signature ASC
+                        """,
+                        repo_id=resolved_repo_id,
+                        root_signature=root_signature,
+                        trace_id=trace["trace_id"],
+                    )
+                ]
+
+            unresolved_json = trace.get("unresolved_json") or "[]"
+            try:
+                unresolved = json.loads(unresolved_json)
+            except json.JSONDecodeError:
+                unresolved = []
+
+            payload = dict(trace)
+            payload["edges"] = edges
+            payload["unresolved"] = unresolved
+            return payload
+
+        return self.circuit_breaker.call(_execute_cache_lookup)
+
+    def store_jit_trace_result(
+        self,
+        *,
+        repo_id: str,
+        root_signature: str,
+        root_file_ohash: str,
+        trace_id: str,
+        model: str,
+        max_depth: int,
+        edges: list[dict[str, Any]],
+        unresolved: list[dict[str, Any]],
+    ) -> None:
+        """Persist one per-root JIT trace cache and its derived relationships."""
+
+        def _execute_store() -> None:
+            with self.driver.session() as session:
+                session.run(
+                    """
+                    MATCH (trace:CodeTraceRun {repo_id: $repo_id, root_signature: $root_signature})
+                    DETACH DELETE trace
+                    """,
+                    repo_id=repo_id,
+                    root_signature=root_signature,
+                )
+                session.run(
+                    """
+                    MATCH (caller:Function {repo_id: $repo_id, signature: $root_signature})-[r]->()
+                    WHERE type(r) IN ['JIT_CALLS_DIRECT', 'JIT_CALLS_CALLBACK', 'JIT_MESSAGE_FLOW']
+                    DELETE r
+                    """,
+                    repo_id=repo_id,
+                    root_signature=root_signature,
+                )
+                session.run(
+                    """
+                    CREATE (trace:CodeTraceRun {
+                        repo_id: $repo_id,
+                        root_signature: $root_signature,
+                        trace_id: $trace_id,
+                        model: $model,
+                        max_depth: $max_depth,
+                        status: 'completed',
+                        unresolved_json: $unresolved_json,
+                        root_file_ohash: $root_file_ohash,
+                        created_at: datetime()
+                    })
+                    """,
+                    repo_id=repo_id,
+                    root_signature=root_signature,
+                    trace_id=trace_id,
+                    model=model,
+                    max_depth=max_depth,
+                    unresolved_json=json.dumps(unresolved),
+                    root_file_ohash=root_file_ohash,
+                )
+                session.run(
+                    """
+                    MATCH (trace:CodeTraceRun {repo_id: $repo_id, root_signature: $root_signature})
+                    MATCH (root:Function {repo_id: $repo_id, signature: $root_signature})
+                    MERGE (trace)-[:TRACES_ROOT]->(root)
+                    """,
+                    repo_id=repo_id,
+                    root_signature=root_signature,
+                )
+                if edges:
+                    session.run(
+                        """
+                        MATCH (caller:Function {repo_id: $repo_id, signature: $root_signature})
+                        UNWIND $edges as edge
+                        MATCH (callee:Function {repo_id: $repo_id, signature: edge.callee_signature})
+                        CALL {
+                            WITH caller, callee, edge
+                            WITH caller, callee, edge
+                            WHERE edge.relationship_type = 'JIT_CALLS_DIRECT'
+                            MERGE (caller)-[r:JIT_CALLS_DIRECT]->(callee)
+                            SET r.trace_id = edge.trace_id,
+                                r.root_signature = edge.root_signature,
+                                r.source = edge.source,
+                                r.edge_type = edge.edge_type,
+                                r.confidence = edge.confidence,
+                                r.rationale = edge.rationale,
+                                r.evidence = edge.evidence,
+                                r.model = edge.model,
+                                r.root_file_ohash = edge.root_file_ohash,
+                                r.created_at = datetime()
+                            RETURN 1 as _
+                            UNION
+                            WITH caller, callee, edge
+                            WHERE edge.relationship_type = 'JIT_CALLS_CALLBACK'
+                            MERGE (caller)-[r:JIT_CALLS_CALLBACK]->(callee)
+                            SET r.trace_id = edge.trace_id,
+                                r.root_signature = edge.root_signature,
+                                r.source = edge.source,
+                                r.edge_type = edge.edge_type,
+                                r.confidence = edge.confidence,
+                                r.rationale = edge.rationale,
+                                r.evidence = edge.evidence,
+                                r.model = edge.model,
+                                r.root_file_ohash = edge.root_file_ohash,
+                                r.created_at = datetime()
+                            RETURN 1 as _
+                            UNION
+                            WITH caller, callee, edge
+                            WHERE edge.relationship_type = 'JIT_MESSAGE_FLOW'
+                            MERGE (caller)-[r:JIT_MESSAGE_FLOW]->(callee)
+                            SET r.trace_id = edge.trace_id,
+                                r.root_signature = edge.root_signature,
+                                r.source = edge.source,
+                                r.edge_type = edge.edge_type,
+                                r.confidence = edge.confidence,
+                                r.rationale = edge.rationale,
+                                r.evidence = edge.evidence,
+                                r.model = edge.model,
+                                r.root_file_ohash = edge.root_file_ohash,
+                                r.created_at = datetime()
+                            RETURN 1 as _
+                        }
+                        RETURN count(*) as written
+                        """,
+                        repo_id=repo_id,
+                        root_signature=root_signature,
+                        edges=[
+                            {
+                                "callee_signature": edge["callee_signature"],
+                                "relationship_type": edge["relationship_type"],
+                                "trace_id": trace_id,
+                                "root_signature": root_signature,
+                                "source": "jit_trace",
+                                "edge_type": edge["edge_type"],
+                                "confidence": float(edge["confidence"]),
+                                "rationale": edge.get("rationale") or "",
+                                "evidence": edge.get("evidence") or "",
+                                "model": model,
+                                "root_file_ohash": root_file_ohash,
+                            }
+                            for edge in edges
+                        ],
+                    )
+
+        self.circuit_breaker.call(_execute_store)
 
     # =========================================================================
     # SEMANTIC SEARCH (for MCP Server)
@@ -1216,7 +2411,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             if resolved_repo_id is None:
                 raise ValueError("repo_id is required for code semantic_search")
 
-            vector = self.get_embedding(query)
+            vector = self.get_query_embedding(query)
             if not _is_valid_vector(vector):
                 logger.warning(
                     "Semantic query vector invalid (likely missing code embedding API key or zero-vector); "
@@ -1342,6 +2537,208 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                 return {"affected_files": affected_files, "total_count": len(affected_files)}
         
         return self.circuit_breaker.call(_execute_impact_analysis)
+
+    def get_call_diagnostics(
+        self,
+        *,
+        repo_id: str | None = None,
+        high_confidence_threshold: float = 0.9,
+    ) -> Dict[str, Any]:
+        """Summarize CALLS-edge quality for one repository.
+
+        This is the operational report we use before expanding the traversal graph.
+        The point is not just "how many CALLS edges exist", but how many of them
+        came from a semantic analyzer versus a fallback parser path, and how much
+        of the repo's function surface has any outgoing-call coverage at all.
+
+        Args:
+            repo_id: Repository identity to inspect. Defaults to the builder repo.
+            high_confidence_threshold: Confidence cutoff used to count traversal-grade
+                edges in the summary.
+
+        Returns:
+            A diagnostics dictionary with function coverage, file coverage, edge
+            source breakdowns, and derived ratios that make quality regressions easy
+            to detect in tests or CLI output.
+        """
+
+        def _execute_call_diagnostics() -> Dict[str, Any]:
+            resolved_repo_id = repo_id or self.repo_id
+            if resolved_repo_id is None:
+                raise ValueError("repo_id is required for call diagnostics")
+
+            with self.driver.session() as session:
+                summary = session.run(
+                    """
+                    MATCH (:File {repo_id: $repo_id})-[:DEFINES]->(fn:Function)
+                    OPTIONAL MATCH (fn)-[r:CALLS]->()
+                    RETURN count(DISTINCT fn) as total_functions,
+                           count(DISTINCT CASE WHEN r IS NOT NULL THEN fn END) as functions_with_calls,
+                           count(r) as total_call_edges,
+                           sum(
+                               CASE
+                                   WHEN coalesce(r.confidence, 0.0) >= $high_confidence_threshold
+                                   THEN 1
+                                   ELSE 0
+                               END
+                           ) as high_confidence_edges
+                    """,
+                    repo_id=resolved_repo_id,
+                    high_confidence_threshold=high_confidence_threshold,
+                ).single()
+
+                analyzer_sources = ["python_service", "typescript_service"]
+                file_coverage = session.run(
+                    """
+                    MATCH (file:File {repo_id: $repo_id})-[:DEFINES]->(fn:Function)
+                    RETURN count(DISTINCT file) as files_with_functions,
+                           count(
+                               DISTINCT CASE
+                                   WHEN EXISTS {
+                                       MATCH (file)-[:DEFINES]->(:Function)-[:CALLS]->()
+                                   }
+                                   THEN file
+                               END
+                           ) as files_with_call_edges,
+                           count(
+                               DISTINCT CASE
+                                   WHEN EXISTS {
+                                       MATCH (file)-[:DEFINES]->(:Function)-[r:CALLS]->()
+                                       WHERE coalesce(r.source, "unknown") IN $analyzer_sources
+                                   }
+                                   THEN file
+                               END
+                           ) as files_with_analyzer_edges,
+                           count(
+                               DISTINCT CASE
+                                   WHEN EXISTS {
+                                       MATCH (file)-[:DEFINES]->(:Function)-[r:CALLS]->()
+                                       WHERE coalesce(r.source, "unknown") IN $analyzer_sources
+                                   }
+                                   OR EXISTS {
+                                       MATCH (file)-[:CALL_ANALYSIS_DROP]->(:CallDropReason)
+                                   }
+                                   THEN file
+                               END
+                           ) as files_with_analyzer_attempts,
+                           count(
+                               DISTINCT CASE
+                                   WHEN EXISTS {
+                                       MATCH (file)-[:CALL_ANALYSIS_DROP]->(:CallDropReason)
+                                   }
+                                   THEN file
+                               END
+                           ) as files_with_drop_reasons
+                    """,
+                    repo_id=resolved_repo_id,
+                    analyzer_sources=analyzer_sources,
+                ).single()
+
+                source_rows = session.run(
+                    """
+                    MATCH (:File {repo_id: $repo_id})-[:DEFINES]->(:Function)-[r:CALLS]->()
+                    RETURN coalesce(r.source, "unknown") as source,
+                           count(r) as edge_count,
+                           avg(coalesce(r.confidence, 0.0)) as avg_confidence
+                    ORDER BY edge_count DESC, source ASC
+                    """,
+                    repo_id=resolved_repo_id,
+                )
+
+                sources = [
+                    {
+                        "source": record["source"],
+                        "edge_count": int(record["edge_count"] or 0),
+                        "avg_confidence": float(record["avg_confidence"] or 0.0),
+                    }
+                    for record in source_rows
+                ]
+
+                drop_reason_rows = session.run(
+                    """
+                    MATCH (:File {repo_id: $repo_id})-[r:CALL_ANALYSIS_DROP]->(reason:CallDropReason)
+                    RETURN reason.name as reason,
+                           coalesce(r.source, "unknown") as source,
+                           sum(coalesce(r.count, 0)) as drop_count
+                    ORDER BY drop_count DESC, source ASC, reason ASC
+                    """,
+                    repo_id=resolved_repo_id,
+                )
+
+                drop_reasons = [
+                    {
+                        "reason": record["reason"],
+                        "source": record["source"],
+                        "drop_count": int(record["drop_count"] or 0),
+                    }
+                    for record in drop_reason_rows
+                ]
+
+                analyzer_issue_rows = session.run(
+                    """
+                    MATCH (issue:CallAnalysisIssue {repo_id: $repo_id})
+                    RETURN issue.source as source,
+                           issue.status as status,
+                           issue.message as message,
+                           toString(issue.updated_at) as updated_at
+                    ORDER BY issue.source ASC
+                    """,
+                    repo_id=resolved_repo_id,
+                )
+
+                analyzer_issues = [
+                    {
+                        "source": record["source"],
+                        "status": record["status"],
+                        "message": record["message"],
+                        "updated_at": record["updated_at"],
+                    }
+                    for record in analyzer_issue_rows
+                ]
+
+            total_functions = int(summary["total_functions"] or 0)
+            functions_with_calls = int(summary["functions_with_calls"] or 0)
+            total_call_edges = int(summary["total_call_edges"] or 0)
+            high_confidence_edges = int(summary["high_confidence_edges"] or 0)
+            files_with_functions = int(file_coverage["files_with_functions"] or 0)
+            files_with_call_edges = int(file_coverage["files_with_call_edges"] or 0)
+            files_with_analyzer_edges = int(file_coverage["files_with_analyzer_edges"] or 0)
+            files_with_analyzer_attempts = int(file_coverage["files_with_analyzer_attempts"] or 0)
+            files_with_drop_reasons = int(file_coverage["files_with_drop_reasons"] or 0)
+
+            functions_without_calls = max(total_functions - functions_with_calls, 0)
+            function_coverage_ratio = (
+                functions_with_calls / total_functions if total_functions else 0.0
+            )
+            high_confidence_ratio = (
+                high_confidence_edges / total_call_edges if total_call_edges else 0.0
+            )
+            file_coverage_ratio = (
+                files_with_call_edges / files_with_functions if files_with_functions else 0.0
+            )
+
+            return {
+                "repo_id": resolved_repo_id,
+                "high_confidence_threshold": float(high_confidence_threshold),
+                "total_functions": total_functions,
+                "functions_with_calls": functions_with_calls,
+                "functions_without_calls": functions_without_calls,
+                "function_coverage_ratio": function_coverage_ratio,
+                "total_call_edges": total_call_edges,
+                "high_confidence_edges": high_confidence_edges,
+                "high_confidence_ratio": high_confidence_ratio,
+                "files_with_functions": files_with_functions,
+                "files_with_call_edges": files_with_call_edges,
+                "files_with_analyzer_edges": files_with_analyzer_edges,
+                "files_with_analyzer_attempts": files_with_analyzer_attempts,
+                "files_with_drop_reasons": files_with_drop_reasons,
+                "file_coverage_ratio": file_coverage_ratio,
+                "sources": sources,
+                "drop_reasons": drop_reasons,
+                "analyzer_issues": analyzer_issues,
+            }
+
+        return self.circuit_breaker.call(_execute_call_diagnostics)
 
     # =========================================================================
     # GIT GRAPH QUERIES (for MCP Server)

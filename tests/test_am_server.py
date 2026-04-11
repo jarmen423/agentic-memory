@@ -583,9 +583,9 @@ def test_product_repo_upsert_endpoint_tracks_repo(client, auth_headers, monkeypa
     state_path = tmp_path / "product-state.json"
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    codememory_dir = repo_root / ".codememory"
-    codememory_dir.mkdir()
-    (codememory_dir / "config.json").write_text("{}", encoding="utf-8")
+    config_dir = repo_root / ".agentic-memory"
+    config_dir.mkdir()
+    (config_dir / "config.json").write_text("{}", encoding="utf-8")
     monkeypatch.setenv("CODEMEMORY_PRODUCT_STATE", str(state_path))
     dependencies.get_product_store.cache_clear()
 
@@ -643,6 +643,30 @@ class _FakeOpenClawStore:
         }
         self.integrations.append(record)
         return record
+
+    def resolve_openclaw_session_id(
+        self,
+        *,
+        workspace_id,
+        agent_id,
+        explicit_session_id=None,
+        device_id=None,
+    ):
+        if explicit_session_id:
+            return explicit_session_id
+
+        for integration in reversed(self.integrations):
+            config = integration.get("config", {})
+            if config.get("workspace_id") != workspace_id:
+                continue
+            if config.get("agent_id") != agent_id:
+                continue
+            if device_id and config.get("device_id") != device_id:
+                continue
+            session_id = config.get("session_id")
+            if session_id:
+                return session_id
+        return None
 
     def record_event(self, *, event_type, status="ok", actor="api", details=None):
         record = {
@@ -738,6 +762,17 @@ def test_openclaw_project_endpoints_manage_session_scoped_binding(
     """Project activation and status are scoped to one session identity."""
 
     fake_store = _FakeOpenClawStore()
+    fake_store.upsert_integration(
+        surface="openclaw",
+        target="workspace-1:device-a:agent-x",
+        status="connected",
+        config={
+            "workspace_id": "workspace-1",
+            "device_id": "device-a",
+            "agent_id": "agent-x",
+            "session_id": "session-1",
+        },
+    )
     monkeypatch.setattr(openclaw, "get_product_store", lambda: fake_store)
 
     activate = client.post(
@@ -780,6 +815,40 @@ def test_openclaw_project_endpoints_manage_session_scoped_binding(
     )
     assert deactivate.status_code == 200
     assert deactivate.json()["binding"]["project_id"] == "project-1"
+
+
+def test_openclaw_project_endpoints_can_infer_session_id(client, auth_headers, monkeypatch):
+    """Project lifecycle routes infer session id from the latest OpenClaw registration."""
+
+    fake_store = _FakeOpenClawStore()
+    fake_store.upsert_integration(
+        surface="openclaw",
+        target="workspace-1:device-a:agent-x",
+        status="connected",
+        config={
+            "workspace_id": "workspace-1",
+            "device_id": "device-a",
+            "agent_id": "agent-x",
+            "session_id": "session-inferred",
+        },
+    )
+    monkeypatch.setattr(openclaw, "get_product_store", lambda: fake_store)
+
+    activate = client.post(
+        "/openclaw/project/activate",
+        headers=auth_headers,
+        json={
+            "workspace_id": "workspace-1",
+            "device_id": "device-a",
+            "agent_id": "agent-x",
+            "project_id": "project-1",
+        },
+    )
+
+    assert activate.status_code == 200
+    body = activate.json()
+    assert body["identity"]["session_id"] == "session-inferred"
+    assert body["binding"]["session_id"] == "session-inferred"
 
 
 def test_openclaw_memory_ingest_turn_resolves_active_project(client, auth_headers, monkeypatch):

@@ -109,7 +109,7 @@ Config:     /path/to/project/.codememory/config.json
 
 ### `agentic-memory index`
 
-Run a one-time full ingestion pipeline.
+Run a one-time structural ingestion pipeline.
 
 **Usage:**
 ```bash
@@ -124,7 +124,11 @@ agentic-memory index [options]
 2. Pass 1: Scan files and detect changes
 3. Pass 2: Parse entities and create embeddings
 4. Pass 3: Build import graph
-5. Pass 4: Construct call graph
+
+**Important:**
+- Normal `index` no longer runs repo-wide `CALLS` construction.
+- Behavioral tracing is now on demand through `trace-execution`.
+- The older repo-wide analyzer-backed `CALLS` path is still available explicitly through `build-calls`.
 
 **Example:**
 ```bash
@@ -145,11 +149,6 @@ $ agentic-memory index
 🕸️ [Pass 3] Linking Files via Imports...
 ✅ [Pass 3] Import graph built.
 
-📞 [Pass 4] Constructing Call Graph...
-[1/15] 📞 Processing calls in: src/auth.py...
-...
-✅ [Pass 4] Call Graph approximation complete. Processed 15 files.
-
 ============================================================
 📊 COST SUMMARY
 ============================================================
@@ -159,7 +158,7 @@ $ agentic-memory index
 💰 Estimated Cost: $0.0111 USD
 📦 Model: gemini-embedding-2-preview
 ============================================================
-✅ Graph is ready for Agent retrieval.
+✅ Structural graph is ready for Agent retrieval.
 ============================================================
 ```
 
@@ -167,6 +166,7 @@ $ agentic-memory index
 - After cloning a new repository
 - After major code changes
 - If watch mode missed updates
+- When you want files, entities, chunks, and imports up to date before using search or JIT tracing
 
 **Exit codes:**
 - `0` - Success
@@ -193,6 +193,11 @@ agentic-memory watch [options]
 2. Watches filesystem for changes
 3. Incrementally updates only changed files
 4. Runs until interrupted (Ctrl+C)
+
+**Important:**
+- `watch` keeps the structural graph current.
+- It does not run repo-wide `CALLS` construction as part of normal file watching.
+- Use `trace-execution` for behavior exploration and `build-calls` only for the older experimental repo-wide path.
 
 **Example:**
 ```bash
@@ -225,7 +230,7 @@ $ agentic-memory watch
 - Prevents redundant processing during save operations
 
 **Limitations:**
-- Does not update call graph (requires full scan)
+- Does not build repo-wide `CALLS` by default
 - Only processes supported file extensions (.py, .js, .ts, .tsx, .jsx)
 
 **Exit codes:**
@@ -258,7 +263,7 @@ $ agentic-memory serve
 
 **Server behavior:**
 - Runs until interrupted (Ctrl+C)
-- Exposes 4 MCP tools (see [MCP Tools](#mcp-tools))
+- Exposes MCP tools for structural retrieval and on-demand behavioral tracing
 - Uses local config or environment variables
 - Graceful shutdown on SIGTERM/SIGINT
 
@@ -280,6 +285,68 @@ curl http://localhost:8000/tools/search_codebase \
 - `0` - Graceful shutdown
 - `1` - Port already in use
 - `2` - Neo4j connection failed
+
+---
+
+### `agentic-memory build-calls`
+
+Run the older analyzer-backed repo-wide `CALLS` build explicitly.
+
+**Usage:**
+```bash
+agentic-memory build-calls [options]
+```
+
+**Options:**
+- `--json` - Emit machine-readable JSON output
+
+**What it does:**
+- Runs the experimental repo-wide `CALLS` path manually
+- Preserves analyzer diagnostics and comparison workflows
+- Keeps that cost out of normal `index` and `watch`
+
+**When to use:**
+- You want to compare the old CALLS path with JIT tracing
+- You want analyzer diagnostics in `call-status`
+- You are debugging repo-specific semantic analyzer behavior
+
+---
+
+### `agentic-memory trace-execution`
+
+Trace one function's likely execution neighborhood on demand.
+
+**Usage:**
+```bash
+agentic-memory trace-execution <start_symbol> [options]
+```
+
+**Options:**
+- `--max-depth <n>` - Maximum recursive direct-call depth to expand (default `2`)
+- `--force-refresh` - Ignore valid cached trace data and recompute
+- `--repo <path>` - Repository root path
+- `--json` - Emit machine-readable JSON output
+
+**Resolution order for `<start_symbol>`:**
+1. exact `path:qualified_name` signature
+2. unique repo-local `qualified_name`
+3. unique repo-local short `name`
+
+If resolution stays ambiguous, the command returns candidates instead of guessing.
+
+**What it returns:**
+- resolved root function
+- typed edges:
+  - `direct_call`
+  - `callback`
+  - `message_flow`
+- unresolved targets
+- cache hit/miss metadata
+- repo CALLS diagnostics for operator context
+
+**Why this exists:**
+- It replaces mandatory repo-wide behavior tracing during normal indexing
+- It lets operators and MCP clients pay for behavioral exploration only when they need it
 
 ---
 
@@ -518,6 +585,52 @@ Formatted Markdown string with file structure.
 
 ### 📦 Classes (2)
 - `UserService`
+
+---
+
+### Tool: `trace_execution_path`
+
+Trace one function's likely execution neighborhood on demand.
+
+**Signature:**
+```python
+def trace_execution_path(
+    start_symbol: str,
+    max_depth: int = 2,
+    force_refresh: bool = False,
+    repo_id: str | None = None,
+) -> str
+```
+
+**Parameters:**
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `start_symbol` | string | Yes | - | Function signature or symbol name to trace |
+| `max_depth` | integer | No | 2 | Recursive direct-call expansion depth |
+| `force_refresh` | boolean | No | False | Ignore valid cached trace results |
+| `repo_id` | string | No | None | Optional explicit repo target |
+
+**Behavior:**
+- resolves the root symbol deterministically
+- traces one function at a time instead of building a whole-repo call graph
+- caches trace results separately from trusted structural graph edges
+- returns ambiguity candidates instead of guessing when symbol resolution is unsafe
+
+**Edge/result categories:**
+- `direct_call`
+- `callback`
+- `message_flow`
+- unresolved targets
+
+**Use cases:**
+- understand what one entry point likely invokes
+- inspect callback and message-driven behavior around one handler
+- explore a behavioral neighborhood only when an agent actually needs it
+
+**Error cases:**
+- ambiguous symbol: returns candidate functions instead of guessing
+- missing symbol: reports not found
+- trace backend failure: returns formatted trace failure message
 - `UserProfile`
 
 ### ⚡ Functions (5)

@@ -6,3 +6,4 @@ tree-sitter-javascript
 watchdog
 python-dotenv
 mcp
+basedpyright>=1.39.0

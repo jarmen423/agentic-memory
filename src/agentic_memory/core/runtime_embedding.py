@@ -20,6 +20,10 @@ class EmbeddingRuntimeConfig:
     model: str
     dimensions: int
     base_url: str | None = None
+    use_vertexai: bool = False
+    project: str | None = None
+    location: str | None = None
+    api_version: str | None = None
 
 
 _PROVIDER_DEFAULTS: dict[str, dict[str, object]] = {
@@ -58,6 +62,19 @@ def _env_override(module_name: str, suffix: str) -> str | None:
     return os.getenv(f"{module_prefix}_EMBEDDING_{suffix}") or os.getenv(
         f"EMBEDDING_{suffix}"
     )
+
+
+def _env_flag_override(module_name: str, suffix: str) -> bool | None:
+    """Parse module/global boolean env overrides such as USE_VERTEXAI=true."""
+    raw = _env_override(module_name, suffix)
+    if raw is None:
+        return None
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return None
 
 
 def _provider_api_key(provider: str, config: Config) -> str | None:
@@ -128,11 +145,55 @@ def resolve_embedding_runtime(
         or cfg.get_embedding_provider_config(resolved_provider).get("base_url")
         or provider_defaults["base_url"]
     )
+    provider_cfg = cfg.get_embedding_provider_config(resolved_provider)
+    vertex_override = _env_flag_override(module_name, "USE_VERTEXAI")
+    resolved_use_vertexai = bool(
+        vertex_override
+        if vertex_override is not None
+        else (
+            provider_cfg.get("use_vertexai")
+            if resolved_provider == "gemini"
+            else False
+        )
+    )
+    if resolved_provider == "gemini" and os.getenv("GOOGLE_GENAI_USE_VERTEXAI"):
+        resolved_use_vertexai = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
+    resolved_project = None
+    resolved_location = None
+    resolved_api_version = None
+    if resolved_provider == "gemini" and resolved_use_vertexai:
+        resolved_project = (
+            _env_override(module_name, "PROJECT")
+            or os.getenv("GOOGLE_CLOUD_PROJECT")
+            or provider_cfg.get("project")
+        )
+        resolved_location = (
+            _env_override(module_name, "LOCATION")
+            or os.getenv("GOOGLE_CLOUD_LOCATION")
+            or provider_cfg.get("location")
+            or "global"
+        )
+        resolved_api_version = (
+            _env_override(module_name, "API_VERSION")
+            or provider_cfg.get("api_version")
+            or "v1"
+        )
     resolved_api_key = (
         api_key
         or _env_override(module_name, "API_KEY")
         or _provider_api_key(resolved_provider, cfg)
     )
+    if resolved_provider == "gemini" and resolved_use_vertexai:
+        # Vertex AI and direct Gemini Developer API auth are mutually exclusive
+        # in the Google Gen AI client. In Vertex mode we rely on ADC or other
+        # Google-auth credentials, so any Gemini API key must be ignored.
+        resolved_api_key = None
 
     return EmbeddingRuntimeConfig(
         module_name=module_name,
@@ -141,6 +202,10 @@ def resolve_embedding_runtime(
         model=str(resolved_model),
         dimensions=int(resolved_dimensions),
         base_url=str(resolved_base_url) if resolved_base_url else None,
+        use_vertexai=resolved_use_vertexai,
+        project=str(resolved_project) if resolved_project else None,
+        location=str(resolved_location) if resolved_location else None,
+        api_version=str(resolved_api_version) if resolved_api_version else None,
     )
 
 
@@ -166,7 +231,7 @@ def build_embedding_service(
         base_url=base_url,
         output_dimensions=output_dimensions,
     )
-    if not runtime.api_key:
+    if not runtime.api_key and not (runtime.provider == "gemini" and runtime.use_vertexai):
         raise ValueError(
             f"No API key resolved for embedding provider '{runtime.provider}' "
             f"for module '{module_name}'."
@@ -177,4 +242,8 @@ def build_embedding_service(
         model=runtime.model,
         base_url=runtime.base_url,
         output_dimensions=runtime.dimensions,
+        vertexai=runtime.use_vertexai,
+        project=runtime.project,
+        location=runtime.location,
+        api_version=runtime.api_version,
     )

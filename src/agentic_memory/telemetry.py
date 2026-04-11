@@ -63,15 +63,15 @@ def resolve_telemetry_db_path(repo_root: Optional[Path] = None) -> Path:
 
     Priority:
     1) CODEMEMORY_TELEMETRY_DB
-    2) <repo_root>/.codememory/telemetry.sqlite3
-    3) <cwd>/.codememory/telemetry.sqlite3
+    2) <repo_root>/.agentic-memory/telemetry.sqlite3
+    3) <cwd>/.agentic-memory/telemetry.sqlite3
     """
     env_path = os.getenv("CODEMEMORY_TELEMETRY_DB")
     if env_path:
         return Path(env_path).expanduser().resolve()
 
     base = repo_root.resolve() if repo_root else Path.cwd().resolve()
-    return base / ".codememory" / "telemetry.sqlite3"
+    return base / ".agentic-memory" / "telemetry.sqlite3"
 
 
 class TelemetryStore:

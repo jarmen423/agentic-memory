@@ -272,7 +272,7 @@ function printSetupResult(
 }
 
 type ProjectCommandOptions = {
-  sessionId: string;
+  sessionId?: string;
   workspace?: string;
   workspaceId?: string;
   deviceId?: string;
@@ -307,6 +307,25 @@ function printProjectPayload(payload: Record<string, unknown>, json = false): vo
   output.write(`${JSON.stringify(payload, null, 2)}\n`);
 }
 
+function extractResolvedSessionId(payload: unknown): string | null {
+  const record = asRecord(payload);
+  const identity = asRecord(record.identity);
+  return asString(identity.session_id) ?? null;
+}
+
+function buildProjectRequestIdentity(config: {
+  workspaceId: string;
+  deviceId: string;
+  agentId: string;
+}, options: ProjectCommandOptions | ProjectStopOptions): Record<string, unknown> {
+  return {
+    workspace_id: config.workspaceId,
+    device_id: config.deviceId,
+    agent_id: config.agentId,
+    ...(options.sessionId?.trim() ? { session_id: options.sessionId.trim() } : {}),
+  };
+}
+
 /**
  * Activate a project for one OpenClaw session.
  *
@@ -336,10 +355,7 @@ async function activateProjectForSession(
     ctx.logger,
   );
   const activation = await client.post("/openclaw/project/activate", {
-    workspace_id: config.workspaceId,
-    device_id: config.deviceId,
-    agent_id: config.agentId,
-    session_id: options.sessionId,
+    ...buildProjectRequestIdentity(config, options),
     project_id: projectId,
     title: projectId,
     metadata: { plugin: PLUGIN_ID, action },
@@ -359,7 +375,7 @@ async function activateProjectForSession(
       ok: true,
       action,
       projectId,
-      sessionId: options.sessionId,
+      sessionId: options.sessionId ?? extractResolvedSessionId(activation),
       workspaceId: config.workspaceId,
       agentId: config.agentId,
       activation,
@@ -413,7 +429,7 @@ export function registerAgenticMemoryCli(ctx: AgenticMemoryCliContext): void {
   project
     .command("init <projectId>")
     .description("Create or activate a project for the current OpenClaw session")
-    .requiredOption("--session-id <id>", "Session identifier to scope the active project")
+    .option("--session-id <id>", "Optional session override. Usually inferred from the active OpenClaw session.")
     .option("--workspace <id>", "Optional workspace override")
     .option("--workspace-id <id>", "Legacy alias for --workspace")
     .option("--device-id <id>", "Device identifier")
@@ -427,7 +443,7 @@ export function registerAgenticMemoryCli(ctx: AgenticMemoryCliContext): void {
   project
     .command("use <projectId>")
     .description("Switch the current OpenClaw session into an existing project")
-    .requiredOption("--session-id <id>", "Session identifier to scope the active project")
+    .option("--session-id <id>", "Optional session override. Usually inferred from the active OpenClaw session.")
     .option("--workspace <id>", "Optional workspace override")
     .option("--workspace-id <id>", "Legacy alias for --workspace")
     .option("--device-id <id>", "Device identifier")
@@ -441,7 +457,7 @@ export function registerAgenticMemoryCli(ctx: AgenticMemoryCliContext): void {
   project
     .command("start <projectId>")
     .description("Legacy alias for project init")
-    .requiredOption("--session-id <id>", "Session identifier to scope the active project")
+    .option("--session-id <id>", "Optional session override. Usually inferred from the active OpenClaw session.")
     .option("--workspace <id>", "Optional workspace override")
     .option("--workspace-id <id>", "Legacy alias for --workspace")
     .option("--device-id <id>", "Device identifier")
@@ -455,7 +471,7 @@ export function registerAgenticMemoryCli(ctx: AgenticMemoryCliContext): void {
   project
     .command("stop")
     .description("Deactivate the current project for one OpenClaw session")
-    .requiredOption("--session-id <id>", "Session identifier to clear")
+    .option("--session-id <id>", "Optional session override. Usually inferred from the active OpenClaw session.")
     .option("--workspace <id>", "Optional workspace override")
     .option("--workspace-id <id>", "Legacy alias for --workspace")
     .option("--device-id <id>", "Device identifier")
@@ -473,17 +489,14 @@ export function registerAgenticMemoryCli(ctx: AgenticMemoryCliContext): void {
         ctx.logger,
       );
       const response = await client.post("/openclaw/project/deactivate", {
-        workspace_id: config.workspaceId,
-        device_id: config.deviceId,
-        agent_id: config.agentId,
-        session_id: options.sessionId,
+        ...buildProjectRequestIdentity(config, options),
         metadata: { plugin: PLUGIN_ID },
       });
       printProjectPayload(
         {
           ok: true,
           action: "project_stop",
-          sessionId: options.sessionId,
+          sessionId: options.sessionId ?? extractResolvedSessionId(response),
           response,
         },
         options.json,
@@ -493,7 +506,7 @@ export function registerAgenticMemoryCli(ctx: AgenticMemoryCliContext): void {
   project
     .command("status")
     .description("Show the active project for one OpenClaw session")
-    .requiredOption("--session-id <id>", "Session identifier to inspect")
+    .option("--session-id <id>", "Optional session override. Usually inferred from the active OpenClaw session.")
     .option("--workspace <id>", "Optional workspace override")
     .option("--workspace-id <id>", "Legacy alias for --workspace")
     .option("--device-id <id>", "Device identifier")
@@ -511,17 +524,14 @@ export function registerAgenticMemoryCli(ctx: AgenticMemoryCliContext): void {
         ctx.logger,
       );
       const response = await client.post("/openclaw/project/status", {
-        workspace_id: config.workspaceId,
-        device_id: config.deviceId,
-        agent_id: config.agentId,
-        session_id: options.sessionId,
+        ...buildProjectRequestIdentity(config, options),
         metadata: { plugin: PLUGIN_ID },
       });
       printProjectPayload(
         {
           ok: true,
           action: "project_status",
-          sessionId: options.sessionId,
+          sessionId: options.sessionId ?? extractResolvedSessionId(response),
           response,
         },
         options.json,

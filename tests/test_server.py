@@ -103,6 +103,77 @@ class TestToolkit:
         )
 
 
+class TestTraceExecutionTool:
+    """Test the MCP JIT trace tool."""
+
+    def test_trace_execution_path_success(self):
+        """Trace tool should format a resolved JIT trace result."""
+        mock_graph = Mock()
+        mock_service = Mock()
+        mock_service.trace_execution_path.return_value = {
+            "status": "resolved",
+            "root": {"signature": "src/a.py:foo"},
+            "max_depth": 2,
+            "cache_hits": 1,
+            "cache_misses": 0,
+            "traces": [
+                {
+                    "depth": 1,
+                    "root_signature": "src/a.py:foo",
+                    "cache_hit": True,
+                    "edges": [
+                        {
+                            "edge_type": "direct_call",
+                            "callee_signature": "src/b.py:bar",
+                            "confidence": 0.95,
+                            "evidence": "bar()",
+                        }
+                    ],
+                    "unresolved": [],
+                }
+            ],
+        }
+
+        with patch("agentic_memory.server.app.graph", mock_graph):
+            with patch("agentic_memory.server.app.TraceExecutionService", return_value=mock_service):
+                from agentic_memory.server.app import trace_execution_path
+
+                result = trace_execution_path("src/a.py:foo", max_depth=2)
+
+                assert "Trace Execution" in result
+                assert "src/b.py:bar" in result
+                mock_service.trace_execution_path.assert_called_once_with(
+                    start_symbol="src/a.py:foo",
+                    repo_id=None,
+                    max_depth=2,
+                    force_refresh=False,
+                )
+
+    def test_trace_execution_path_ambiguity(self):
+        """Trace tool should surface ambiguous symbol candidates instead of guessing."""
+        mock_graph = Mock()
+        mock_service = Mock()
+        mock_service.trace_execution_path.return_value = {
+            "status": "ambiguous",
+            "candidates": [
+                {
+                    "signature": "src/a.py:run",
+                    "path": "src/a.py",
+                    "qualified_name": "run",
+                }
+            ],
+        }
+
+        with patch("agentic_memory.server.app.graph", mock_graph):
+            with patch("agentic_memory.server.app.TraceExecutionService", return_value=mock_service):
+                from agentic_memory.server.app import trace_execution_path
+
+                result = trace_execution_path("run")
+
+                assert "ambiguous" in result.lower()
+                assert "src/a.py:run" in result
+
+
 class TestMCPServerTools:
     """Test MCP server tool decorators and setup."""
 

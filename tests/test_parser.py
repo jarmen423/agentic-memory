@@ -45,6 +45,8 @@ class MyClass:
     assert set(functions) == {"my_func", "MyClass.method"}
     assert functions["my_func"]["parent_class"] == ""
     assert functions["MyClass.method"]["parent_class"] == "MyClass"
+    assert functions["my_func"]["name_line"] == 2
+    assert functions["my_func"]["name_column"] == 5
 
 
 def test_extract_python_imports_preserves_relative_modules(parser: CodeParser) -> None:
@@ -116,6 +118,8 @@ class MyClass {
     assert "MyClass.constructor" in functions
     assert "MyClass.method" in functions
     assert functions["MyClass.method"]["calls"] == ["helper"]
+    assert functions["MyClass.method"]["name_line"] == 4
+    assert functions["MyClass.method"]["name_column"] == 3
 
 
 def test_extract_js_function_like_assignments(parser: CodeParser) -> None:
@@ -152,9 +156,67 @@ await import("./lazy");
     assert result["imports"] == ["react", "./helpers", "fs", "./lazy"]
 
 
+def test_extract_typed_typescript_arrow_functions(parser: CodeParser) -> None:
+    """Typed TS arrow functions should still become Function rows.
+
+    This protects the Phase 11 semantic CALLS path. The plain JavaScript
+    grammar can misread TypeScript return types and generic parameters as JSX,
+    so the parser now has a TS-specific rescue pass for common
+    `const name = (): Type => {}` shapes.
+    """
+    code = """
+const pushBounded = <T>(arr: T[], entry: T, limit: number) => {
+  arr.push(entry);
+}
+
+export const isPerfDiagnosticsEnabled = (): boolean => {
+  return readPerfQueryFlag();
+}
+"""
+    result = parser.parse_file(code, ".ts")
+
+    qualified_names = [row["qualified_name"] for row in result["functions"]]
+    assert "pushBounded" in qualified_names
+    assert "isPerfDiagnosticsEnabled" in qualified_names
+
+    push_bounded = next(row for row in result["functions"] if row["qualified_name"] == "pushBounded")
+    is_enabled = next(
+        row for row in result["functions"] if row["qualified_name"] == "isPerfDiagnosticsEnabled"
+    )
+    assert push_bounded["name_line"] == 2
+    assert is_enabled["name"] == "isPerfDiagnosticsEnabled"
+
+
 def test_unsupported_extension_returns_diagnostic(parser: CodeParser) -> None:
     """Unsupported extensions should degrade cleanly instead of throwing."""
     result = parser.parse_file("hello", ".go")
     assert result["classes"] == []
     assert result["functions"] == []
     assert result["diagnostics"][0]["kind"] == "unsupported_extension"
+
+
+def test_extract_python_functions_after_unicode_prefix(parser: CodeParser) -> None:
+    """Function identity should survive Unicode characters earlier in the file.
+
+    Phase 11's Python semantic analyzer depends on parser-qualified names being
+    exact. Tree-sitter reports byte offsets, so slicing the Python source string
+    directly can corrupt later symbol names when a file contains emoji or other
+    multi-byte characters before the function definitions.
+    """
+    code = '''
+"""
+CLI banner with emoji: 🚀
+"""
+
+def _command_example(*parts: str) -> str:
+    return " ".join(parts)
+
+def print_banner() -> None:
+    return None
+'''
+
+    result = parser.parse_file(code, ".py")
+    qualified_names = [row["qualified_name"] for row in result["functions"]]
+
+    assert qualified_names[:2] == ["_command_example", "print_banner"]
+    assert result["functions"][0]["name"] == "_command_example"

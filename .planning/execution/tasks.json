@@ -1,0 +1,228 @@
+{
+  "active_wave_id": "w11-calls",
+  "phase": "11-code-graph-foundation-and-code-ppr",
+  "tasks": [
+    {
+      "id": "W11-CALLS-00",
+      "title": "Lock execution contract for semantic CALLS generalization",
+      "status": "completed",
+      "owner": "orchestrator",
+      "depends_on": [],
+      "write_scope": [
+        ".planning/phases/11-code-graph-foundation-and-code-ppr/11-CONTEXT.md",
+        ".planning/phases/11-code-graph-foundation-and-code-ppr/11-UAT.md",
+        ".planning/phases/11-code-graph-foundation-and-code-ppr/11-TASKS.md",
+        ".planning/phases/11-code-graph-foundation-and-code-ppr/11-02-PLAN.md",
+        ".planning/execution/README.md",
+        ".planning/execution/ROADMAP.md",
+        ".planning/execution/tasks.json"
+      ],
+      "verify": [],
+      "handoff_path": ".planning/execution/handoffs/w11-calls/W11-CALLS-00.md"
+    },
+    {
+      "id": "W11-CALLS-01",
+      "title": "Add Python semantic call analyzer with repo-local fixtures",
+      "status": "completed",
+      "owner": "worker-python",
+      "depends_on": [
+        "W11-CALLS-00"
+      ],
+      "write_scope": [
+        "src/agentic_memory/ingestion/python_call_analyzer.py",
+        "tests/test_python_call_analyzer.py",
+        "pyproject.toml"
+      ],
+      "do_not_touch": [
+        "src/agentic_memory/ingestion/graph.py",
+        "src/agentic_memory/cli.py"
+      ],
+      "verify": [
+        "python -m pytest tests/test_python_call_analyzer.py -q"
+      ],
+      "handoff_path": ".planning/execution/handoffs/w11-calls/W11-CALLS-01.md"
+    },
+    {
+      "id": "W11-CALLS-02",
+      "title": "Harden JS/TS analyzer identity and diagnostics",
+      "status": "completed",
+      "owner": "worker-typescript",
+      "depends_on": [
+        "W11-CALLS-00"
+      ],
+      "write_scope": [
+        "scripts/query_typescript_calls.js",
+        "src/agentic_memory/ingestion/typescript_call_analyzer.py",
+        "tests/test_typescript_call_analyzer.py"
+      ],
+      "do_not_touch": [
+        "src/agentic_memory/ingestion/graph.py",
+        "src/agentic_memory/cli.py",
+        "pyproject.toml"
+      ],
+      "verify": [
+        "python -m pytest tests/test_typescript_call_analyzer.py -q"
+      ],
+      "handoff_path": ".planning/execution/handoffs/w11-calls/W11-CALLS-02.md"
+    },
+    {
+      "id": "W11-CALLS-03",
+      "title": "Integrate semantic analyzers into Pass 4 and CLI diagnostics",
+      "status": "completed",
+      "owner": "orchestrator",
+      "depends_on": [
+        "W11-CALLS-01",
+        "W11-CALLS-02"
+      ],
+      "write_scope": [
+        "src/agentic_memory/ingestion/graph.py",
+        "src/agentic_memory/cli.py",
+        "tests/test_graph.py",
+        "tests/test_cli.py"
+      ],
+      "verify": [
+        "python -m pytest tests/test_graph.py tests/test_cli.py -q"
+      ],
+      "handoff_path": ".planning/execution/handoffs/w11-calls/W11-CALLS-03.md"
+    },
+    {
+      "id": "W11-CALLS-04",
+      "title": "Fix parser byte-offset identity drift and align packaging metadata",
+      "status": "completed",
+      "owner": "orchestrator",
+      "depends_on": [
+        "W11-CALLS-03"
+      ],
+      "write_scope": [
+        "src/agentic_memory/ingestion/parser.py",
+        "tests/test_parser.py",
+        "pyproject.toml",
+        "requirements.txt"
+      ],
+      "verify": [
+        "python -m pytest tests/test_parser.py tests/test_python_call_analyzer.py tests/test_graph.py tests/test_cli.py -q",
+        "python -m agentic_memory.cli debug-py-calls src\\agentic_memory\\cli.py --repo D:\\code\\agentic-memory --json"
+      ],
+      "handoff_path": ".planning/execution/handoffs/w11-calls/W11-CALLS-04.md"
+    },
+    {
+      "id": "W11-CALLS-05",
+      "title": "Classify external and non-function Python targets cleanly",
+      "status": "completed",
+      "owner": "orchestrator",
+      "depends_on": [
+        "W11-CALLS-04"
+      ],
+      "write_scope": [
+        "src/agentic_memory/ingestion/python_call_analyzer.py",
+        "tests/test_python_call_analyzer.py"
+      ],
+      "verify": [
+        "python -m pytest tests/test_python_call_analyzer.py -q",
+        "python -m agentic_memory.cli debug-py-calls src\\agentic_memory\\cli.py --repo D:\\code\\agentic-memory --json"
+      ],
+      "handoff_path": ".planning/execution/handoffs/w11-calls/W11-CALLS-05.md"
+    },
+    {
+      "id": "W11-CALLS-06",
+      "title": "Persist analyzer batch failures into call-status diagnostics",
+      "status": "completed",
+      "owner": "orchestrator",
+      "depends_on": [
+        "W11-CALLS-05"
+      ],
+      "write_scope": [
+        "src/agentic_memory/ingestion/graph.py",
+        "src/agentic_memory/cli.py",
+        "tests/test_graph.py",
+        "tests/test_cli.py"
+      ],
+      "verify": [
+        "python -m pytest tests/test_graph.py -k \"call_diagnostics or pass_4_records_typescript_analyzer_batch_failures\" -q",
+        "python -m pytest tests/test_cli.py -k \"call_status_json_success\" -q"
+      ],
+      "handoff_path": ".planning/execution/handoffs/w11-calls/W11-CALLS-06.md"
+    },
+    {
+      "id": "W11-CALLS-07",
+      "title": "Scope full index rebuilds to changed files for Pass 2 and Pass 3",
+      "status": "completed",
+      "owner": "orchestrator",
+      "depends_on": [
+        "W11-CALLS-06"
+      ],
+      "write_scope": [
+        "src/agentic_memory/ingestion/graph.py",
+        "tests/test_graph.py"
+      ],
+      "verify": [
+        "python -m pytest tests/test_graph.py -k \"run_pipeline_scopes_pass_2_and_pass_3_to_changed_files or reindex_file_scopes_entity_and_import_passes_to_one_file\" -q"
+      ],
+      "handoff_path": ".planning/execution/handoffs/w11-calls/W11-CALLS-07.md"
+    },
+    {
+      "id": "W11-CALLS-08",
+      "title": "Batch TypeScript analyzer work and preserve partial results",
+      "status": "completed",
+      "owner": "orchestrator",
+      "depends_on": [
+        "W11-CALLS-07"
+      ],
+      "write_scope": [
+        "src/agentic_memory/ingestion/typescript_call_analyzer.py",
+        "src/agentic_memory/ingestion/graph.py",
+        "tests/test_typescript_call_analyzer.py",
+        "tests/test_graph.py"
+      ],
+      "verify": [
+        "python -m pytest tests/test_typescript_call_analyzer.py -q",
+        "python -m pytest tests/test_graph.py -k \"pass_4_records_typescript_analyzer_batch_failures or pass_4_records_partial_typescript_batch_failures or call_diagnostics\" -q"
+      ],
+      "handoff_path": ".planning/execution/handoffs/w11-calls/W11-CALLS-08.md"
+    },
+    {
+      "id": "W11-CALLS-09",
+      "title": "Batch Python analyzer work and preserve partial results",
+      "status": "completed",
+      "owner": "orchestrator",
+      "depends_on": [
+        "W11-CALLS-08"
+      ],
+      "write_scope": [
+        "src/agentic_memory/ingestion/python_call_analyzer.py",
+        "src/agentic_memory/ingestion/graph.py",
+        "tests/test_python_call_analyzer.py",
+        "tests/test_graph.py"
+      ],
+      "verify": [
+        "python -m pytest tests/test_python_call_analyzer.py -q",
+        "python -m pytest tests/test_graph.py -k \"pass_4_records_partial_python_batch_failures or pass_4_records_partial_typescript_batch_failures or call_diagnostics\" -q"
+      ],
+      "handoff_path": ".planning/execution/handoffs/w11-calls/W11-CALLS-09.md"
+    },
+    {
+      "id": "W11-CALLS-10",
+      "title": "Retry timed-out TypeScript batches in smaller groups",
+      "status": "completed",
+      "owner": "orchestrator",
+      "depends_on": [
+        "W11-CALLS-09"
+      ],
+      "write_scope": [
+        "src/agentic_memory/ingestion/typescript_call_analyzer.py",
+        "tests/test_typescript_call_analyzer.py"
+      ],
+      "verify": [
+        "python -m pytest tests/test_typescript_call_analyzer.py -q",
+        "python -m pytest tests/test_graph.py -k \"pass_4_records_partial_typescript_batch_failures or call_diagnostics\" -q"
+      ],
+      "handoff_path": ".planning/execution/handoffs/w11-calls/W11-CALLS-10.md"
+    }
+  ],
+  "merge_gates": [
+    "python -m pytest tests/test_python_call_analyzer.py -q",
+    "python -m pytest tests/test_typescript_call_analyzer.py -q",
+    "python -m pytest tests/test_graph.py tests/test_cli.py -q",
+    "python -m pytest tests/test_parser.py tests/test_python_call_analyzer.py tests/test_graph.py tests/test_cli.py -q"
+  ]
+}

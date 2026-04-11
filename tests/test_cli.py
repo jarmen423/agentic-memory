@@ -11,6 +11,16 @@ from unittest.mock import Mock
 import pytest
 
 from agentic_memory import cli
+from agentic_memory.ingestion.python_call_analyzer import (
+    PythonFileCallAnalysis,
+    PythonFunctionCallAnalysis,
+    PythonOutgoingCall,
+)
+from agentic_memory.ingestion.typescript_call_analyzer import (
+    TypeScriptFileCallAnalysis,
+    TypeScriptFunctionCallAnalysis,
+    TypeScriptOutgoingCall,
+)
 
 pytestmark = [pytest.mark.unit]
 
@@ -43,6 +53,8 @@ def _parse_json_stdout(capsys):
 def _mock_config(
     *,
     exists=True,
+    has_primary_config=None,
+    has_legacy_config=None,
     openai_key="test-openai-key",
     indexing=None,
     git_config=None,
@@ -51,7 +63,14 @@ def _mock_config(
     """Create a mock Config object for CLI tests."""
     config = Mock()
     config.exists.return_value = exists
-    config.config_file = Path("/tmp/repo/.codememory/config.json")
+    config.has_primary_config.return_value = (
+        exists if has_primary_config is None else has_primary_config
+    )
+    config.has_legacy_config.return_value = (
+        False if has_legacy_config is None else has_legacy_config
+    )
+    config.config_file = Path("/tmp/repo/.agentic-memory/config.json")
+    config.legacy_config_file = Path("/tmp/repo/.codememory/config.json")
     config.get_neo4j_config.return_value = {
         "uri": "bolt://localhost:7687",
         "user": "neo4j",
@@ -100,6 +119,8 @@ def _mock_config(
     config.get_embedding_provider_config.side_effect = (
         lambda provider_name: provider_keys.get(provider_name.strip().lower(), {})
     )
+    config.ensure_graphignore = Mock()
+    config.save = Mock()
     return config
 
 
@@ -192,11 +213,35 @@ def test_index_json_success_envelope(monkeypatch, capsys, tmp_path):
     }
 
 
-def test_index_loads_gemini_key_from_repo_dotenv(monkeypatch, tmp_path):
-    """Index loads GEMINI_API_KEY from <repo>/.env before building the graph."""
+def test_build_calls_json_success(monkeypatch, capsys, tmp_path):
+    """build-calls invokes the explicit experimental CALLS path."""
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    (repo_root / ".env").write_text("GEMINI_API_KEY=from-index-dotenv\n", encoding="utf-8")
+
+    mock_cfg = _mock_config(exists=True)
+    mock_builder = Mock()
+
+    monkeypatch.setattr(cli, "find_repo_root", Mock(return_value=repo_root))
+    monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
+    monkeypatch.setattr(cli, "_build_code_graph_builder", Mock(return_value=mock_builder))
+
+    cli.cmd_build_calls(argparse.Namespace(json=True))
+
+    payload = _parse_json_stdout(capsys)
+    assert payload["ok"] is True
+    assert payload["data"]["status"] == "completed"
+    assert payload["data"]["mode"] == "experimental_call_graph"
+    mock_builder.build_calls.assert_called_once_with(repo_root)
+    mock_builder.close.assert_called_once()
+
+
+def test_index_loads_gemini_key_from_agentic_memory_dotenv(monkeypatch, tmp_path):
+    """Index loads GEMINI_API_KEY from <repo>/.agentic-memory/.env before building the graph."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    config_dir = repo_root / ".agentic-memory"
+    config_dir.mkdir()
+    (config_dir / ".env").write_text("GEMINI_API_KEY=from-index-dotenv\n", encoding="utf-8")
 
     mock_cfg = Mock()
     mock_cfg.exists.return_value = True
@@ -255,6 +300,9 @@ def test_search_json_success_envelope(monkeypatch, capsys, tmp_path):
     """Search command emits deterministic JSON envelope on success."""
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
+    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+    monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
 
     mock_cfg = _mock_config(exists=True, openai_key="sk-test")
     mock_builder = Mock()
@@ -276,11 +324,16 @@ def test_search_json_success_envelope(monkeypatch, capsys, tmp_path):
     assert payload["metrics"] == {"result_count": 1}
 
 
-def test_search_loads_gemini_key_from_repo_dotenv(monkeypatch, tmp_path):
-    """Search loads GEMINI_API_KEY from <repo>/.env before validating config."""
+def test_search_loads_gemini_key_from_agentic_memory_dotenv(monkeypatch, tmp_path):
+    """Search loads GEMINI_API_KEY from <repo>/.agentic-memory/.env before validating config."""
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    (repo_root / ".env").write_text("GEMINI_API_KEY=from-search-dotenv\n", encoding="utf-8")
+    config_dir = repo_root / ".agentic-memory"
+    config_dir.mkdir()
+    (config_dir / ".env").write_text("GEMINI_API_KEY=from-search-dotenv\n", encoding="utf-8")
+    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+    monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
 
     mock_cfg = Mock()
     mock_cfg.exists.return_value = True
@@ -331,6 +384,9 @@ def test_search_json_missing_code_provider_key_exits_nonzero(monkeypatch, capsys
     """Search command exits non-zero when the configured code provider key is unavailable."""
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
+    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+    monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
 
     mock_cfg = _mock_config(exists=True, openai_key=None)
 
@@ -349,6 +405,508 @@ def test_search_json_missing_code_provider_key_exits_nonzero(monkeypatch, capsys
     assert payload["data"] is None
     assert payload["metrics"] == {}
     assert "code embedding api key" in payload["error"].lower()
+
+
+def test_debug_ts_calls_json_success(monkeypatch, capsys, tmp_path):
+    """debug-ts-calls emits analyzer output without touching embeddings or Neo4j."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    target_file = repo_root / "src" / "app.ts"
+    target_file.parent.mkdir()
+    target_file.write_text(
+        "export function app() { helper(); }\nfunction helper() { return 1; }\n",
+        encoding="utf-8",
+    )
+
+    parser_result = {
+        "functions": [
+            {
+                "name": "app",
+                "qualified_name": "app",
+                "parent_class": "",
+                "name_line": 1,
+                "name_column": 17,
+            },
+            {
+                "name": "helper",
+                "qualified_name": "helper",
+                "parent_class": "",
+                "name_line": 2,
+                "name_column": 10,
+            },
+        ]
+    }
+
+    parser = Mock()
+    parser.parse_file.return_value = parser_result
+    monkeypatch.setattr(cli, "CodeParser", Mock(return_value=parser))
+
+    analyzer = Mock()
+    analyzer.is_available.return_value = True
+    analyzer.analyze_files.return_value = {
+        "src/app.ts": TypeScriptFileCallAnalysis(
+            rel_path="src/app.ts",
+            functions={
+                "app": TypeScriptFunctionCallAnalysis(
+                    qualified_name="app",
+                    name="app",
+                    outgoing_calls=(
+                        TypeScriptOutgoingCall(
+                            rel_path="src/app.ts",
+                            name="helper",
+                            kind="function",
+                            container_name=None,
+                            qualified_name_guess="helper",
+                        ),
+                    ),
+                )
+            },
+            diagnostics=(),
+        )
+    }
+    monkeypatch.setattr(cli, "TypeScriptCallAnalyzer", Mock(return_value=analyzer))
+
+    cli.cmd_debug_ts_calls(
+        argparse.Namespace(
+            path="src/app.ts",
+            repo=str(repo_root),
+            json=True,
+        )
+    )
+
+    payload = _parse_json_stdout(capsys)
+    assert payload["ok"] is True
+    assert payload["error"] is None
+    assert payload["data"]["path"] == "src/app.ts"
+    assert payload["data"]["function_count"] == 2
+    assert payload["data"]["functions"][0]["qualified_name"] == "app"
+    assert (
+        payload["data"]["functions"][0]["outgoing_calls"][0]["qualified_name_guess"]
+        == "helper"
+    )
+
+
+def test_debug_py_calls_json_success(monkeypatch, capsys, tmp_path):
+    """debug-py-calls emits analyzer output without touching Neo4j."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    target_file = repo_root / "app.py"
+    target_file.write_text(
+        "from helper import run\n\n\ndef app():\n    run()\n",
+        encoding="utf-8",
+    )
+
+    parser_result = {
+        "functions": [
+            {
+                "name": "app",
+                "qualified_name": "app",
+                "parent_class": "",
+                "name_line": 4,
+                "name_column": 5,
+            }
+        ]
+    }
+
+    parser = Mock()
+    parser.parse_file.return_value = parser_result
+    monkeypatch.setattr(cli, "CodeParser", Mock(return_value=parser))
+
+    analyzer = Mock()
+    analyzer.is_available.return_value = True
+    analyzer.analyze_files.return_value = {
+        "app.py": PythonFileCallAnalysis(
+            rel_path="app.py",
+            functions={
+                "app": PythonFunctionCallAnalysis(
+                    qualified_name="app",
+                    name="app",
+                    outgoing_calls=(
+                        PythonOutgoingCall(
+                            rel_path="helper.py",
+                            name="run",
+                            kind="function",
+                            container_name=None,
+                            qualified_name_guess="run",
+                            definition_line=1,
+                            definition_column=5,
+                        ),
+                    ),
+                )
+            },
+            diagnostics=(),
+            drop_reason_counts={},
+        )
+    }
+    monkeypatch.setattr(cli, "PythonCallAnalyzer", Mock(return_value=analyzer))
+
+    cli.cmd_debug_py_calls(
+        argparse.Namespace(
+            path="app.py",
+            repo=str(repo_root),
+            json=True,
+        )
+    )
+
+    payload = _parse_json_stdout(capsys)
+    assert payload["ok"] is True
+    assert payload["error"] is None
+    assert payload["data"]["path"] == "app.py"
+    assert payload["data"]["function_count"] == 1
+    assert payload["data"]["functions"][0]["outgoing_calls"][0]["definition_line"] == 1
+
+
+def test_debug_ts_calls_rejects_unsupported_extension(monkeypatch, capsys, tmp_path):
+    """debug-ts-calls should fail cleanly for non-JS/TS files."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    target_file = repo_root / "src" / "app.py"
+    target_file.parent.mkdir()
+    target_file.write_text("print('hi')\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_debug_ts_calls(
+            argparse.Namespace(
+                path="src/app.py",
+                repo=str(repo_root),
+                json=True,
+            )
+        )
+
+    assert exc.value.code == 1
+    payload = _parse_json_stdout(capsys)
+    assert payload["ok"] is False
+    assert "unsupported file extension" in payload["error"].lower()
+
+
+def test_call_status_json_success(monkeypatch, capsys, tmp_path):
+    """call-status emits CALLS diagnostics without changing graph state."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    mock_cfg = _mock_config(exists=True)
+    mock_builder = Mock()
+    mock_builder.get_call_diagnostics.return_value = {
+        "repo_id": str(repo_root),
+        "high_confidence_threshold": 0.9,
+        "total_functions": 10,
+        "functions_with_calls": 6,
+        "functions_without_calls": 4,
+        "function_coverage_ratio": 0.6,
+        "total_call_edges": 9,
+        "high_confidence_edges": 7,
+        "high_confidence_ratio": 7 / 9,
+        "files_with_functions": 4,
+        "files_with_call_edges": 3,
+        "files_with_analyzer_edges": 2,
+        "files_with_analyzer_attempts": 3,
+        "files_with_drop_reasons": 1,
+        "file_coverage_ratio": 0.75,
+        "sources": [
+            {
+                "source": "typescript_service",
+                "edge_count": 7,
+                "avg_confidence": 0.95,
+            },
+            {
+                "source": "static_parser",
+                "edge_count": 2,
+                "avg_confidence": 0.6,
+            },
+        ],
+        "drop_reasons": [
+            {
+                "reason": "ambiguous_name_match",
+                "source": "typescript_service",
+                "drop_count": 2,
+            }
+        ],
+        "analyzer_issues": [
+            {
+                "source": "typescript_service",
+                "status": "failed",
+                "message": "TypeScript call analyzer timed out after 60s.",
+                "updated_at": "2026-04-10T21:00:00Z",
+            }
+        ],
+    }
+
+    monkeypatch.setattr(cli, "find_repo_root", Mock(return_value=repo_root))
+    monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
+    monkeypatch.setattr(cli, "KnowledgeGraphBuilder", Mock(return_value=mock_builder))
+
+    cli.cmd_call_status(argparse.Namespace(json=True, repo=None))
+
+    payload = _parse_json_stdout(capsys)
+    assert payload["ok"] is True
+    assert payload["error"] is None
+
+
+def test_trace_execution_json_success(monkeypatch, capsys, tmp_path):
+    """trace-execution returns the JIT trace payload inside the standard envelope."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    mock_cfg = _mock_config(exists=True)
+    mock_builder = Mock()
+    mock_builder.get_call_diagnostics.return_value = {
+        "repo_id": str(repo_root),
+        "files_with_analyzer_attempts": 3,
+        "drop_reasons": [
+            {
+                "reason": "ambiguous_name_match",
+                "drop_count": 2,
+            }
+        ],
+        "analyzer_issues": [
+            {
+                "source": "typescript_service",
+                "status": "failed",
+                "message": "TypeScript call analyzer timed out after 60s.",
+                "updated_at": "2026-04-10T21:00:00Z",
+            }
+        ],
+        "total_call_edges": 9,
+        "function_coverage_ratio": 0.6,
+        "high_confidence_ratio": 7 / 9,
+    }
+    mock_service = Mock()
+    mock_service.trace_execution_path.return_value = {
+        "status": "resolved",
+        "root": {"signature": "src/a.py:foo"},
+        "max_depth": 2,
+        "cache_hits": 1,
+        "cache_misses": 0,
+        "traces": [],
+        "total_edges": 3,
+        "total_unresolved": 1,
+    }
+
+    monkeypatch.setattr(cli, "find_repo_root", Mock(return_value=repo_root))
+    monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
+    monkeypatch.setattr(cli, "_build_code_graph_builder", Mock(return_value=mock_builder))
+    monkeypatch.setattr(cli, "TraceExecutionService", Mock(return_value=mock_service))
+
+    cli.cmd_trace_execution(
+        argparse.Namespace(
+            json=True,
+            start_symbol="src/a.py:foo",
+            max_depth=2,
+            force_refresh=False,
+        )
+    )
+
+    payload = _parse_json_stdout(capsys)
+    assert payload["ok"] is True
+    assert payload["data"]["trace"]["status"] == "resolved"
+    assert payload["metrics"]["total_edges"] == 3
+    assert payload["metrics"]["total_unresolved"] == 1
+    assert payload["metrics"]["cache_hits"] == 1
+    assert payload["metrics"]["cache_misses"] == 0
+    mock_service.trace_execution_path.assert_called_once_with(
+        start_symbol="src/a.py:foo",
+        repo_id=str(repo_root),
+        max_depth=2,
+        force_refresh=False,
+    )
+    mock_builder.close.assert_called_once()
+    assert payload["data"]["repository"] == str(repo_root)
+    assert payload["data"]["diagnostics"]["repo_id"] == str(repo_root)
+    assert payload["data"]["diagnostics"]["files_with_analyzer_attempts"] == 3
+    assert payload["data"]["diagnostics"]["drop_reasons"][0]["reason"] == "ambiguous_name_match"
+    assert payload["data"]["diagnostics"]["analyzer_issues"][0]["status"] == "failed"
+    assert payload["metrics"]["total_call_edges"] == 9
+    assert payload["metrics"]["function_coverage_ratio"] == 0.6
+    assert payload["metrics"]["high_confidence_ratio"] == pytest.approx(7 / 9)
+    mock_builder.get_call_diagnostics.assert_called_once_with(repo_id=str(repo_root))
+    mock_builder.close.assert_called_once()
+
+
+def test_init_returns_immediately_for_primary_config(monkeypatch, capsys, tmp_path):
+    """Init should not prompt or rewrite when the new config folder already exists."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    mock_cfg = _mock_config(exists=True, has_primary_config=True, has_legacy_config=False)
+
+    monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
+    monkeypatch.setattr(cli.Path, "cwd", Mock(return_value=repo_root))
+    monkeypatch.setattr("builtins.input", Mock(side_effect=AssertionError("input not expected")))
+
+    cli.cmd_init(argparse.Namespace())
+
+    stdout = capsys.readouterr().out
+    assert "already initialized" in stdout.lower()
+    assert str(mock_cfg.config_file) in stdout
+    mock_cfg.save.assert_not_called()
+
+
+def test_init_uses_legacy_config_when_user_accepts(monkeypatch, capsys, tmp_path):
+    """Init should keep using a legacy config when the operator accepts it."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    mock_cfg = _mock_config(exists=True, has_primary_config=False, has_legacy_config=True)
+
+    monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
+    monkeypatch.setattr(cli.Path, "cwd", Mock(return_value=repo_root))
+    monkeypatch.setattr("builtins.input", Mock(side_effect=["y"]))
+
+    cli.cmd_init(argparse.Namespace())
+
+    stdout = capsys.readouterr().out
+    assert "legacy codememory config" in stdout.lower()
+    assert str(mock_cfg.legacy_config_file) in stdout
+    assert "keeping the existing legacy config" in stdout.lower()
+    mock_cfg.save.assert_not_called()
+    mock_cfg.ensure_graphignore.assert_not_called()
+
+
+def test_init_creates_new_config_when_user_declines_legacy(monkeypatch, capsys, tmp_path):
+    """Init should create a new .agentic-memory config when the legacy one is declined."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    mock_cfg = _mock_config(exists=True, has_primary_config=False, has_legacy_config=True)
+    mock_cfg.get_indexing_config.return_value = {
+        "ignore_dirs": [],
+        "ignore_files": [],
+        "extensions": [".py", ".js", ".ts", ".tsx", ".jsx"],
+    }
+
+    responses = iter(["n", "4", "", "", "", "3", "", "", "n"])
+
+    monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
+    monkeypatch.setattr(cli.Path, "cwd", Mock(return_value=repo_root))
+    monkeypatch.setattr(cli, "print_banner", Mock())
+    monkeypatch.setattr("builtins.input", Mock(side_effect=lambda _prompt="": next(responses)))
+
+    cli.cmd_init(argparse.Namespace())
+
+    stdout = capsys.readouterr().out
+    assert "creating a new .agentic-memory config" in stdout.lower()
+    mock_cfg.save.assert_called_once()
+    mock_cfg.ensure_graphignore.assert_called_once()
+    saved_config = mock_cfg.save.call_args.args[0]
+    assert saved_config["modules"]["code"]["embedding_provider"] == "gemini"
+    assert saved_config["gemini"]["api_key"] == ""
+
+
+def test_init_writes_agentic_memory_env_file_for_env_backed_settings(
+    monkeypatch,
+    capsys,
+    tmp_path,
+):
+    """Init should write .agentic-memory/.env when env-backed options are chosen.
+
+    This protects the CLI UX after we stopped auto-loading a target repo's root
+    .env. If the setup wizard offers an env-backed configuration path, it must
+    write those values to the env file Agentic Memory actually reads.
+    """
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    mock_cfg = _mock_config(exists=False)
+    mock_cfg.config_file = repo_root / ".agentic-memory" / "config.json"
+    mock_cfg.graphignore_file = repo_root / ".agentic-memory" / ".graphignore"
+
+    responses = iter(["4", "", "", "", "1", "2", "", "", "n"])
+
+    monkeypatch.setenv("NEO4J_URI", "bolt://localhost:7667")
+    monkeypatch.setenv("NEO4J_USERNAME", "neo4j")
+    monkeypatch.setenv("NEO4J_PASSWORD", "password")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("GOOGLE_API_KEY", "google-test-key")
+    monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
+    monkeypatch.setattr(cli.Path, "cwd", Mock(return_value=repo_root))
+    monkeypatch.setattr(cli, "print_banner", Mock())
+    monkeypatch.setattr("builtins.input", Mock(side_effect=lambda _prompt="": next(responses)))
+
+    cli.cmd_init(argparse.Namespace())
+
+    env_path = repo_root / ".agentic-memory" / ".env"
+    assert env_path.exists()
+    env_text = env_path.read_text(encoding="utf-8")
+    assert "NEO4J_URI=bolt://localhost:7667" in env_text
+    assert "NEO4J_USERNAME=neo4j" in env_text
+    assert "NEO4J_PASSWORD=password" in env_text
+    assert "GOOGLE_API_KEY=google-test-key" in env_text
+
+    stdout = capsys.readouterr().out
+    assert ".agentic-memory/.env" in stdout
+
+
+def test_init_treats_pasted_gemini_key_as_api_key(monkeypatch, capsys, tmp_path):
+    """Pasting a Gemini key at the option prompt should store it instead of skipping.
+
+    This covers the exact user failure mode where a human sees the provider
+    options, pastes the key immediately, and expects the wizard to do the right
+    thing. Falling into the "skip" branch here is a UX bug.
+    """
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    mock_cfg = _mock_config(exists=False)
+    mock_cfg.config_file = repo_root / ".agentic-memory" / "config.json"
+    mock_cfg.graphignore_file = repo_root / ".agentic-memory" / ".graphignore"
+
+    pasted_key = "gemini-test-key-from-paste"
+    responses = iter(["1", "", "1", pasted_key, "", "n"])
+
+    monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
+    monkeypatch.setattr(cli.Path, "cwd", Mock(return_value=repo_root))
+    monkeypatch.setattr(cli, "print_banner", Mock())
+    monkeypatch.setattr("builtins.input", Mock(side_effect=lambda _prompt="": next(responses)))
+
+    cli.cmd_init(argparse.Namespace())
+
+    saved_config = mock_cfg.save.call_args.args[0]
+    assert saved_config["gemini"]["api_key"] == pasted_key
+    stdout = capsys.readouterr().out
+    assert "detected pasted gemini api key" in stdout.lower()
+
+
+def test_init_env_backed_gemini_prompts_for_key_when_shell_env_missing(
+    monkeypatch,
+    capsys,
+    tmp_path,
+):
+    """Env-backed Gemini setup should ask for a key when the shell does not have one."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    mock_cfg = _mock_config(exists=False)
+    mock_cfg.config_file = repo_root / ".agentic-memory" / "config.json"
+    mock_cfg.graphignore_file = repo_root / ".agentic-memory" / ".graphignore"
+
+    responses = iter(
+        [
+            "4",   # Neo4j env-backed mode
+            "",    # NEO4J_URI default
+            "",    # NEO4J_USERNAME default
+            "",    # NEO4J_PASSWORD default
+            "1",   # Gemini provider
+            "2",   # Gemini env-backed auth
+            "google-key-from-prompt",  # prompted key value
+            "",    # extensions default
+            "",    # write env file yes
+            "n",   # skip initial indexing
+        ]
+    )
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
+    monkeypatch.setattr(cli.Path, "cwd", Mock(return_value=repo_root))
+    monkeypatch.setattr(cli, "print_banner", Mock())
+    monkeypatch.setattr("builtins.input", Mock(side_effect=lambda _prompt="": next(responses)))
+
+    cli.cmd_init(argparse.Namespace())
+
+    env_text = (repo_root / ".agentic-memory" / ".env").read_text(encoding="utf-8")
+    assert "GOOGLE_API_KEY=google-key-from-prompt" in env_text
+    stdout = capsys.readouterr().out
+    assert "will save google_api_key into .agentic-memory/.env" in stdout.lower()
 
 
 def test_deps_json_success_uses_graph_method(monkeypatch, capsys, tmp_path):
@@ -479,11 +1037,13 @@ def test_serve_loads_openai_key_from_explicit_env_file(monkeypatch, tmp_path):
     run_server.assert_called_once_with(port=8000, repo_root=repo_root.resolve())
 
 
-def test_serve_loads_openai_key_from_repo_dotenv(monkeypatch, tmp_path):
-    """Serve defaults to <repo>/.env when --repo is provided and --env-file is omitted."""
+def test_serve_loads_openai_key_from_agentic_memory_dotenv(monkeypatch, tmp_path):
+    """Serve auto-loads <repo>/.agentic-memory/.env when --env-file is omitted."""
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    (repo_root / ".env").write_text("OPENAI_API_KEY=from-repo-dotenv\n", encoding="utf-8")
+    config_dir = repo_root / ".agentic-memory"
+    config_dir.mkdir()
+    (config_dir / ".env").write_text("OPENAI_API_KEY=from-agentic-memory-dotenv\n", encoding="utf-8")
 
     run_server = _patch_server_module(monkeypatch)
     mock_cfg = _mock_config(exists=True)
@@ -498,15 +1058,17 @@ def test_serve_loads_openai_key_from_repo_dotenv(monkeypatch, tmp_path):
         )
     )
 
-    assert os.environ.get("OPENAI_API_KEY") == "from-repo-dotenv"
+    assert os.environ.get("OPENAI_API_KEY") == "from-agentic-memory-dotenv"
     run_server.assert_called_once_with(port=8000, repo_root=repo_root.resolve())
 
 
-def test_watch_loads_gemini_key_from_repo_dotenv(monkeypatch, tmp_path):
-    """Watch defaults to <repo>/.env when GEMINI_API_KEY is not already exported."""
+def test_watch_loads_gemini_key_from_agentic_memory_dotenv(monkeypatch, tmp_path):
+    """Watch auto-loads <repo>/.agentic-memory/.env when GEMINI_API_KEY is absent."""
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    (repo_root / ".env").write_text("GEMINI_API_KEY=from-watch-dotenv\n", encoding="utf-8")
+    config_dir = repo_root / ".agentic-memory"
+    config_dir.mkdir()
+    (config_dir / ".env").write_text("GEMINI_API_KEY=from-watch-dotenv\n", encoding="utf-8")
 
     mock_cfg = Mock()
     mock_cfg.exists.return_value = True
@@ -554,6 +1116,41 @@ def test_watch_loads_gemini_key_from_repo_dotenv(monkeypatch, tmp_path):
     )
 
 
+def test_index_does_not_load_generic_repo_dotenv(monkeypatch, tmp_path):
+    """Index should ignore a target repo's generic .env to avoid provider collisions.
+
+    This protects Agentic Memory from application repos that already use broad
+    env names like EMBEDDING_PROVIDER for their own stack. Those values should
+    not silently override .agentic-memory/config.json during indexing.
+    """
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / ".env").write_text("EMBEDDING_PROVIDER=openai\n", encoding="utf-8")
+
+    mock_cfg = Mock()
+    mock_cfg.exists.return_value = True
+    mock_cfg.get_indexing_config.return_value = {
+        "ignore_dirs": [],
+        "ignore_files": [],
+        "extensions": [".py"],
+    }
+    mock_cfg.get_graphignore_patterns.return_value = []
+
+    builder = Mock()
+    builder.run_pipeline.return_value = {"embedding_calls": 0, "cost_usd": 0.0}
+    builder.close = Mock()
+
+    monkeypatch.setattr(cli, "find_repo_root", Mock(return_value=repo_root))
+    monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
+    monkeypatch.setattr(cli, "_build_code_graph_builder", Mock(return_value=builder))
+    monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
+
+    cli.cmd_index(argparse.Namespace(repo=None, env_file=None, quiet=True, json=False))
+
+    assert os.environ.get("EMBEDDING_PROVIDER") is None
+    cli._build_code_graph_builder.assert_called_once()
+
+
 def test_git_init_json_success_envelope(monkeypatch, capsys, tmp_path):
     """git-init emits standard JSON envelope and enables git config."""
     repo_root = tmp_path / "repo"
@@ -599,11 +1196,13 @@ def test_git_init_json_success_envelope(monkeypatch, capsys, tmp_path):
     mock_ingestor.close.assert_called_once()
 
 
-def test_git_init_loads_repo_dotenv_for_env_backed_neo4j_config(monkeypatch, tmp_path):
-    """git-init loads env-backed Neo4j config from <repo>/.env when --repo is used."""
+def test_git_init_loads_agentic_memory_dotenv_for_env_backed_neo4j_config(monkeypatch, tmp_path):
+    """git-init loads env-backed Neo4j config from <repo>/.agentic-memory/.env."""
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    (repo_root / ".env").write_text("NEO4J_URI=bolt://from-dotenv:7687\n", encoding="utf-8")
+    config_dir = repo_root / ".agentic-memory"
+    config_dir.mkdir()
+    (config_dir / ".env").write_text("NEO4J_URI=bolt://from-dotenv:7687\n", encoding="utf-8")
 
     mock_cfg = Mock()
     mock_cfg.exists.return_value = True
@@ -749,9 +1348,9 @@ def test_product_repo_add_json_tracks_initialized_repo(monkeypatch, capsys, tmp_
     state_path = tmp_path / "product-state.json"
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    codememory_dir = repo_root / ".codememory"
-    codememory_dir.mkdir()
-    (codememory_dir / "config.json").write_text("{}", encoding="utf-8")
+    config_dir = repo_root / ".agentic-memory"
+    config_dir.mkdir()
+    (config_dir / "config.json").write_text("{}", encoding="utf-8")
 
     monkeypatch.setenv("CODEMEMORY_PRODUCT_STATE", str(state_path))
 

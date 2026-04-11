@@ -202,6 +202,29 @@ agentic-memory init
 # Only point to a subdirectory during init
 ```
 
+4. **Remember the new default behavior:** Normal `agentic-memory index` now stops
+   after structural graph construction. If you are waiting for repo-wide
+   `CALLS`, that no longer happens automatically. Use:
+```bash
+agentic-memory build-calls
+```
+   only when you explicitly want the older experimental repo-wide `CALLS` path.
+
+### "I need to know what one function calls"
+
+**Symptom:** You do not want a full repo-wide call graph. You want to inspect
+one function's likely execution neighborhood.
+
+**Solution:**
+```bash
+agentic-memory trace-execution src/app.py:run_checkout --json
+```
+
+**Notes:**
+- prefer an exact `path:qualified_name` signature when possible
+- if the symbol is ambiguous, the command will return candidates instead of guessing
+- use `--force-refresh` if you want to bypass a valid cached trace
+
 ---
 
 ## MCP Server Issues

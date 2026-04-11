@@ -18,6 +18,7 @@ ingestion can decide which relationships are safe to write.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, Iterable, Iterator, List
 
 from tree_sitter import Language, Node, Parser, Tree
@@ -44,6 +45,16 @@ class CodeParser:
     """
 
     SUPPORTED_JS_EXTENSIONS = frozenset({".js", ".jsx", ".ts", ".tsx"})
+    _TS_TYPED_ARROW_DECL_RE = re.compile(
+        r"""
+        (?P<prefix>(?:^|\n)[ \t]*(?:export[ \t]+)?(?:const|let|var)[ \t]+)
+        (?P<name>[A-Za-z_$][\w$]*)
+        [ \t]*=[ \t]*
+        (?P<signature>[\s\S]{0,800}?=>)
+        """,
+        re.VERBOSE,
+    )
+    _CALL_NAME_RE = re.compile(r"\b([A-Za-z_$][\w$]*)\s*\(")
 
     def __init__(self) -> None:
         """Initialize and cache one parser per supported extension."""
@@ -71,7 +82,7 @@ class CodeParser:
         Returns:
             Dict with:
             - `classes`: `[{name, code, start_line}]`
-            - `functions`: `[{name, qualified_name, parent_class, code, start_line, calls}]`
+            - `functions`: `[{name, qualified_name, parent_class, code, start_line, name_line, name_column, calls}]`
             - `imports`: `[module_specifier, ...]`
             - `calls`: flattened call-name list across the file
             - `env_vars`: Python env-var reads / dotenv loads
@@ -157,6 +168,8 @@ class CodeParser:
                         "parent_class": parent_class,
                         "code": self._node_text(node, code),
                         "start_line": node.start_point[0] + 1,
+                        "name_line": self._identifier_line(node),
+                        "name_column": self._identifier_column(node),
                         "calls": self._extract_python_calls(node, code),
                     }
                 )
@@ -225,6 +238,8 @@ class CodeParser:
                             "parent_class": "",
                             "code": self._node_text(node, code),
                             "start_line": node.start_point[0] + 1,
+                            "name_line": self._identifier_line(node),
+                            "name_column": self._identifier_column(node),
                             "calls": self._extract_js_calls(node, code),
                         }
                     )
@@ -244,6 +259,8 @@ class CodeParser:
                         "parent_class": parent_class,
                         "code": self._node_text(node, code),
                         "start_line": node.start_point[0] + 1,
+                        "name_line": self._js_method_name_line(node),
+                        "name_column": self._js_method_name_column(node),
                         "calls": self._extract_js_calls(node, code),
                     }
                 )
@@ -259,6 +276,20 @@ class CodeParser:
             if import_value is not None:
                 imports.append(import_value)
                 continue
+
+        # TypeScript-specific rescue path:
+        #
+        # The repo currently uses the JavaScript tree-sitter grammar for `.ts`
+        # and `.tsx`. That works for many shapes, but typed arrow functions such
+        # as `const fn = (): boolean => {}` or generic helpers like
+        # `const map = <T>(value: T) => {}` are often misparsed as JSX. When that
+        # happens, Pass 2 never creates Function nodes for those exports, and
+        # Pass 4 cannot map analyzer-backed CALLS edges back into Neo4j.
+        #
+        # Until the project switches to a dedicated TypeScript grammar, salvage
+        # the common "typed variable arrow function" shapes with a lightweight
+        # text pass so graph identity remains complete enough for semantic CALLS.
+        functions.extend(self._extract_typescript_typed_arrow_functions(code, functions))
 
         return {
             "classes": classes,
@@ -365,6 +396,8 @@ class CodeParser:
             "parent_class": "",
             "code": self._node_text(node, code),
             "start_line": node.start_point[0] + 1,
+            "name_line": name_node.start_point[0] + 1,
+            "name_column": name_node.start_point[1] + 1,
             "calls": self._extract_js_calls(value_node, code),
         }
 
@@ -396,12 +429,136 @@ class CodeParser:
                 return self._string_literal_value(child, code)
         return None
 
+    def _extract_typescript_typed_arrow_functions(
+        self,
+        code: str,
+        existing_functions: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Recover typed TS variable-arrow functions misparsed by the JS grammar.
+
+        Why this exists:
+        - `.ts` / `.tsx` currently parse through the JavaScript grammar.
+        - Type annotations and generic parameters can make valid TypeScript look
+          like JSX to that grammar.
+        - Those parse failures remove function definitions from the graph, which
+          in turn prevents the semantic call analyzer from mapping outgoing calls
+          back to repo-local Function nodes.
+
+        This helper intentionally targets only the high-value shapes we see in
+        real repos:
+        - `const name = (): ReturnType => { ... }`
+        - `export const name = async (...) => { ... }`
+        - `const name = <T>(...) => { ... }`
+
+        It is a rescue path, not a complete parser.
+        """
+        existing_qualified_names = {
+            str(row.get("qualified_name") or row.get("name") or "")
+            for row in existing_functions
+        }
+        rescued: list[dict[str, Any]] = []
+
+        for match in self._TS_TYPED_ARROW_DECL_RE.finditer(code):
+            function_name = match.group("name")
+            if not function_name or function_name in existing_qualified_names:
+                continue
+
+            declaration_start = match.start("name")
+            arrow_index = match.end("signature")
+            body_start = arrow_index
+            while body_start < len(code) and code[body_start].isspace():
+                body_start += 1
+
+            function_end = self._typescript_arrow_function_end(code, body_start)
+            if function_end is None:
+                continue
+
+            declaration_text = code[match.start("prefix") : function_end].lstrip("\n")
+            line_start = code.rfind("\n", 0, declaration_start) + 1
+            line_number = code.count("\n", 0, declaration_start) + 1
+            column_number = declaration_start - line_start + 1
+            calls = self._extract_calls_from_text(declaration_text)
+
+            rescued.append(
+                {
+                    "name": function_name,
+                    "qualified_name": function_name,
+                    "parent_class": "",
+                    "code": declaration_text,
+                    "start_line": line_number,
+                    "name_line": line_number,
+                    "name_column": column_number,
+                    "calls": calls,
+                }
+            )
+
+        return rescued
+
+    def _typescript_arrow_function_end(self, code: str, body_start: int) -> int | None:
+        """Return the end offset for a rescued TS arrow function declaration."""
+        if body_start >= len(code):
+            return None
+
+        if code[body_start] == "{":
+            depth = 0
+            for index in range(body_start, len(code)):
+                char = code[index]
+                if char == "{":
+                    depth += 1
+                elif char == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = index + 1
+                        while end < len(code) and code[end] in " \t":
+                            end += 1
+                        if end < len(code) and code[end] == ";":
+                            end += 1
+                        return end
+            return None
+
+        line_end = code.find("\n", body_start)
+        if line_end == -1:
+            return len(code)
+        return line_end
+
+    def _extract_calls_from_text(self, code: str) -> list[str]:
+        """Best-effort call extraction for rescued TS function declarations."""
+        reserved = {
+            "catch",
+            "for",
+            "function",
+            "if",
+            "return",
+            "switch",
+            "while",
+        }
+        calls = [
+            match.group(1)
+            for match in self._CALL_NAME_RE.finditer(code)
+            if match.group(1) not in reserved
+        ]
+        return self._stable_dedupe(calls)
+
     def _identifier_text(self, node: Node, code: str) -> str:
         """Return the first identifier-like child text for a definition node."""
         for child in node.children:
             if child.type in {"identifier", "property_identifier"}:
                 return self._node_text(child, code)
         return ""
+
+    def _identifier_line(self, node: Node) -> int:
+        """Return the 1-based line number of the first identifier-like child."""
+        for child in node.children:
+            if child.type in {"identifier", "property_identifier"}:
+                return child.start_point[0] + 1
+        return node.start_point[0] + 1
+
+    def _identifier_column(self, node: Node) -> int:
+        """Return the 1-based column number of the first identifier-like child."""
+        for child in node.children:
+            if child.type in {"identifier", "property_identifier"}:
+                return child.start_point[1] + 1
+        return node.start_point[1] + 1
 
     def _dotted_name_text(self, node: Node, code: str) -> str:
         """Return the first dotted-name child text for a Python import node."""
@@ -434,6 +591,20 @@ class CodeParser:
         if name_node is not None:
             return self._node_text(name_node, code)
         return self._identifier_text(node, code)
+
+    def _js_method_name_line(self, node: Node) -> int:
+        """Return the 1-based line number for a JS method name."""
+        name_node = node.child_by_field_name("name")
+        if name_node is not None:
+            return name_node.start_point[0] + 1
+        return self._identifier_line(node)
+
+    def _js_method_name_column(self, node: Node) -> int:
+        """Return the 1-based column number for a JS method name."""
+        name_node = node.child_by_field_name("name")
+        if name_node is not None:
+            return name_node.start_point[1] + 1
+        return self._identifier_column(node)
 
     def _callee_name(self, callee: Node | None, code: str) -> str:
         """Return a short call target name used for conservative call linking."""
@@ -479,8 +650,20 @@ class CodeParser:
         return raw
 
     def _node_text(self, node: Node, code: str) -> str:
-        """Return the source slice that corresponds to one node."""
-        return code[node.start_byte:node.end_byte]
+        """Return the source slice that corresponds to one node.
+
+        Tree-sitter byte offsets are measured against UTF-8 bytes, not Python's
+        Unicode code-point indexing. Slicing the original `str` directly works
+        only for ASCII-only files. As soon as a file contains emoji or other
+        multi-byte characters before a definition, every later symbol boundary
+        drifts and function names become corrupted.
+
+        Decoding the exact byte range keeps node text stable across repositories
+        that contain Unicode in docstrings, comments, or banners.
+        """
+        return code.encode("utf8")[node.start_byte:node.end_byte].decode(
+            "utf8", errors="ignore"
+        )
 
     def _walk(self, node: Node) -> Iterator[Node]:
         """Yield one node and all descendants depth-first."""

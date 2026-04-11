@@ -10,7 +10,8 @@ This document provides a comprehensive technical overview of Agentic Memory's ar
 
 - [System Overview](#system-overview)
 - [Graph Schema](#graph-schema)
-- [4-Pass Ingestion Pipeline](#4-pass-ingestion-pipeline)
+- [Default Structural Pipeline](#default-structural-pipeline)
+- [JIT Tracing Architecture](#jit-tracing-architecture)
 - [Tree-sitter Parsing Strategy](#tree-sitter-parsing-strategy)
 - [Vector Embeddings](#vector-embeddings)
 - [Cypher Query Patterns](#cypher-query-patterns)
@@ -23,9 +24,10 @@ This document provides a comprehensive technical overview of Agentic Memory's ar
 
 Agentic Memory is a **hybrid GraphRAG** system that combines:
 
-1. **Structural Graph:** Captures code relationships (imports, calls, containment)
+1. **Structural Graph:** Captures durable code relationships (imports, containment, ownership)
 2. **Semantic Embeddings:** Vector search for natural language queries
-3. **Real-time Sync:** File watcher keeps graph updated
+3. **Real-time Sync:** File watcher keeps structural graph updated
+4. **JIT Behavioral Tracing:** Traces one function path on demand instead of forcing repo-wide call-graph construction during normal indexing
 
 ### High-Level Architecture
 
@@ -197,7 +199,13 @@ Represents module dependencies.
 
 `(Caller:Function)-[:CALLS]->(Callee:Function)`
 
-Represents function call graph.
+Represents the older analyzer-backed repo-wide call graph.
+
+Important:
+
+- this relationship type still exists
+- it is now associated with the explicit experimental `build-calls` path
+- normal `index` and `watch` runs do not compute repo-wide `CALLS` by default
 
 **Example:**
 ```cypher
@@ -228,6 +236,30 @@ Links semantic embeddings to code entities.
 (chunk_abc123:Chunk)-[:DESCRIBES]->(authenticate:Function)
 ```
 
+#### JIT trace edges
+
+The JIT tracing cache stores derived behavioral relationships separately from
+trusted structural edges:
+
+- `(Caller)-[:JIT_CALLS_DIRECT]->(Callee)`
+- `(Caller)-[:JIT_CALLS_CALLBACK]->(Callee)`
+- `(Caller)-[:JIT_MESSAGE_FLOW]->(Callee)`
+
+These edges are created only by explicit trace requests and carry provenance
+such as trace id, confidence, model, and root file hash.
+
+#### CodeTraceRun
+
+JIT trace runs also create a `CodeTraceRun` node that records:
+
+- trace id
+- repo id
+- root signature
+- model
+- max depth
+- root file hash
+- unresolved targets payload
+
 ### Fulltext Index
 
 For keyword-based search:
@@ -239,9 +271,12 @@ FOR (n:Function|Class|File) ON EACH [n.name, n.docstring, n.path]
 
 ---
 
-## 4-Pass Ingestion Pipeline
+## Default Structural Pipeline
 
-The ingestion pipeline processes code in 4 sequential passes to build the complete graph.
+The default ingestion pipeline now stops after structural graph construction.
+
+Normal `index` and `watch` runs do **not** execute repo-wide `CALLS`
+construction.
 
 ### Pass 0: Pre-flight (Database Setup)
 
@@ -422,59 +457,98 @@ MERGE (source)-[:IMPORTS]->(target)
 
 ---
 
-### Pass 4: Call Graph Construction
+### Former Pass 4: Repo-wide CALLS Construction
 
 **File:** `src/agentic_memory/ingestion/graph.py:pass_4_call_graph()`
 
-**Purpose:** Build function call graph for dependency analysis.
+This path still exists, but it is no longer part of default indexing.
 
-**Algorithm:**
-1. Fetch all Function nodes grouped by file
-2. Parse each file with Tree-sitter
-3. Extract all function calls
-4. Match calls to Function nodes by name
-5. Create `[:CALLS]` relationships
+Why it was moved out of normal ingestion:
 
-#### Tree-sitter Query
+- semantic analyzers could time out on larger real repos
+- the cost was paid even when no agent needed call-path information
+- analyzer diagnostics often scaled faster than useful surviving `CALLS` edges
 
-```scheme
-(call function: (identifier) @name)
-```
+Current role:
 
-#### Optimized Batch Processing
+- explicit experimental path behind `agentic-memory build-calls`
+- useful for diagnostics and comparison
+- no longer required for normal structural graph readiness
 
-**Old approach (slow):** Process each function separately
-```python
-for func in functions:
-    calls = parse_calls(file)
-    for call in calls:
-        create_relationship(caller=func, callee=call)
-```
+**Output when run explicitly:** `[:CALLS]` relationships between Function nodes.
 
-**New approach (fast):** Process all calls in file, then batch
-```python
-# Parse file once
-all_calls_in_file = parse_all_calls(file)
+---
 
-# Batch create relationships
-UNWIND $calls as called_name
-MATCH (caller:Function {signature: $caller_sig})
-MATCH (callee:Function {name: called_name})
-WHERE caller <> callee
-MERGE (caller)-[:CALLS]->(callee)
-```
+## JIT Tracing Architecture
 
-**Benefits:**
-- 10-50x faster (fewer Cypher queries)
-- Single pass per file
-- Batching reduces Neo4j round-trips
+JIT tracing is the preferred behavioral exploration path.
 
-**Limitations:**
-- Doesn't resolve method calls on objects (`obj.method()`)
-- Doesn't handle indirect calls (callbacks, decorators)
-- May create false matches (same-named functions in different modules)
+### Goal
 
-**Output:** `[:CALLS]` relationships between Function nodes.
+When an operator or MCP client wants to understand one function's likely
+execution neighborhood, the system should trace only that requested root
+instead of precomputing a whole-repo behavioral graph.
+
+### Resolution
+
+The root symbol is resolved deterministically:
+
+1. exact function signature
+2. unique repo-local qualified name
+3. unique repo-local short name
+
+If resolution stays ambiguous, the system returns candidates instead of guessing.
+
+### Context assembly
+
+The trace service builds a bounded context package from the graph:
+
+- root function metadata and source code
+- owning file imports
+- reverse imports for the owning file
+- same-file sibling functions
+- classes and methods in the same file
+- candidate functions from directly imported files
+
+### Trace execution
+
+The extraction LLM receives:
+
+- the bounded graph context
+- the root function body
+- candidate signatures it is allowed to choose from
+
+The model returns structured edges only. Current edge categories:
+
+- `direct_call`
+- `callback`
+- `message_flow`
+- unresolved targets
+
+### Cache strategy
+
+Trace results are cached separately from trusted structural graph data:
+
+- run metadata in `CodeTraceRun`
+- derived edges in `JIT_CALLS_DIRECT`, `JIT_CALLS_CALLBACK`, and `JIT_MESSAGE_FLOW`
+
+Version 1 cache invalidation uses the root file `ohash`.
+
+### Why this is better
+
+This changes the product architecture from:
+
+- exhaustive pre-computation
+
+to:
+
+- durable structural indexing plus on-demand behavioral exploration
+
+That is a better fit for real agent work because:
+
+- imports and structure are cheap and reliable
+- behavioral exploration is only paid for when needed
+- ambiguity can be surfaced interactively instead of silently degrading ingestion
 
 ---
 

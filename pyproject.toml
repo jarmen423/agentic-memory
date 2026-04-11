@@ -19,6 +19,7 @@ dependencies = [
     "mcp",
     "pydantic>=2.0.0",
     "google-genai>=1.0.0",
+    "basedpyright>=1.39.0",
     "groq>=0.10.0",
     "crawl4ai>=0.8.0",
     "markdownify>=1.2.0",

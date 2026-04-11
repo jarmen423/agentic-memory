@@ -17,8 +17,11 @@ services:
     environment:
       # Change these in production!
       NEO4J_AUTH: neo4j/password
-      NEO4J_dbms_memory_heap_max__size: 2G
-      NEO4J_dbms_memory_pagecache_size: 1G
+      # Neo4j 5.25 warns on the older dbms.* memory keys. Use the newer
+      # server.* settings so startup logs stay clean and future upgrades are
+      # less brittle.
+      NEO4J_server_memory_heap_max__size: 2G
+      NEO4J_server_memory_pagecache_size: 1G
       # Enable vector search (Neo4j 5.18+)
       NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
       NEO4J_dbms_security_procedures_allowlist: "apoc.*"
@@ -30,7 +33,8 @@ services:
     healthcheck:
       test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "password", "RETURN 1"]
       interval: 10s
-      timeout: 5s
+      timeout: 20s
+      start_period: 40s
       retries: 5
     networks:
       - agentic-memory-network

@@ -13,7 +13,7 @@ Agentic Memory gives AI agents persistent, searchable memory across four domains
 
 | Feature | Description |
 |---------|-------------|
-| **📊 Code Graph** | Structural understanding of imports, dependencies, and call graphs — not just text similarity |
+| **📊 Code Graph** | Structural understanding of files, entities, imports, and on-demand execution tracing — not just text similarity |
 | **💬 Conversation Memory** | Stores and retrieves past agent/user exchanges by semantic similarity |
 | **🌐 Research & Web Memory** | Ingests URLs, PDFs, and research reports as searchable findings |
 | **🧬 Git Graph (Opt-in)** | Adds commit/author/file-version history in the same Neo4j DB |
@@ -74,11 +74,17 @@ agentic-memory init
 # Show repository status and statistics
 agentic-memory status
 
-# Actual one-time code ingest (e.g., after major changes)
+# One-time structural code ingest (files, entities, imports)
 agentic-memory index
 
-# Continuous code ingest on file changes
+# Continuous structural code ingest on file changes
 agentic-memory watch
+
+# Experimental old repo-wide CALLS build
+agentic-memory build-calls
+
+# JIT trace one function's likely execution neighborhood
+agentic-memory trace-execution src/app.py:run_checkout --json
 
 # Start MCP server for AI agents
 agentic-memory serve
@@ -86,6 +92,31 @@ agentic-memory serve
 # Semantic search across code
 agentic-memory search "where is the auth logic?"
 ```
+
+### Code-memory behavior model
+
+The default code pipeline now stops after structural graph construction:
+
+- Pass 1: structure scan and changed-file detection
+- Pass 2: entities, chunks, and embeddings
+- Pass 3: import graph construction
+
+What it does **not** do by default:
+
+- repo-wide `CALLS` reconstruction
+
+Behavioral tracing is now handled just in time with:
+
+- CLI: `agentic-memory trace-execution ...`
+- MCP: `trace_execution_path(...)`
+
+The older repo-wide analyzer-backed `CALLS` flow is still available explicitly:
+
+- CLI: `agentic-memory build-calls`
+
+Detailed explanation:
+
+- `docs/JIT_TRACING.md`
 
 ### Web & research memory
 
@@ -197,6 +228,7 @@ Full workflow and options: [docs/TOOL_USE_ANNOTATION.md](docs/TOOL_USE_ANNOTATIO
 | `get_file_dependencies(file_path)` | Returns imports and dependents for a file |
 | `identify_impact(file_path, max_depth=3)` | Blast radius analysis for changes |
 | `get_file_info(file_path)` | File structure overview (classes, functions) |
+| `trace_execution_path(start_symbol, max_depth=2, force_refresh=false)` | On-demand behavioral tracing for one function root |
 
 ### Conversation domain
 

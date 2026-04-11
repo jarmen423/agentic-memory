@@ -76,6 +76,41 @@ def _resolve_active_project_id(
     return binding["project_id"] if binding else None
 
 
+def _resolve_openclaw_session_id(
+    *,
+    workspace_id: str,
+    device_id: str,
+    agent_id: str,
+    explicit_session_id: str | None,
+) -> str:
+    """Resolve the effective OpenClaw session id for project lifecycle routes.
+
+    The runtime always knows the current `session_id`, but plugin-owned CLI
+    commands do not receive it from the current OpenClaw SDK surface. To keep
+    project commands ergonomic, the backend falls back to the latest session
+    registration for this workspace/agent/device identity.
+    """
+
+    store = get_product_store()
+    session_id = store.resolve_openclaw_session_id(
+        workspace_id=workspace_id,
+        agent_id=agent_id,
+        explicit_session_id=explicit_session_id,
+        device_id=device_id,
+    )
+    if session_id:
+        return session_id
+
+    raise HTTPException(
+        status_code=422,
+        detail=(
+            "No active OpenClaw session is registered for this workspace/agent. "
+            "Start or resume an OpenClaw session first so Agentic Memory can "
+            "infer the current session automatically."
+        ),
+    )
+
+
 def _format_context_blocks(hits: Iterable[object]) -> list[dict[str, object]]:
     """Build context blocks from unified search hits."""
     blocks: list[dict[str, object]] = []
@@ -269,11 +304,17 @@ async def register_openclaw_session(body: OpenClawSessionRegisterRequest) -> dic
 async def activate_openclaw_project(body: OpenClawProjectActivationRequest) -> dict:
     """Activate a reusable project label for one OpenClaw session."""
 
+    session_id = _resolve_openclaw_session_id(
+        workspace_id=body.workspace_id,
+        device_id=body.device_id,
+        agent_id=body.agent_id,
+        explicit_session_id=body.session_id,
+    )
     store = get_product_store()
     binding = store.activate_project_for_openclaw_identity(
         workspace_id=body.workspace_id,
         agent_id=body.agent_id,
-        session_id=body.session_id,
+        session_id=session_id,
         device_id=body.device_id,
         project_id=body.project_id,
         title=body.title,
@@ -286,22 +327,33 @@ async def activate_openclaw_project(body: OpenClawProjectActivationRequest) -> d
             "workspace_id": body.workspace_id,
             "device_id": body.device_id,
             "agent_id": body.agent_id,
-            "session_id": body.session_id,
+            "session_id": session_id,
             "project_id": body.project_id,
         },
     )
-    return {"status": "ok", "identity": body.model_dump(), "binding": binding, "event": event}
+    return {
+        "status": "ok",
+        "identity": {**body.model_dump(), "session_id": session_id},
+        "binding": binding,
+        "event": event,
+    }
 
 
 @router.post("/openclaw/project/deactivate")
 async def deactivate_openclaw_project(body: OpenClawProjectDeactivationRequest) -> dict:
     """Clear the active project for one OpenClaw session."""
 
+    session_id = _resolve_openclaw_session_id(
+        workspace_id=body.workspace_id,
+        device_id=body.device_id,
+        agent_id=body.agent_id,
+        explicit_session_id=body.session_id,
+    )
     store = get_product_store()
     removed = store.deactivate_project_for_openclaw_identity(
         workspace_id=body.workspace_id,
         agent_id=body.agent_id,
-        session_id=body.session_id,
+        session_id=session_id,
     )
     event = store.record_event(
         event_type="openclaw_project_deactivated",
@@ -310,13 +362,13 @@ async def deactivate_openclaw_project(body: OpenClawProjectDeactivationRequest) 
             "workspace_id": body.workspace_id,
             "device_id": body.device_id,
             "agent_id": body.agent_id,
-            "session_id": body.session_id,
+            "session_id": session_id,
             "project_id": removed["project_id"] if removed else None,
         },
     )
     return {
         "status": "ok",
-        "identity": body.model_dump(),
+        "identity": {**body.model_dump(), "session_id": session_id},
         "binding": removed,
         "event": event,
     }
@@ -326,15 +378,21 @@ async def deactivate_openclaw_project(body: OpenClawProjectDeactivationRequest) 
 async def status_openclaw_project(body: OpenClawProjectStatusRequest) -> dict:
     """Return the current active project binding for one OpenClaw session."""
 
+    session_id = _resolve_openclaw_session_id(
+        workspace_id=body.workspace_id,
+        device_id=body.device_id,
+        agent_id=body.agent_id,
+        explicit_session_id=body.session_id,
+    )
     store = get_product_store()
     binding = store.get_active_project_for_openclaw_identity(
         workspace_id=body.workspace_id,
         agent_id=body.agent_id,
-        session_id=body.session_id,
+        session_id=session_id,
     )
     return {
         "status": "ok",
-        "identity": body.model_dump(),
+        "identity": {**body.model_dump(), "session_id": session_id},
         "active_project": binding,
     }
 

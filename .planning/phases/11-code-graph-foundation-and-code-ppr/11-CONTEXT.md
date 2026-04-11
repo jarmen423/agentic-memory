@@ -113,4 +113,28 @@ Still intentionally deferred:
 - broad graph-benchmark fixtures for multi-repo collision stress cases,
 - default-on cutover for `ENABLE_CODE_PPR`.
 
+## Field Feedback (2026-04-10)
+
+Live indexing across two real repositories refined the remaining problem:
+
+1. `D:\code\agentic-memory` now records analyzer-backed JS/TS `CALLS` edges, so
+   the TypeScript semantic path is real rather than hypothetical.
+2. `/home/josh/m26pipeline` can resolve outgoing calls through
+   `debug-ts-calls`, but those analyzer results still fail to map into the
+   graph at repository scale.
+3. The shared weakness is not "this repo needs a custom language server". The
+   shared weakness is the analyzer-to-graph contract:
+   - parser symbol identity,
+   - analyzer symbol identity,
+   - graph-side target resolution and drop visibility.
+4. Python still has no semantic call analyzer at all, which means a
+   generalizable `CALLS` feature cannot be considered ready.
+
+That changes the next execution priority:
+
+- add first-class diagnostics for why analyzer-backed edges are dropped,
+- harden TypeScript/JavaScript target resolution generically,
+- add a Python semantic analyzer path behind the same confidence model,
+- keep `CALLS` out of ranking until these gates pass across multiple repos.
+
 </current_status>

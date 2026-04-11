@@ -329,6 +329,82 @@ class ProductStateStore:
                 return binding
         return None
 
+    def get_openclaw_session_registration(
+        self,
+        *,
+        workspace_id: str,
+        agent_id: str,
+        device_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Return the latest registered OpenClaw session for one identity tuple.
+
+        OpenClaw session registration is currently persisted through the
+        integration store rather than a dedicated session table. That is enough
+        for project commands because the runtime keeps updating the integration
+        config with the current `session_id` during bootstrap.
+        """
+
+        normalized_workspace_id = workspace_id.strip()
+        normalized_agent_id = agent_id.strip()
+        normalized_device_id = device_id.strip() if device_id else None
+        if not normalized_workspace_id or not normalized_agent_id:
+            raise ValueError("workspace_id and agent_id are required")
+
+        state = self.load()
+        for integration in reversed(state["integrations"]):
+            if integration.get("surface") != "openclaw":
+                continue
+
+            config = integration.get("config", {})
+            if not isinstance(config, dict):
+                continue
+
+            if config.get("workspace_id") != normalized_workspace_id:
+                continue
+            if config.get("agent_id") != normalized_agent_id:
+                continue
+            if normalized_device_id and config.get("device_id") != normalized_device_id:
+                continue
+
+            session_id = config.get("session_id")
+            if isinstance(session_id, str) and session_id.strip():
+                return integration
+
+        return None
+
+    def resolve_openclaw_session_id(
+        self,
+        *,
+        workspace_id: str,
+        agent_id: str,
+        explicit_session_id: str | None = None,
+        device_id: str | None = None,
+    ) -> str | None:
+        """Resolve the active OpenClaw session id for one agent.
+
+        Explicit session ids win. When omitted, the store falls back to the
+        last registered OpenClaw session for this workspace/agent pair so the
+        user-facing project commands do not need to ask for `--session-id`.
+        """
+
+        if explicit_session_id and explicit_session_id.strip():
+            return explicit_session_id.strip()
+
+        registration = self.get_openclaw_session_registration(
+            workspace_id=workspace_id,
+            agent_id=agent_id,
+            device_id=device_id,
+        )
+        if not registration:
+            return None
+
+        config = registration.get("config", {})
+        if isinstance(config, dict):
+            session_id = config.get("session_id")
+            if isinstance(session_id, str) and session_id.strip():
+                return session_id.strip()
+        return None
+
     def upsert_project_automation(
         self,
         *,

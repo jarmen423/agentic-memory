@@ -47,6 +47,10 @@ def test_build_embedding_service_uses_nemotron_from_module_env(monkeypatch, tmp_
         model="nvidia/custom-embed",
         base_url="https://nim.example/v1",
         output_dimensions=4096,
+        vertexai=False,
+        project=None,
+        location=None,
+        api_version=None,
     )
 
 
@@ -95,8 +99,49 @@ def test_embedding_runtime_is_independent_from_extraction_provider(monkeypatch, 
     """Extraction env overrides do not alter embedding provider resolution."""
     monkeypatch.setenv("EXTRACTION_LLM_PROVIDER", "cerebras")
     monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
+    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+    monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
 
     runtime = resolve_embedding_runtime("chat", config=Config(tmp_path))
 
     assert runtime.provider == "gemini"
     assert runtime.api_key == "gemini-key"
+
+
+def test_resolve_embedding_runtime_supports_vertex_ai_without_api_key(monkeypatch, tmp_path):
+    """Gemini embeddings can use Vertex AI with ADC instead of a Gemini API key."""
+    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "radiology-app-486607")
+    monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+
+    runtime = resolve_embedding_runtime("code", config=Config(tmp_path))
+
+    assert runtime.provider == "gemini"
+    assert runtime.api_key is None
+    assert runtime.use_vertexai is True
+    assert runtime.project == "radiology-app-486607"
+    assert runtime.location == "us-central1"
+    assert runtime.api_version == "v1"
+
+
+def test_build_embedding_service_passes_vertex_settings(monkeypatch, tmp_path):
+    """Vertex-specific runtime settings should flow into EmbeddingService."""
+    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "radiology-app-486607")
+    monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+
+    with patch("agentic_memory.core.runtime_embedding.EmbeddingService") as mock_service:
+        build_embedding_service("code", config=Config(tmp_path))
+
+    mock_service.assert_called_once_with(
+        provider="gemini",
+        api_key=None,
+        model="gemini-embedding-2-preview",
+        base_url=None,
+        output_dimensions=3072,
+        vertexai=True,
+        project="radiology-app-486607",
+        location="us-central1",
+        api_version="v1",
+    )

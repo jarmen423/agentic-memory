@@ -1,27 +1,41 @@
 """Persistent local product-state store used by CLI and desktop control surfaces.
 
-This file now also stores OpenClaw project state, because the product model has
-shifted away from a static setup-time ``project_id``. Instead:
+The OpenClaw foundation wave changes the storage engine behind this file from a
+plain JSON document to SQLite-backed persistence while keeping the public
+`ProductStateStore` method contract stable.
 
-- ``workspace_id`` remains the stable OpenClaw home-base boundary.
-- ``agent_id`` identifies the OpenClaw agent within that workspace.
-- ``session_id`` scopes an active project binding so one agent can work on
-  multiple unrelated tasks without every memory inheriting the same tag.
-- ``project_id`` becomes an optional active work label, not a permanent install
-  choice.
+Why this file exists:
 
-Keeping this state local and explicit lets future agents recover the current
-project semantics directly from code and stored JSON rather than from chat
-history.
+- CLI commands need a local control-plane store even when no remote product API
+  exists.
+- OpenClaw project/session semantics depend on durable local state so project
+  commands can infer the active session without asking for extra flags.
+- Future agents should be able to understand the storage contract directly from
+  this module without any prior chat context.
+
+Why SQLite instead of JSON:
+
+- JSON rewrites the entire document on every update and provides no concurrency
+  coordination.
+- SQLite gives us atomic commits, write locking, and crash recovery while still
+  letting us preserve the current dict-shaped state payload.
+
+Design choice for this phase:
+
+- We intentionally keep the external payload shape the same.
+- Internally we store one normalized JSON document inside a SQLite table.
+- This keeps route and CLI callers stable while making durability better now.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Generator
 
 DEFAULT_PRODUCT_STATE_ENV_VARS = (
     "AGENTIC_MEMORY_PRODUCT_STATE",
@@ -47,19 +61,27 @@ DEFAULT_COMPONENTS = {
     "openclaw_context_engine": "unknown",
 }
 DEFAULT_PROJECT_AUTOMATION_KIND = "research_ingestion"
+_SQLITE_MAGIC = b"SQLite format 3\x00"
 
 
 def _utc_now() -> str:
     """Return an ISO8601 UTC timestamp."""
+
     return datetime.now(timezone.utc).isoformat()
 
 
 class ProductStateStore:
-    """Manage the local persisted state for product-facing workflows."""
+    """Manage the local persisted state for product-facing workflows.
+
+    Public callers should still think in terms of a single state document. This
+    class now handles loading, normalizing, and transactionally saving that
+    document through SQLite.
+    """
 
     def __init__(self, state_path: str | Path | None = None) -> None:
         self.state_path = Path(state_path or self._resolve_state_path()).expanduser().resolve()
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        self._initialize_store()
 
     @staticmethod
     def _resolve_state_path() -> Path:
@@ -101,19 +123,14 @@ class ProductStateStore:
         }
 
     def load(self) -> dict[str, Any]:
-        if not self.state_path.exists():
-            state = self._default_state()
-            self._write(state)
-            return state
+        """Return the normalized current state payload from SQLite."""
 
-        try:
-            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            payload = self._default_state()
-
-        return self._normalize(payload)
+        with self._connect() as conn:
+            return self._load_state_from_connection(conn)
 
     def touch(self) -> dict[str, Any]:
+        """Update last-seen timestamps and persist the state atomically."""
+
         return self._update(lambda state: self._touch_state(state))
 
     def upsert_repo(
@@ -123,6 +140,8 @@ class ProductStateStore:
         label: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """Create or update one tracked repository entry."""
+
         resolved = Path(repo_path).expanduser().resolve()
         repo_record = {
             "path": str(resolved),
@@ -132,8 +151,6 @@ class ProductStateStore:
             "updated_at": _utc_now(),
         }
 
-        # Inner closure: upsert the repo record into the state dict in-place.
-        # _update() calls this with the current loaded state and then writes it back.
         def mutate(state: dict[str, Any]) -> dict[str, Any]:
             repos = state["repos"]
             for index, existing in enumerate(repos):
@@ -158,6 +175,8 @@ class ProductStateStore:
         config: dict[str, Any] | None = None,
         last_error: str | None = None,
     ) -> dict[str, Any]:
+        """Create or update one integration record keyed by `(surface, target)`."""
+
         surface_name = surface.strip()
         target_name = target.strip()
         if not surface_name or not target_name:
@@ -172,7 +191,6 @@ class ProductStateStore:
             "updated_at": _utc_now(),
         }
 
-        # Inner closure: upsert the integration record, keyed on (surface, target).
         def mutate(state: dict[str, Any]) -> dict[str, Any]:
             integrations = state["integrations"]
             for index, existing in enumerate(integrations):
@@ -195,12 +213,7 @@ class ProductStateStore:
         title: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Create or update a reusable project definition.
-
-        Project definitions are intentionally lightweight. They are reusable
-        across many OpenClaw workspaces and agents, so they do not encode the
-        active binding themselves.
-        """
+        """Create or update a reusable project definition."""
 
         normalized_project_id = project_id.strip()
         if not normalized_project_id:
@@ -239,12 +252,7 @@ class ProductStateStore:
         title: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Bind a project to one OpenClaw workspace/agent/session tuple.
-
-        This is the core state transition behind "start working on project X".
-        The binding is session-scoped so the same agent can later work on a
-        different task without unrelated turns inheriting the old tag.
-        """
+        """Bind a project to one OpenClaw workspace/agent/session tuple."""
 
         project = self.upsert_project(
             project_id=project_id,
@@ -336,13 +344,7 @@ class ProductStateStore:
         agent_id: str,
         device_id: str | None = None,
     ) -> dict[str, Any] | None:
-        """Return the latest registered OpenClaw session for one identity tuple.
-
-        OpenClaw session registration is currently persisted through the
-        integration store rather than a dedicated session table. That is enough
-        for project commands because the runtime keeps updating the integration
-        config with the current `session_id` during bootstrap.
-        """
+        """Return the latest registered OpenClaw session for one identity tuple."""
 
         normalized_workspace_id = workspace_id.strip()
         normalized_agent_id = agent_id.strip()
@@ -380,12 +382,7 @@ class ProductStateStore:
         explicit_session_id: str | None = None,
         device_id: str | None = None,
     ) -> str | None:
-        """Resolve the active OpenClaw session id for one agent.
-
-        Explicit session ids win. When omitted, the store falls back to the
-        last registered OpenClaw session for this workspace/agent pair so the
-        user-facing project commands do not need to ask for `--session-id`.
-        """
+        """Resolve the active OpenClaw session id for one agent."""
 
         if explicit_session_id and explicit_session_id.strip():
             return explicit_session_id.strip()
@@ -464,11 +461,12 @@ class ProductStateStore:
         status: str,
         details: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """Update one runtime component health entry."""
+
         component_name = component.strip()
         if component_name not in DEFAULT_COMPONENTS:
             raise ValueError(f"unsupported component: {component_name}")
 
-        # Inner closure: overwrite the component entry under runtime.components.
         def mutate(state: dict[str, Any]) -> dict[str, Any]:
             components = state["runtime"]["components"]
             components[component_name] = {
@@ -489,6 +487,8 @@ class ProductStateStore:
         status: str = "ok",
         details: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """Append an event to the bounded rolling event buffer."""
+
         event = {
             "event_type": event_type.strip(),
             "actor": actor.strip(),
@@ -497,7 +497,6 @@ class ProductStateStore:
             "timestamp": _utc_now(),
         }
 
-        # Inner closure: append the event and trim the rolling buffer to DEFAULT_EVENT_CAP.
         def mutate(state: dict[str, Any]) -> dict[str, Any]:
             events = state["events"]
             events.append(event)
@@ -509,11 +508,12 @@ class ProductStateStore:
         return self._update(mutate)
 
     def update_onboarding_step(self, step: str, *, completed: bool = True) -> dict[str, Any]:
+        """Mark an onboarding step complete or incomplete."""
+
         step_name = step.strip()
         if not step_name:
             raise ValueError("step is required")
 
-        # Inner closure: add or remove the step from the completed_steps set.
         def mutate(state: dict[str, Any]) -> dict[str, Any]:
             onboarding = state["app"]["onboarding"]
             completed_steps = set(onboarding.get("completed_steps", []))
@@ -529,6 +529,8 @@ class ProductStateStore:
         return self._update(mutate)
 
     def status_payload(self, *, repo_root: Path | None = None) -> dict[str, Any]:
+        """Return the public control-plane payload used by CLI and desktop routes."""
+
         state = self.touch()
         onboarding = state["app"]["onboarding"]
         required_steps = onboarding.get("required_steps", [])
@@ -616,14 +618,127 @@ class ProductStateStore:
         state["app"]["updated_at"] = timestamp
         return state
 
-    def _update(self, mutate: Any) -> Any:
-        state = self.load()
-        result = mutate(state)
-        self._write(state)
-        return result
+    def _initialize_store(self) -> None:
+        """Create or migrate the SQLite store at `state_path`.
 
-    def _write(self, state: dict[str, Any]) -> None:
+        We keep using the configured path directly so existing environment
+        variables and status payloads do not need to change.
+        """
+
+        if self.state_path.exists() and not self._is_sqlite_file(self.state_path):
+            self._migrate_legacy_json_file()
+
+        with self._connect() as conn:
+            self._ensure_schema(conn)
+            self._ensure_state_row(conn)
+
+    @staticmethod
+    def _is_sqlite_file(path: Path) -> bool:
+        """Return whether the existing file is already a SQLite database."""
+
+        if not path.exists() or path.stat().st_size < len(_SQLITE_MAGIC):
+            return False
+        with path.open("rb") as handle:
+            return handle.read(len(_SQLITE_MAGIC)) == _SQLITE_MAGIC
+
+    def _migrate_legacy_json_file(self) -> None:
+        """Migrate an existing JSON state file into the SQLite-backed store."""
+
+        try:
+            legacy_payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            legacy_payload = self._default_state()
+
+        backup_path = self.state_path.with_name(f"{self.state_path.name}.legacy-json.bak")
+        self.state_path.replace(backup_path)
+
+        with self._connect() as conn:
+            self._ensure_schema(conn)
+            self._write_state_to_connection(conn, self._normalize(legacy_payload))
+
+    def _connect(self) -> sqlite3.Connection:
+        """Return a configured SQLite connection for the state store."""
+
+        conn = sqlite3.connect(str(self.state_path), timeout=30, isolation_level=None)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=FULL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        return conn
+
+    def _ensure_schema(self, conn: sqlite3.Connection) -> None:
+        """Create the single-row state table if it does not exist yet."""
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS product_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                payload TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+
+    def _ensure_state_row(self, conn: sqlite3.Connection) -> None:
+        """Insert the default state row if the store is still empty."""
+
+        row = conn.execute("SELECT 1 FROM product_state WHERE id = 1").fetchone()
+        if row is None:
+            self._write_state_to_connection(conn, self._default_state())
+
+    def _load_state_from_connection(self, conn: sqlite3.Connection) -> dict[str, Any]:
+        """Load and normalize the current state payload from SQLite."""
+
+        self._ensure_schema(conn)
+        row = conn.execute("SELECT payload FROM product_state WHERE id = 1").fetchone()
+        if row is None:
+            state = self._default_state()
+            self._write_state_to_connection(conn, state)
+            return self._normalize(state)
+
+        try:
+            payload = json.loads(str(row[0]))
+        except json.JSONDecodeError:
+            payload = self._default_state()
+            self._write_state_to_connection(conn, payload)
+        return self._normalize(payload)
+
+    def _write_state_to_connection(self, conn: sqlite3.Connection, state: dict[str, Any]) -> None:
+        """Persist one normalized state payload to SQLite."""
+
         normalized = self._normalize(state)
-        temp_path = self.state_path.with_suffix(f"{self.state_path.suffix}.tmp")
-        temp_path.write_text(json.dumps(normalized, indent=2, sort_keys=True), encoding="utf-8")
-        temp_path.replace(self.state_path)
+        conn.execute(
+            """
+            INSERT INTO product_state (id, payload, updated_at)
+            VALUES (1, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                payload = excluded.payload,
+                updated_at = excluded.updated_at
+            """,
+            (json.dumps(normalized, indent=2, sort_keys=True), _utc_now()),
+        )
+
+    @contextmanager
+    def _transaction(self) -> Generator[sqlite3.Connection, None, None]:
+        """Yield a connection wrapped in an explicit write transaction."""
+
+        conn = self._connect()
+        self._ensure_schema(conn)
+        self._ensure_state_row(conn)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def _update(self, mutate: Any) -> Any:
+        """Load, mutate, and persist the state inside one SQLite transaction."""
+
+        with self._transaction() as conn:
+            state = self._load_state_from_connection(conn)
+            result = mutate(state)
+            self._write_state_to_connection(conn, state)
+            return result

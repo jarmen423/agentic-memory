@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -25,6 +27,31 @@ def test_product_state_defaults_and_touch(monkeypatch, tmp_path):
     touched = store.touch()
     assert touched["app"]["last_seen_at"]
     assert state_path.exists()
+
+
+def test_product_state_migrates_legacy_json_payload_to_sqlite(tmp_path):
+    """Legacy JSON payloads are migrated in-place behind the same path contract."""
+
+    state_path = tmp_path / "product-state.json"
+    legacy_payload = {
+        "schema_version": 1,
+        "repos": [{"path": "D:/repo", "label": "Legacy Repo", "initialized": False}],
+        "integrations": [],
+        "projects": [],
+        "active_projects": [],
+        "project_automations": [],
+        "events": [],
+        "app": {"last_seen_at": None, "updated_at": "2026-04-11T00:00:00+00:00"},
+        "runtime": {"components": {}},
+    }
+    state_path.write_text(json.dumps(legacy_payload), encoding="utf-8")
+
+    store = ProductStateStore(state_path)
+    payload = store.load()
+
+    assert payload["repos"][0]["label"] == "Legacy Repo"
+    assert state_path.exists()
+    assert state_path.with_name(f"{state_path.name}.legacy-json.bak").exists()
 
 
 def test_product_state_upsert_repo_tracks_initialized_repo(tmp_path):
@@ -185,3 +212,28 @@ def test_product_state_tracks_workspace_scoped_project_automation(tmp_path):
     assert automation["automation_kind"] == "research_ingestion"
     assert payload["project_automations"][0]["workspace_id"] == "work-home"
     assert payload["projects"][0]["project_id"] == "project-alpha"
+
+
+def test_product_state_handles_concurrent_openclaw_event_writes(tmp_path):
+    """Concurrent OpenClaw writes should serialize cleanly through SQLite."""
+
+    store = ProductStateStore(tmp_path / "state.json")
+
+    def write_event(index: int) -> None:
+        store.record_event(
+            event_type="openclaw_turn_received",
+            actor="openclaw",
+            details={
+                "workspace_id": "workspace-alpha",
+                "device_id": f"device-{index % 3}",
+                "agent_id": f"agent-{index}",
+                "session_id": f"workspace-alpha:device-{index % 3}:agent-{index}",
+            },
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(write_event, range(40)))
+
+    payload = store.load()
+    assert len(payload["events"]) == 40
+    assert {event["details"]["workspace_id"] for event in payload["events"]} == {"workspace-alpha"}

@@ -195,6 +195,14 @@ POSTGRES_URI=postgresql+psycopg2://user:pass@localhost:5432/dbname
 REPO_PATH=/absolute/path/to/repo
 ```
 
+### VM Neo4j Note
+
+- VM-side secondary Neo4j container host ports currently noted for Agentic Memory:
+  - Browser: `7477`
+  - Bolt: `7667`
+- Remote Bolt URI currently noted for the VM-accessible instance:
+  - `bolt://100.114.240.126:7667`
+
 ---
 
 ## Code Organization

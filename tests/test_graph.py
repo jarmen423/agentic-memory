@@ -10,6 +10,7 @@ from agentic_memory.ingestion.python_call_analyzer import (
     PythonOutgoingCall,
 )
 from agentic_memory.ingestion.typescript_call_analyzer import (
+    TypeScriptCallAnalyzerError,
     TypeScriptFileCallAnalysis,
     TypeScriptFunctionCallAnalysis,
     TypeScriptOutgoingCall,
@@ -448,6 +449,14 @@ const lazy = import("./lazy-module");
                     "drop_count": 2,
                 }
             ],
+            [
+                {
+                    "source": "typescript_service",
+                    "status": "failed",
+                    "message": "TypeScript call analyzer timed out after 60s.",
+                    "updated_at": "2026-04-10T21:00:00Z",
+                }
+            ],
         ]
 
         diagnostics = builder.get_call_diagnostics()
@@ -470,6 +479,63 @@ const lazy = import("./lazy-module");
         assert diagnostics["sources"][0]["avg_confidence"] == pytest.approx(0.95)
         assert diagnostics["drop_reasons"][0]["reason"] == "ambiguous_name_match"
         assert diagnostics["drop_reasons"][0]["drop_count"] == 2
+        assert diagnostics["analyzer_issues"][0]["source"] == "typescript_service"
+        assert diagnostics["analyzer_issues"][0]["status"] == "failed"
+
+    def test_pass_4_records_typescript_analyzer_batch_failures(self, builder, mock_driver, monkeypatch, tmp_path):
+        """Batch analyzer failures should be persisted for later call-status inspection."""
+        _, session = mock_driver
+        repo_root = tmp_path
+        (repo_root / "pkg").mkdir()
+        (repo_root / "pkg" / "a.ts").write_text("export function foo(){ return 1 }", encoding="utf8")
+        builder.repo_root = repo_root
+        builder.repo_id = str(repo_root)
+
+        file_records = [{"path": "pkg/a.ts", "ohash": "hash"}]
+        def _run_side_effect(*args, **kwargs):
+            cypher = args[0]
+            if "MATCH (f:File" in cypher and "collect({" in cypher:
+                return file_records
+            return Mock()
+
+        session.run.side_effect = _run_side_effect
+        monkeypatch.setattr(
+            builder,
+            "_build_function_signature_indexes",
+            lambda *args, **kwargs: ({}, {}, {}),
+        )
+        monkeypatch.setattr(
+            builder,
+            "_prepare_typescript_analysis_requests",
+            lambda **_: (
+                {"pkg/a.ts": {"functions": [{"qualified_name": "foo", "name": "foo", "calls": []}]}},
+                [{"path": "pkg/a.ts", "functions": [{"qualified_name": "foo", "name": "foo"}]}],
+            ),
+        )
+        monkeypatch.setattr(builder, "_prepare_python_analysis_requests", lambda **_: [])
+        monkeypatch.setattr(builder, "_clear_call_analysis_artifacts", lambda *args, **kwargs: None)
+        monkeypatch.setattr(builder, "_write_call_drop_reasons", lambda *args, **kwargs: None)
+        monkeypatch.setattr(builder, "_write_call_edges", lambda *args, **kwargs: None)
+
+        class _FailingTsAnalyzer:
+            disabled_reason = None
+
+            def is_available(self):
+                return True
+
+            def analyze_files(self, **kwargs):
+                raise TypeScriptCallAnalyzerError("TypeScript call analyzer timed out after 60s.")
+
+        monkeypatch.setattr(builder, "_get_typescript_call_analyzer", lambda: _FailingTsAnalyzer())
+
+        builder.pass_4_call_graph(repo_root)
+
+        record_issue_calls = [
+            call for call in session.run.call_args_list if "CallAnalysisIssue" in call.args[0]
+        ]
+        assert record_issue_calls
+        assert record_issue_calls[0].kwargs["source"] == "typescript_service"
+        assert record_issue_calls[0].kwargs["status"] == "failed"
 
     def test_get_file_dependencies_scopes_duplicate_paths_by_repo_id(self, builder, mock_driver):
         """Dependency lookups should stay pinned to one repo when paths collide.

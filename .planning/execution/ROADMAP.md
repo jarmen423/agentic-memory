@@ -37,3 +37,9 @@
 - `W11-CALLS-05`: Distinguish repo-external Python calls from repo-local
   constructor/class targets so the unresolved bucket only represents real
   mapping debt.
+
+### Wave 6: Durable failure reporting
+
+- `W11-CALLS-06`: Persist analyzer batch failures and unavailability states so
+  `call-status` reports them after long indexing runs without requiring log
+  babysitting.

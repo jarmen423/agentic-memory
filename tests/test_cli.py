@@ -599,6 +599,14 @@ def test_call_status_json_success(monkeypatch, capsys, tmp_path):
                 "drop_count": 2,
             }
         ],
+        "analyzer_issues": [
+            {
+                "source": "typescript_service",
+                "status": "failed",
+                "message": "TypeScript call analyzer timed out after 60s.",
+                "updated_at": "2026-04-10T21:00:00Z",
+            }
+        ],
     }
 
     monkeypatch.setattr(cli, "find_repo_root", Mock(return_value=repo_root))
@@ -614,6 +622,7 @@ def test_call_status_json_success(monkeypatch, capsys, tmp_path):
     assert payload["data"]["diagnostics"]["repo_id"] == str(repo_root)
     assert payload["data"]["diagnostics"]["files_with_analyzer_attempts"] == 3
     assert payload["data"]["diagnostics"]["drop_reasons"][0]["reason"] == "ambiguous_name_match"
+    assert payload["data"]["diagnostics"]["analyzer_issues"][0]["status"] == "failed"
     assert payload["metrics"]["total_call_edges"] == 9
     assert payload["metrics"]["function_coverage_ratio"] == 0.6
     assert payload["metrics"]["high_confidence_ratio"] == pytest.approx(7 / 9)

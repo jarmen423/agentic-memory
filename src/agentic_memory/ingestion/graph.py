@@ -1364,6 +1364,46 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             rows=rows,
         )
 
+    def _record_call_analyzer_issue(
+        self,
+        session: neo4j.Session,
+        *,
+        repo_id: str,
+        source: str,
+        status: str,
+        message: str,
+    ) -> None:
+        """Persist one repo-level analyzer issue for later inspection."""
+        session.run(
+            """
+            MERGE (issue:CallAnalysisIssue {repo_id: $repo_id, source: $source})
+            SET issue.status = $status,
+                issue.message = $message,
+                issue.updated_at = datetime()
+            """,
+            repo_id=repo_id,
+            source=source,
+            status=status,
+            message=message,
+        )
+
+    def _clear_call_analyzer_issue(
+        self,
+        session: neo4j.Session,
+        *,
+        repo_id: str,
+        source: str,
+    ) -> None:
+        """Remove any stale repo-level analyzer issue after a healthy run."""
+        session.run(
+            """
+            MATCH (issue:CallAnalysisIssue {repo_id: $repo_id, source: $source})
+            DETACH DELETE issue
+            """,
+            repo_id=repo_id,
+            source=source,
+        )
+
     # =========================================================================
     # PASS 4: CALL GRAPH (OPTIMIZED)
     # =========================================================================
@@ -1430,16 +1470,41 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                             repo_root=repo_path,
                             files=analyzer_requests,
                         )
+                        self._clear_call_analyzer_issue(
+                            session,
+                            repo_id=repo_id,
+                            source="typescript_service",
+                        )
                     except TypeScriptCallAnalyzerError as exc:
                         logger.warning(
                             "⚠️ TypeScript call analyzer failed; falling back to parser-only CALLS: %s",
                             exc,
+                        )
+                        self._record_call_analyzer_issue(
+                            session,
+                            repo_id=repo_id,
+                            source="typescript_service",
+                            status="failed",
+                            message=str(exc),
                         )
                 else:
                     logger.info(
                         "TypeScript call analyzer unavailable; using parser-only CALLS. Reason: %s",
                         analyzer.disabled_reason,
                     )
+                    self._record_call_analyzer_issue(
+                        session,
+                        repo_id=repo_id,
+                        source="typescript_service",
+                        status="unavailable",
+                        message=str(analyzer.disabled_reason or "Analyzer unavailable."),
+                    )
+            else:
+                self._clear_call_analyzer_issue(
+                    session,
+                    repo_id=repo_id,
+                    source="typescript_service",
+                )
 
             if python_requests:
                 analyzer = self._get_python_call_analyzer()
@@ -1449,16 +1514,41 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                             repo_root=repo_path,
                             files=python_requests,
                         )
+                        self._clear_call_analyzer_issue(
+                            session,
+                            repo_id=repo_id,
+                            source="python_service",
+                        )
                     except PythonCallAnalyzerError as exc:
                         logger.warning(
                             "⚠️ Python call analyzer failed; falling back to parser-only CALLS: %s",
                             exc,
+                        )
+                        self._record_call_analyzer_issue(
+                            session,
+                            repo_id=repo_id,
+                            source="python_service",
+                            status="failed",
+                            message=str(exc),
                         )
                 else:
                     logger.info(
                         "Python call analyzer unavailable; using parser-only CALLS. Reason: %s",
                         analyzer.disabled_reason,
                     )
+                    self._record_call_analyzer_issue(
+                        session,
+                        repo_id=repo_id,
+                        source="python_service",
+                        status="unavailable",
+                        message=str(analyzer.disabled_reason or "Analyzer unavailable."),
+                    )
+            else:
+                self._clear_call_analyzer_issue(
+                    session,
+                    repo_id=repo_id,
+                    source="python_service",
+                )
 
             for i, record in enumerate(file_records):
                 rel_path = record["path"]
@@ -2026,6 +2116,28 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                     for record in drop_reason_rows
                 ]
 
+                analyzer_issue_rows = session.run(
+                    """
+                    MATCH (issue:CallAnalysisIssue {repo_id: $repo_id})
+                    RETURN issue.source as source,
+                           issue.status as status,
+                           issue.message as message,
+                           toString(issue.updated_at) as updated_at
+                    ORDER BY issue.source ASC
+                    """,
+                    repo_id=resolved_repo_id,
+                )
+
+                analyzer_issues = [
+                    {
+                        "source": record["source"],
+                        "status": record["status"],
+                        "message": record["message"],
+                        "updated_at": record["updated_at"],
+                    }
+                    for record in analyzer_issue_rows
+                ]
+
             total_functions = int(summary["total_functions"] or 0)
             functions_with_calls = int(summary["functions_with_calls"] or 0)
             total_call_edges = int(summary["total_call_edges"] or 0)
@@ -2065,6 +2177,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                 "file_coverage_ratio": file_coverage_ratio,
                 "sources": sources,
                 "drop_reasons": drop_reasons,
+                "analyzer_issues": analyzer_issues,
             }
 
         return self.circuit_breaker.call(_execute_call_diagnostics)

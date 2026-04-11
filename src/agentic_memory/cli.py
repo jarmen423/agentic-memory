@@ -1248,6 +1248,17 @@ def cmd_call_status(args):
                     f"  {row['source']} :: {row['reason']} = {row['drop_count']:,}"
                 )
 
+        analyzer_issues = diagnostics.get("analyzer_issues", [])
+        if analyzer_issues:
+            print()
+            print("Analyzer Issues")
+            for row in analyzer_issues:
+                updated_suffix = f" @ {row['updated_at']}" if row.get("updated_at") else ""
+                print(
+                    f"  {row['source']} [{row['status']}]"
+                    f"{updated_suffix}: {row['message']}"
+                )
+
     except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ServiceUnavailable) as exc:
         _exit_with_error(
             args,

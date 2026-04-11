@@ -122,6 +122,26 @@
         "python -m agentic_memory.cli debug-py-calls src\\agentic_memory\\cli.py --repo D:\\code\\agentic-memory --json"
       ],
       "handoff_path": ".planning/execution/handoffs/w11-calls/W11-CALLS-05.md"
+    },
+    {
+      "id": "W11-CALLS-06",
+      "title": "Persist analyzer batch failures into call-status diagnostics",
+      "status": "completed",
+      "owner": "orchestrator",
+      "depends_on": [
+        "W11-CALLS-05"
+      ],
+      "write_scope": [
+        "src/agentic_memory/ingestion/graph.py",
+        "src/agentic_memory/cli.py",
+        "tests/test_graph.py",
+        "tests/test_cli.py"
+      ],
+      "verify": [
+        "python -m pytest tests/test_graph.py -k \"call_diagnostics or pass_4_records_typescript_analyzer_batch_failures\" -q",
+        "python -m pytest tests/test_cli.py -k \"call_status_json_success\" -q"
+      ],
+      "handoff_path": ".planning/execution/handoffs/w11-calls/W11-CALLS-06.md"
     }
   ],
   "merge_gates": [

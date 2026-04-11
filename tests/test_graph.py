@@ -143,6 +143,69 @@ class TestKnowledgeGraphBuilder:
         builder.close()
         builder.driver.close.assert_called_once()
 
+    def test_run_pipeline_scopes_pass_2_and_pass_3_to_changed_files(self, builder, monkeypatch, tmp_path):
+        """Full indexing should only rebuild chunks/imports for changed files.
+
+        Pass 1 already computes file content hashes. This regression protects the
+        Phase 11 fix that threads that changed-file set into Pass 2 and Pass 3
+        so `agentic-memory index` does not re-embed the entire repo when only a
+        subset of files changed.
+        """
+        repo_root = tmp_path
+        changed_paths = ["src/changed.py"]
+
+        setup_database = Mock()
+        pass_1 = Mock(return_value=changed_paths)
+        pass_2 = Mock()
+        pass_3 = Mock()
+        pass_4 = Mock()
+
+        monkeypatch.setattr(builder, "setup_database", setup_database)
+        monkeypatch.setattr(builder, "pass_1_structure_scan", pass_1)
+        monkeypatch.setattr(builder, "pass_2_entity_definition", pass_2)
+        monkeypatch.setattr(builder, "pass_3_imports", pass_3)
+        monkeypatch.setattr(builder, "pass_4_call_graph", pass_4)
+
+        builder.run_pipeline(repo_root)
+
+        pass_1.assert_called_once()
+        pass_2.assert_called_once_with(repo_root, target_paths=changed_paths)
+        pass_3.assert_called_once_with(repo_root, target_paths=changed_paths)
+        pass_4.assert_called_once_with(repo_root)
+
+    def test_reindex_file_scopes_entity_and_import_passes_to_one_file(
+        self,
+        builder,
+        mock_driver,
+        monkeypatch,
+        tmp_path,
+    ):
+        """Watcher-style single-file reindex should only rebuild that file's chunks/imports."""
+        _, session = mock_driver
+        repo_root = tmp_path
+        (repo_root / "pkg").mkdir()
+        target_path = repo_root / "pkg" / "a.py"
+        target_path.write_text("def foo():\n    return 1\n", encoding="utf8")
+
+        monkeypatch.setattr(
+            builder,
+            "_parse_source_file",
+            lambda path: ("def foo():\n    return 1\n", {"functions": [], "classes": []}),
+        )
+        monkeypatch.setattr(builder, "_calculate_ohash", lambda path: "hash-a")
+        pass_2 = Mock()
+        pass_3 = Mock()
+        pass_4 = Mock()
+        monkeypatch.setattr(builder, "pass_2_entity_definition", pass_2)
+        monkeypatch.setattr(builder, "pass_3_imports", pass_3)
+        monkeypatch.setattr(builder, "pass_4_call_graph", pass_4)
+
+        builder.reindex_file("pkg/a.py", repo_path=repo_root)
+
+        pass_2.assert_called_once_with(repo_root, target_paths={"pkg/a.py"})
+        pass_3.assert_called_once_with(repo_root, target_paths={"pkg/a.py"})
+        pass_4.assert_called_once_with(repo_root)
+
     def test_extract_js_ts_import_modules(self, builder):
         """Test JS/TS import extraction supports common import syntaxes."""
         code = """

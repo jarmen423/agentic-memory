@@ -43,3 +43,8 @@
 - `W11-CALLS-06`: Persist analyzer batch failures and unavailability states so
   `call-status` reports them after long indexing runs without requiring log
   babysitting.
+
+### Wave 7: Incremental full-index orchestration
+
+- `W11-CALLS-07`: Reuse Pass 1's changed-file set so full `index` runs stop
+  re-embedding unchanged files before the call-graph stage.

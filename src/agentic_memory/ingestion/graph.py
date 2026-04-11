@@ -641,7 +641,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
 
     def pass_1_structure_scan(
         self, repo_path: Optional[Path] = None, supported_extensions: Optional[Set[str]] = None
-    ):
+    ) -> list[str]:
         """
         Scans the directory structure.
         Creates File nodes if they are new or modified. Skips if oHash matches.
@@ -649,6 +649,16 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         Args:
             repo_path: Path to repository root (defaults to self.repo_root)
             supported_extensions: Set of file extensions to process
+
+        Returns:
+            Repo-relative paths that are new or whose content hash changed.
+
+        Why this matters:
+            Phase 11 exposed that `agentic-memory index` was still re-running
+            Pass 2 for every file even when Pass 1 had already proven the file
+            was unchanged. Returning the changed-file set lets later passes
+            scope expensive work, especially embeddings, to only the files that
+            actually need rebuilding.
         """
         repo_path, repo_id = self._require_repo_context(repo_path)
         supported_extensions = supported_extensions or {".py", ".js", ".ts", ".tsx", ".jsx"}
@@ -657,6 +667,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
 
         count = 0
         pruned_count = 0
+        changed_paths: list[str] = []
         with self.driver.session() as session:
             for root, dirs, files in os.walk(repo_path):
                 # Filter directories
@@ -697,6 +708,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                         ohash=current_ohash,
                     )
                     count += 1
+                    changed_paths.append(rel_path)
 
             # Prune File nodes that are no longer indexable under current rules.
             existing_paths = [
@@ -714,12 +726,18 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         logger.info(f"✅ [Pass 1] Processed {count} new/modified files.")
         if pruned_count:
             logger.info(f"🧹 [Pass 1] Pruned {pruned_count} excluded/stale files from graph.")
+        return changed_paths
 
     # =========================================================================
     # PASS 2: ENTITY DEFINITION & HYBRID CHUNKING
     # =========================================================================
 
-    def pass_2_entity_definition(self, repo_path: Optional[Path] = None):
+    def pass_2_entity_definition(
+        self,
+        repo_path: Optional[Path] = None,
+        *,
+        target_paths: Optional[Set[str] | list[str]] = None,
+    ):
         """
         Parses files using Tree-sitter.
         1. Extracts Classes/Functions.
@@ -727,18 +745,33 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
 
         Args:
             repo_path: Path to repository root (defaults to self.repo_root)
+            target_paths: Optional repo-relative file paths to rebuild. When
+                omitted, Pass 2 rebuilds every indexed file in the repo. When
+                provided, only those files are reparsed and re-embedded.
         """
         repo_path, repo_id = self._require_repo_context(repo_path)
 
         logger.info("🧠 [Pass 2] Extracting Entities & Creating Chunks...")
 
         with self.driver.session() as session:
-            # Fetch all files that need indexing
-            result = session.run(
-                "MATCH (f:File {repo_id: $repo_id}) RETURN f.path as path",
-                repo_id=repo_id,
-            )
-            files_to_process = [record["path"] for record in result]
+            if target_paths is None:
+                result = session.run(
+                    "MATCH (f:File {repo_id: $repo_id}) RETURN f.path as path",
+                    repo_id=repo_id,
+                )
+                files_to_process = [record["path"] for record in result]
+            else:
+                files_to_process = sorted(
+                    {
+                        self._normalize_rel_path(path)
+                        for path in target_paths
+                        if self._normalize_rel_path(path)
+                    }
+                )
+
+            if not files_to_process:
+                logger.info("⏭️ [Pass 2] No changed files require entity/chunk rebuild.")
+                return
 
             for i, rel_path in enumerate(files_to_process):
                 print(f"[{i+1}/{len(files_to_process)}] 🧠 Processing: {rel_path}...", end="\r")
@@ -979,13 +1012,21 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             return ""
         return spec
 
-    def pass_3_imports(self, repo_path: Optional[Path] = None):
+    def pass_3_imports(
+        self,
+        repo_path: Optional[Path] = None,
+        *,
+        target_paths: Optional[Set[str] | list[str]] = None,
+    ):
         """
         Analyzes import statements to link File nodes.
         Supports Python and JS/TS import patterns.
 
         Args:
             repo_path: Path to repository root (defaults to self.repo_root)
+            target_paths: Optional source files whose outgoing IMPORTS edges
+                should be rebuilt. This is enough for incremental indexing
+                because IMPORTS are stored from the source file to its targets.
         """
         repo_path, repo_id = self._require_repo_context(repo_path)
 
@@ -1000,6 +1041,17 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             all_paths = [r["path"] for r in result]
             path_set = set(all_paths)
             files = [path for path in all_paths if Path(path).suffix in supported_exts]
+            if target_paths is not None:
+                normalized_targets = {
+                    self._normalize_rel_path(path)
+                    for path in target_paths
+                    if self._normalize_rel_path(path)
+                }
+                files = [path for path in files if path in normalized_targets]
+
+            if not files:
+                logger.info("⏭️ [Pass 3] No changed files require import relinking.")
+                return
 
             for rel_path in files:
                 full_path = repo_path / rel_path
@@ -1717,11 +1769,11 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                 ohash=file_hash,
             )
 
-        # Reuse the multi-pass logic for one file by re-running the passes on the
-        # repo. This keeps the watcher behavior aligned with the main pipeline
-        # until a dedicated incremental graph-updater is carved out.
-        self.pass_2_entity_definition(repo_path)
-        self.pass_3_imports(repo_path)
+        # Reuse the multi-pass logic for one changed file. Pass 2 and Pass 3 can
+        # now stay scoped to that file, while Pass 4 remains repo-wide so
+        # call-graph consistency does not silently regress.
+        self.pass_2_entity_definition(repo_path, target_paths={normalized_path})
+        self.pass_3_imports(repo_path, target_paths={normalized_path})
         self.pass_4_call_graph(repo_path)
 
     def delete_file(
@@ -1763,9 +1815,12 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         print("=" * 60)
 
         self.setup_database()
-        self.pass_1_structure_scan(repo_path, supported_extensions=supported_extensions)
-        self.pass_2_entity_definition(repo_path)
-        self.pass_3_imports(repo_path)
+        changed_paths = self.pass_1_structure_scan(
+            repo_path,
+            supported_extensions=supported_extensions,
+        )
+        self.pass_2_entity_definition(repo_path, target_paths=changed_paths)
+        self.pass_3_imports(repo_path, target_paths=changed_paths)
         self.pass_4_call_graph(repo_path)
 
         elapsed = time.time() - start_time

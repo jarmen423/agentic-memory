@@ -142,6 +142,23 @@
         "python -m pytest tests/test_cli.py -k \"call_status_json_success\" -q"
       ],
       "handoff_path": ".planning/execution/handoffs/w11-calls/W11-CALLS-06.md"
+    },
+    {
+      "id": "W11-CALLS-07",
+      "title": "Scope full index rebuilds to changed files for Pass 2 and Pass 3",
+      "status": "completed",
+      "owner": "orchestrator",
+      "depends_on": [
+        "W11-CALLS-06"
+      ],
+      "write_scope": [
+        "src/agentic_memory/ingestion/graph.py",
+        "tests/test_graph.py"
+      ],
+      "verify": [
+        "python -m pytest tests/test_graph.py -k \"run_pipeline_scopes_pass_2_and_pass_3_to_changed_files or reindex_file_scopes_entity_and_import_passes_to_one_file\" -q"
+      ],
+      "handoff_path": ".planning/execution/handoffs/w11-calls/W11-CALLS-07.md"
     }
   ],
   "merge_gates": [

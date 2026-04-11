@@ -600,6 +600,143 @@ const lazy = import("./lazy-module");
         assert record_issue_calls[0].kwargs["source"] == "typescript_service"
         assert record_issue_calls[0].kwargs["status"] == "failed"
 
+    def test_pass_4_records_partial_typescript_batch_failures(
+        self,
+        builder,
+        mock_driver,
+        monkeypatch,
+        tmp_path,
+    ):
+        """Partial TS batch failures should still be persisted after fallback continues."""
+        _, session = mock_driver
+        repo_root = tmp_path
+        (repo_root / "src").mkdir()
+        (repo_root / "src" / "a.ts").write_text("export function foo() {}", encoding="utf8")
+        (repo_root / "src" / "b.ts").write_text("export function bar() {}", encoding="utf8")
+        builder.repo_root = repo_root
+        builder.repo_id = str(repo_root)
+
+        initial_records = [
+            {
+                "path": "src/a.ts",
+                "funcs": [
+                    {
+                        "name": "foo",
+                        "sig": "src/a.ts:foo",
+                        "qualified_name": "foo",
+                        "parent_class": "",
+                        "name_line": 1,
+                        "name_column": 17,
+                    }
+                ],
+            },
+            {
+                "path": "src/b.ts",
+                "funcs": [
+                    {
+                        "name": "bar",
+                        "sig": "src/b.ts:bar",
+                        "qualified_name": "bar",
+                        "parent_class": "",
+                        "name_line": 1,
+                        "name_column": 17,
+                    }
+                ],
+            },
+        ]
+
+        def _run_side_effect(*args, **kwargs):
+            cypher = args[0]
+            if "MATCH (f:File" in cypher and "collect({" in cypher:
+                return initial_records
+            return Mock()
+
+        session.run.side_effect = _run_side_effect
+
+        parsed_by_path = {
+            "src/a.ts": {"functions": [{"name": "foo", "qualified_name": "foo", "calls": []}]},
+            "src/b.ts": {"functions": [{"name": "bar", "qualified_name": "bar", "calls": []}]},
+        }
+        monkeypatch.setattr(
+            builder,
+            "_build_function_signature_indexes",
+            lambda *args, **kwargs: (
+                {"src/b.ts": {"bar": "src/b.ts:bar"}},
+                {"src/b.ts": {"bar": ["src/b.ts:bar"]}},
+                {"src/b.ts": {(1, 17): "src/b.ts:bar"}},
+            ),
+        )
+        monkeypatch.setattr(
+            builder,
+            "_prepare_typescript_analysis_requests",
+            lambda **_: (
+                parsed_by_path,
+                [
+                    {"path": "src/a.ts", "functions": [{"qualified_name": "foo", "name": "foo"}]},
+                    {"path": "src/b.ts", "functions": [{"qualified_name": "bar", "name": "bar"}]},
+                ],
+            ),
+        )
+        monkeypatch.setattr(builder, "_prepare_python_analysis_requests", lambda **_: [])
+        monkeypatch.setattr(builder, "_clear_call_analysis_artifacts", lambda *args, **kwargs: None)
+        monkeypatch.setattr(builder, "_write_call_drop_reasons", lambda *args, **kwargs: None)
+        monkeypatch.setattr(builder, "_write_call_edges", lambda *args, **kwargs: None)
+
+        class _PartialTsAnalyzer:
+            disabled_reason = None
+
+            def __init__(self):
+                self.last_run_issues = (
+                    Mock(total_batches=2, message="TypeScript call analyzer timed out after 30s."),
+                )
+
+            def is_available(self):
+                return True
+
+            def analyze_files(self, **kwargs):
+                return {
+                    "src/a.ts": TypeScriptFileCallAnalysis(
+                        rel_path="src/a.ts",
+                        functions={
+                            "foo": TypeScriptFunctionCallAnalysis(
+                                qualified_name="foo",
+                                name="foo",
+                                outgoing_calls=(),
+                            )
+                        },
+                        diagnostics=(
+                            {
+                                "kind": "batch_failed",
+                                "level": "warning",
+                                "message": "TypeScript call analyzer timed out after 30s.",
+                            },
+                        ),
+                        drop_reason_counts={},
+                    ),
+                    "src/b.ts": TypeScriptFileCallAnalysis(
+                        rel_path="src/b.ts",
+                        functions={
+                            "bar": TypeScriptFunctionCallAnalysis(
+                                qualified_name="bar",
+                                name="bar",
+                                outgoing_calls=(),
+                            )
+                        },
+                        diagnostics=(),
+                        drop_reason_counts={},
+                    ),
+                }
+
+        monkeypatch.setattr(builder, "_get_typescript_call_analyzer", lambda: _PartialTsAnalyzer())
+
+        builder.pass_4_call_graph(repo_root)
+
+        record_issue_calls = [
+            call for call in session.run.call_args_list if "CallAnalysisIssue" in call.args[0]
+        ]
+        assert record_issue_calls
+        assert record_issue_calls[0].kwargs["status"] == "partial_failure"
+
     def test_get_file_dependencies_scopes_duplicate_paths_by_repo_id(self, builder, mock_driver):
         """Dependency lookups should stay pinned to one repo when paths collide.
 

@@ -96,11 +96,23 @@ class TypeScriptFileCallAnalysis:
     drop_reason_counts: dict[str, int] | None = None
 
 
+@dataclass(frozen=True)
+class TypeScriptAnalyzerIssue:
+    """One batch-level analyzer problem from a multi-batch run."""
+
+    batch_index: int
+    total_batches: int
+    file_count: int
+    status: str
+    message: str
+
+
 class TypeScriptCallAnalyzer:
     """Batch JS/TS call analysis through the installed TypeScript service."""
 
     def __init__(self, config: _AnalyzerConfig | None = None) -> None:
         self._config = config or self._build_config()
+        self._last_run_issues: tuple[TypeScriptAnalyzerIssue, ...] = ()
 
     def is_available(self) -> bool:
         """Return ``True`` when the local helper can run."""
@@ -111,12 +123,19 @@ class TypeScriptCallAnalyzer:
         """Human-readable reason the analyzer is unavailable, if any."""
         return self._config.disabled_reason
 
+    @property
+    def last_run_issues(self) -> tuple[TypeScriptAnalyzerIssue, ...]:
+        """Batch issues recorded during the most recent analyze_files call."""
+        return self._last_run_issues
+
     def analyze_files(
         self,
         *,
         repo_root: Path,
         files: list[dict[str, Any]],
         timeout_seconds: int = 60,
+        batch_size: int | None = None,
+        continue_on_batch_failure: bool = False,
     ) -> dict[str, TypeScriptFileCallAnalysis]:
         """Resolve outgoing calls for a batch of JS/TS files.
 
@@ -126,7 +145,14 @@ class TypeScriptCallAnalyzer:
                 a ``functions`` list with ``qualified_name``, ``name``,
                 ``name_line``, and ``name_column`` values from the canonical
                 parser.
-            timeout_seconds: Maximum helper runtime for the whole batch.
+            timeout_seconds: Maximum helper runtime for one helper batch.
+            batch_size: Optional maximum files per helper invocation. Smaller
+                batches reduce the chance that one large repo-wide request times
+                out before returning any semantic results.
+            continue_on_batch_failure: When ``True``, failed helper batches are
+                recorded in ``last_run_issues`` and the analyzer returns empty
+                per-file results for that batch so callers can fall back
+                selectively instead of losing the whole run.
 
         Returns:
             Mapping of repo-relative file path to structured analyzer results.
@@ -139,12 +165,114 @@ class TypeScriptCallAnalyzer:
         """
         if not files:
             return {}
+        self._last_run_issues = ()
 
         if not self.is_available():
             raise TypeScriptCallAnalyzerUnavailableError(
                 self.disabled_reason or "TypeScript call analyzer is unavailable."
             )
 
+        normalized_batch_size = max(int(batch_size or len(files) or 1), 1)
+        batches = [
+            files[index : index + normalized_batch_size]
+            for index in range(0, len(files), normalized_batch_size)
+        ]
+        issues: list[TypeScriptAnalyzerIssue] = []
+        results: dict[str, TypeScriptFileCallAnalysis] = {}
+
+        for batch_number, batch_files in enumerate(batches, start=1):
+            logger.info(
+                "TypeScript call analyzer batch %s/%s starting (%s files).",
+                batch_number,
+                len(batches),
+                len(batch_files),
+            )
+            try:
+                response = self._run_batch(
+                    repo_root=repo_root,
+                    files=batch_files,
+                    timeout_seconds=timeout_seconds,
+                )
+            except TypeScriptCallAnalyzerError as exc:
+                issue = TypeScriptAnalyzerIssue(
+                    batch_index=batch_number,
+                    total_batches=len(batches),
+                    file_count=len(batch_files),
+                    status="failed",
+                    message=str(exc),
+                )
+                issues.append(issue)
+                logger.warning(
+                    "TypeScript call analyzer batch %s/%s failed (%s files): %s",
+                    batch_number,
+                    len(batches),
+                    len(batch_files),
+                    exc,
+                )
+                if not continue_on_batch_failure:
+                    self._last_run_issues = tuple(issues)
+                    raise
+                for file_request in batch_files:
+                    rel_path = str(file_request.get("path") or "")
+                    functions = {
+                        str(
+                            function_row.get("qualified_name")
+                            or function_row.get("name")
+                            or ""
+                        ): TypeScriptFunctionCallAnalysis(
+                            qualified_name=str(
+                                function_row.get("qualified_name")
+                                or function_row.get("name")
+                                or ""
+                            ),
+                            name=str(
+                                function_row.get("name")
+                                or function_row.get("qualified_name")
+                                or ""
+                            ),
+                            outgoing_calls=(),
+                        )
+                        for function_row in file_request.get("functions", [])
+                        if function_row.get("qualified_name") or function_row.get("name")
+                    }
+                    results[rel_path] = TypeScriptFileCallAnalysis(
+                        rel_path=rel_path,
+                        functions=functions,
+                        diagnostics=(
+                            {
+                                "kind": "batch_failed",
+                                "level": "warning",
+                                "batch_index": batch_number,
+                                "total_batches": len(batches),
+                                "message": str(exc),
+                            },
+                        ),
+                        drop_reason_counts={},
+                    )
+                continue
+
+            logger.info(
+                "TypeScript call analyzer batch %s/%s completed (%s files).",
+                batch_number,
+                len(batches),
+                len(batch_files),
+            )
+            for file_row in response.get("files", []):
+                rel_path, analysis = self._parse_file_row(file_row)
+                if rel_path:
+                    results[rel_path] = analysis
+
+        self._last_run_issues = tuple(issues)
+        return results
+
+    def _run_batch(
+        self,
+        *,
+        repo_root: Path,
+        files: list[dict[str, Any]],
+        timeout_seconds: int,
+    ) -> dict[str, Any]:
+        """Execute one helper subprocess for a bounded file batch."""
         payload = {
             "repoRoot": str(repo_root.resolve()),
             "files": files,
@@ -186,79 +314,82 @@ class TypeScriptCallAnalyzer:
             message = str(response.get("error") or "TypeScript call analyzer failed.")
             raise TypeScriptCallAnalyzerError(message)
 
-        results: dict[str, TypeScriptFileCallAnalysis] = {}
-        for file_row in response.get("files", []):
+        return response
+
+    def _parse_file_row(
+        self,
+        file_row: dict[str, Any],
+    ) -> tuple[str, TypeScriptFileCallAnalysis]:
+        """Convert one helper file payload into the typed analyzer contract."""
+        rel_path = str(file_row.get("path") or "")
+        functions: dict[str, TypeScriptFunctionCallAnalysis] = {}
+
+        for function_row in file_row.get("functions", []):
             rel_path = str(file_row.get("path") or "")
-            functions: dict[str, TypeScriptFunctionCallAnalysis] = {}
+            qualified_name = str(
+                function_row.get("qualified_name") or function_row.get("name") or ""
+            )
+            if not qualified_name:
+                continue
 
-            for function_row in file_row.get("functions", []):
-                qualified_name = str(
-                    function_row.get("qualified_name") or function_row.get("name") or ""
+            outgoing_calls = tuple(
+                TypeScriptOutgoingCall(
+                    rel_path=str(call_row.get("path") or ""),
+                    name=str(call_row.get("name") or ""),
+                    kind=(
+                        str(call_row["kind"])
+                        if call_row.get("kind") is not None
+                        else None
+                    ),
+                    container_name=(
+                        str(call_row["container_name"])
+                        if call_row.get("container_name") is not None
+                        else None
+                    ),
+                    qualified_name_guess=(
+                        str(call_row["qualified_name_guess"])
+                        if call_row.get("qualified_name_guess") is not None
+                        else None
+                    ),
+                    definition_line=(
+                        int(call_row["definition_line"])
+                        if call_row.get("definition_line") is not None
+                        else None
+                    ),
+                    definition_column=(
+                        int(call_row["definition_column"])
+                        if call_row.get("definition_column") is not None
+                        else None
+                    ),
                 )
-                if not qualified_name:
-                    continue
+                for call_row in function_row.get("outgoing", [])
+                if call_row.get("path") and call_row.get("name")
+            )
 
-                outgoing_calls = tuple(
-                    TypeScriptOutgoingCall(
-                        rel_path=str(call_row.get("path") or ""),
-                        name=str(call_row.get("name") or ""),
-                        kind=(
-                            str(call_row["kind"])
-                            if call_row.get("kind") is not None
-                            else None
-                        ),
-                        container_name=(
-                            str(call_row["container_name"])
-                            if call_row.get("container_name") is not None
-                            else None
-                        ),
-                        qualified_name_guess=(
-                            str(call_row["qualified_name_guess"])
-                            if call_row.get("qualified_name_guess") is not None
-                            else None
-                        ),
-                        definition_line=(
-                            int(call_row["definition_line"])
-                            if call_row.get("definition_line") is not None
-                            else None
-                        ),
-                        definition_column=(
-                            int(call_row["definition_column"])
-                            if call_row.get("definition_column") is not None
-                            else None
-                        ),
-                    )
-                    for call_row in function_row.get("outgoing", [])
-                    if call_row.get("path") and call_row.get("name")
-                )
+            functions[qualified_name] = TypeScriptFunctionCallAnalysis(
+                qualified_name=qualified_name,
+                name=str(function_row.get("name") or qualified_name),
+                outgoing_calls=outgoing_calls,
+            )
 
-                functions[qualified_name] = TypeScriptFunctionCallAnalysis(
-                    qualified_name=qualified_name,
-                    name=str(function_row.get("name") or qualified_name),
-                    outgoing_calls=outgoing_calls,
-                )
+        diagnostics = tuple(file_row.get("diagnostics", ()))
+        drop_reason_counts = {
+            str(reason): int(count)
+            for reason, count in (file_row.get("drop_reason_counts") or {}).items()
+        }
+        if diagnostics:
+            logger.debug(
+                "TypeScript analyzer diagnostics for %s: %s",
+                rel_path,
+                diagnostics,
+            )
 
-            diagnostics = tuple(file_row.get("diagnostics", ()))
-            drop_reason_counts = {
-                str(reason): int(count)
-                for reason, count in (file_row.get("drop_reason_counts") or {}).items()
-            }
-            if diagnostics:
-                logger.debug(
-                    "TypeScript analyzer diagnostics for %s: %s",
-                    rel_path,
-                    diagnostics,
-                )
-
-            if rel_path:
-                results[rel_path] = TypeScriptFileCallAnalysis(
-                    rel_path=rel_path,
-                    functions=functions,
-                    diagnostics=diagnostics,
-                    drop_reason_counts=drop_reason_counts,
-                )
-
-        return results
+        return rel_path, TypeScriptFileCallAnalysis(
+            rel_path=rel_path,
+            functions=functions,
+            diagnostics=diagnostics,
+            drop_reason_counts=drop_reason_counts,
+        )
 
     def _build_config(self) -> _AnalyzerConfig:
         """Resolve the local Node helper command and prerequisites."""

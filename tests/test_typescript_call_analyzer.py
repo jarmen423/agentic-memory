@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from agentic_memory.ingestion.parser import CodeParser
-from agentic_memory.ingestion.typescript_call_analyzer import TypeScriptCallAnalyzer
+from agentic_memory.ingestion.typescript_call_analyzer import (
+    TypeScriptCallAnalyzer,
+    TypeScriptCallAnalyzerError,
+)
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "code_graph" / "multi_repo_collision"
 
@@ -203,3 +207,102 @@ def test_typescript_call_analyzer_keeps_duplicate_paths_repo_local(tmp_path: Pat
     assert ("src/shared/helpers.ts", "helper", "helper") in beta_calls
     assert ("src/shared/helpers.ts", "betaOnly", "betaOnly") in beta_calls
     assert ("src/shared/helpers.ts", "alphaOnly", "alphaOnly") not in beta_calls
+
+
+def test_typescript_call_analyzer_batches_large_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Large JS/TS analysis runs should be split into smaller helper batches."""
+    analyzer = TypeScriptCallAnalyzer()
+    analyzer._config = analyzer._config.__class__(command=("node", "fake.js"), cwd=".")
+
+    calls: list[dict[str, object]] = []
+
+    def fake_run(*args, **kwargs):
+        payload = json.loads(kwargs["input"])
+        calls.append(payload)
+        only_file = payload["files"][0]["path"]
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "ok": True,
+                    "files": [
+                        {
+                            "path": only_file,
+                            "functions": [],
+                            "diagnostics": [],
+                            "drop_reason_counts": {},
+                        }
+                    ],
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        "agentic_memory.ingestion.typescript_call_analyzer.subprocess.run",
+        fake_run,
+    )
+
+    results = analyzer.analyze_files(
+        repo_root=Path("."),
+        files=[
+            {"path": "src/a.ts", "functions": []},
+            {"path": "src/b.ts", "functions": []},
+            {"path": "src/c.ts", "functions": []},
+        ],
+        batch_size=1,
+    )
+
+    assert len(calls) == 3
+    assert set(results) == {"src/a.ts", "src/b.ts", "src/c.ts"}
+
+
+def test_typescript_call_analyzer_can_continue_after_batch_failure() -> None:
+    """One failing helper batch should not erase the rest of the repo's results."""
+    analyzer = TypeScriptCallAnalyzer()
+    analyzer._config = analyzer._config.__class__(command=("node", "fake.js"), cwd=".")
+    observed_batches: list[list[str]] = []
+
+    def fake_run_batch(*, repo_root: Path, files: list[dict[str, object]], timeout_seconds: int):
+        batch_paths = [str(file_row["path"]) for file_row in files]
+        observed_batches.append(batch_paths)
+        if batch_paths == ["src/a.ts"]:
+            raise TypeScriptCallAnalyzerError("TypeScript call analyzer timed out after 30s.")
+        return {
+            "ok": True,
+            "files": [
+                {
+                    "path": "src/b.ts",
+                    "functions": [
+                        {
+                            "qualified_name": "bar",
+                            "name": "bar",
+                            "outgoing": [],
+                        }
+                    ],
+                    "diagnostics": [],
+                    "drop_reason_counts": {},
+                }
+            ],
+        }
+
+    analyzer._run_batch = fake_run_batch  # type: ignore[method-assign]
+
+    results = analyzer.analyze_files(
+        repo_root=Path("."),
+        files=[
+            {"path": "src/a.ts", "functions": [{"qualified_name": "foo", "name": "foo"}]},
+            {"path": "src/b.ts", "functions": [{"qualified_name": "bar", "name": "bar"}]},
+        ],
+        batch_size=1,
+        timeout_seconds=30,
+        continue_on_batch_failure=True,
+    )
+
+    assert observed_batches == [["src/a.ts"], ["src/b.ts"]]
+    assert len(analyzer.last_run_issues) == 1
+    assert analyzer.last_run_issues[0].status == "failed"
+    assert results["src/a.ts"].diagnostics[0]["kind"] == "batch_failed"
+    assert "timed out" in results["src/a.ts"].diagnostics[0]["message"]
+    assert "src/b.ts" in results

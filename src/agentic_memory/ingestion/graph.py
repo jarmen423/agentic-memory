@@ -1521,12 +1521,32 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                         typescript_results = analyzer.analyze_files(
                             repo_root=repo_path,
                             files=analyzer_requests,
+                            timeout_seconds=30,
+                            batch_size=10,
+                            continue_on_batch_failure=True,
                         )
-                        self._clear_call_analyzer_issue(
-                            session,
-                            repo_id=repo_id,
-                            source="typescript_service",
-                        )
+                        if analyzer.last_run_issues:
+                            failed_batches = len(analyzer.last_run_issues)
+                            total_batches = max(
+                                issue.total_batches for issue in analyzer.last_run_issues
+                            )
+                            latest_issue = analyzer.last_run_issues[-1]
+                            self._record_call_analyzer_issue(
+                                session,
+                                repo_id=repo_id,
+                                source="typescript_service",
+                                status="partial_failure",
+                                message=(
+                                    f"{failed_batches}/{total_batches} TypeScript analyzer batches failed. "
+                                    f"Latest: {latest_issue.message}"
+                                ),
+                            )
+                        else:
+                            self._clear_call_analyzer_issue(
+                                session,
+                                repo_id=repo_id,
+                                source="typescript_service",
+                            )
                     except TypeScriptCallAnalyzerError as exc:
                         logger.warning(
                             "⚠️ TypeScript call analyzer failed; falling back to parser-only CALLS: %s",

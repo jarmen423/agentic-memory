@@ -48,3 +48,9 @@
 
 - `W11-CALLS-07`: Reuse Pass 1's changed-file set so full `index` runs stop
   re-embedding unchanged files before the call-graph stage.
+
+### Wave 8: TypeScript analyzer batch execution
+
+- `W11-CALLS-08`: Split large JS/TS analyzer runs into smaller batches, keep
+  partial semantic results when a batch times out, and surface partial failures
+  back through repo-level diagnostics.

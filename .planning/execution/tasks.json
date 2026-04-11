@@ -159,6 +159,26 @@
         "python -m pytest tests/test_graph.py -k \"run_pipeline_scopes_pass_2_and_pass_3_to_changed_files or reindex_file_scopes_entity_and_import_passes_to_one_file\" -q"
       ],
       "handoff_path": ".planning/execution/handoffs/w11-calls/W11-CALLS-07.md"
+    },
+    {
+      "id": "W11-CALLS-08",
+      "title": "Batch TypeScript analyzer work and preserve partial results",
+      "status": "completed",
+      "owner": "orchestrator",
+      "depends_on": [
+        "W11-CALLS-07"
+      ],
+      "write_scope": [
+        "src/agentic_memory/ingestion/typescript_call_analyzer.py",
+        "src/agentic_memory/ingestion/graph.py",
+        "tests/test_typescript_call_analyzer.py",
+        "tests/test_graph.py"
+      ],
+      "verify": [
+        "python -m pytest tests/test_typescript_call_analyzer.py -q",
+        "python -m pytest tests/test_graph.py -k \"pass_4_records_typescript_analyzer_batch_failures or pass_4_records_partial_typescript_batch_failures or call_diagnostics\" -q"
+      ],
+      "handoff_path": ".planning/execution/handoffs/w11-calls/W11-CALLS-08.md"
     }
   ],
   "merge_gates": [

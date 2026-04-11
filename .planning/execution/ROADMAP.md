@@ -60,3 +60,9 @@
 - `W11-CALLS-09`: Split large Python analyzer runs into smaller batches, emit
   visible progress for Pass 4, keep partial semantic results when a batch
   fails, and surface partial failures back through repo-level diagnostics.
+
+### Wave 10: Adaptive TypeScript timeout recovery
+
+- `W11-CALLS-10`: Retry timed-out TypeScript analyzer batches in progressively
+  smaller groups so slow VM repos can still salvage semantic results instead of
+  failing every 10-file batch wholesale.

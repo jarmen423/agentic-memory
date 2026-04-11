@@ -199,6 +199,24 @@
         "python -m pytest tests/test_graph.py -k \"pass_4_records_partial_python_batch_failures or pass_4_records_partial_typescript_batch_failures or call_diagnostics\" -q"
       ],
       "handoff_path": ".planning/execution/handoffs/w11-calls/W11-CALLS-09.md"
+    },
+    {
+      "id": "W11-CALLS-10",
+      "title": "Retry timed-out TypeScript batches in smaller groups",
+      "status": "completed",
+      "owner": "orchestrator",
+      "depends_on": [
+        "W11-CALLS-09"
+      ],
+      "write_scope": [
+        "src/agentic_memory/ingestion/typescript_call_analyzer.py",
+        "tests/test_typescript_call_analyzer.py"
+      ],
+      "verify": [
+        "python -m pytest tests/test_typescript_call_analyzer.py -q",
+        "python -m pytest tests/test_graph.py -k \"pass_4_records_partial_typescript_batch_failures or call_diagnostics\" -q"
+      ],
+      "handoff_path": ".planning/execution/handoffs/w11-calls/W11-CALLS-10.md"
     }
   ],
   "merge_gates": [

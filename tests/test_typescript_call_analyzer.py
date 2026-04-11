@@ -306,3 +306,52 @@ def test_typescript_call_analyzer_can_continue_after_batch_failure() -> None:
     assert results["src/a.ts"].diagnostics[0]["kind"] == "batch_failed"
     assert "timed out" in results["src/a.ts"].diagnostics[0]["message"]
     assert "src/b.ts" in results
+
+
+def test_typescript_call_analyzer_splits_timed_out_batches(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Timed-out TS batches should retry in smaller groups before giving up."""
+    analyzer = TypeScriptCallAnalyzer()
+    analyzer._config = analyzer._config.__class__(command=("node", "fake.js"), cwd=".")
+    observed_batches: list[list[str]] = []
+
+    def fake_run_batch(*, repo_root: Path, files: list[dict[str, object]], timeout_seconds: int):
+        batch_paths = [str(file_row["path"]) for file_row in files]
+        observed_batches.append(batch_paths)
+        if len(batch_paths) > 1:
+            raise TypeScriptCallAnalyzerError("TypeScript call analyzer timed out after 30s.")
+        only_path = batch_paths[0]
+        only_name = Path(only_path).stem
+        return {
+            "ok": True,
+            "files": [
+                {
+                    "path": only_path,
+                    "functions": [
+                        {
+                            "qualified_name": only_name,
+                            "name": only_name,
+                            "outgoing": [],
+                        }
+                    ],
+                    "diagnostics": [],
+                    "drop_reason_counts": {},
+                }
+            ],
+        }
+
+    monkeypatch.setattr(analyzer, "_run_batch", fake_run_batch)
+
+    results = analyzer.analyze_files(
+        repo_root=Path("."),
+        files=[
+            {"path": "src/a.ts", "functions": [{"qualified_name": "a", "name": "a"}]},
+            {"path": "src/b.ts", "functions": [{"qualified_name": "b", "name": "b"}]},
+        ],
+        batch_size=2,
+        timeout_seconds=30,
+        continue_on_batch_failure=True,
+    )
+
+    assert observed_batches == [["src/a.ts", "src/b.ts"], ["src/a.ts"], ["src/b.ts"]]
+    assert set(results) == {"src/a.ts", "src/b.ts"}
+    assert analyzer.last_run_issues == ()

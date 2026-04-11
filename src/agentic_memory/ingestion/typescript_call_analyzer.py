@@ -188,10 +188,13 @@ class TypeScriptCallAnalyzer:
                 len(batch_files),
             )
             try:
-                response = self._run_batch(
+                batch_results, batch_issues = self._analyze_batch_with_retries(
                     repo_root=repo_root,
                     files=batch_files,
                     timeout_seconds=timeout_seconds,
+                    batch_index=batch_number,
+                    total_batches=len(batches),
+                    continue_on_batch_failure=continue_on_batch_failure,
                 )
             except TypeScriptCallAnalyzerError as exc:
                 issue = TypeScriptAnalyzerIssue(
@@ -251,19 +254,172 @@ class TypeScriptCallAnalyzer:
                     )
                 continue
 
-            logger.info(
-                "TypeScript call analyzer batch %s/%s completed (%s files).",
-                batch_number,
-                len(batches),
-                len(batch_files),
-            )
-            for file_row in response.get("files", []):
-                rel_path, analysis = self._parse_file_row(file_row)
-                if rel_path:
-                    results[rel_path] = analysis
+            issues.extend(batch_issues)
+            results.update(batch_results)
 
         self._last_run_issues = tuple(issues)
         return results
+
+    def _analyze_batch_with_retries(
+        self,
+        *,
+        repo_root: Path,
+        files: list[dict[str, Any]],
+        timeout_seconds: int,
+        batch_index: int,
+        total_batches: int,
+        continue_on_batch_failure: bool,
+    ) -> tuple[dict[str, TypeScriptFileCallAnalysis], list[TypeScriptAnalyzerIssue]]:
+        """Analyze one batch and recursively split timeout-heavy groups.
+
+        Large TS monorepos can have a few pathological files that make a
+        coarse 10-file batch time out even though most files are individually
+        resolvable. When the helper times out and the batch still contains more
+        than one file, we split it into smaller groups and retry so Pass 4 can
+        preserve as many semantic results as possible.
+        """
+        try:
+            response = self._run_batch(
+                repo_root=repo_root,
+                files=files,
+                timeout_seconds=timeout_seconds,
+            )
+        except TypeScriptCallAnalyzerError as exc:
+            if self._should_split_batch(exc, files):
+                return self._split_and_retry_batch(
+                    repo_root=repo_root,
+                    files=files,
+                    timeout_seconds=timeout_seconds,
+                    batch_index=batch_index,
+                    total_batches=total_batches,
+                    continue_on_batch_failure=continue_on_batch_failure,
+                )
+            raise
+
+        logger.info(
+            "TypeScript call analyzer batch %s/%s completed (%s files).",
+            batch_index,
+            total_batches,
+            len(files),
+        )
+        parsed_results: dict[str, TypeScriptFileCallAnalysis] = {}
+        for file_row in response.get("files", []):
+            rel_path, analysis = self._parse_file_row(file_row)
+            if rel_path:
+                parsed_results[rel_path] = analysis
+        return parsed_results, []
+
+    def _split_and_retry_batch(
+        self,
+        *,
+        repo_root: Path,
+        files: list[dict[str, Any]],
+        timeout_seconds: int,
+        batch_index: int,
+        total_batches: int,
+        continue_on_batch_failure: bool,
+    ) -> tuple[dict[str, TypeScriptFileCallAnalysis], list[TypeScriptAnalyzerIssue]]:
+        """Retry one timed-out batch in smaller pieces."""
+        midpoint = max(len(files) // 2, 1)
+        sub_batches = [files[:midpoint], files[midpoint:]]
+        sub_batches = [batch for batch in sub_batches if batch]
+        logger.info(
+            "TypeScript call analyzer batch %s/%s timed out; retrying as %s smaller batches.",
+            batch_index,
+            total_batches,
+            len(sub_batches),
+        )
+
+        combined_results: dict[str, TypeScriptFileCallAnalysis] = {}
+        combined_issues: list[TypeScriptAnalyzerIssue] = []
+        for retry_index, sub_batch in enumerate(sub_batches, start=1):
+            logger.info(
+                "TypeScript call analyzer batch %s/%s retry %s/%s starting (%s files).",
+                batch_index,
+                total_batches,
+                retry_index,
+                len(sub_batches),
+                len(sub_batch),
+            )
+            try:
+                sub_results, sub_issues = self._analyze_batch_with_retries(
+                    repo_root=repo_root,
+                    files=sub_batch,
+                    timeout_seconds=timeout_seconds,
+                    batch_index=batch_index,
+                    total_batches=total_batches,
+                    continue_on_batch_failure=continue_on_batch_failure,
+                )
+                combined_results.update(sub_results)
+                combined_issues.extend(sub_issues)
+            except TypeScriptCallAnalyzerError as exc:
+                issue = TypeScriptAnalyzerIssue(
+                    batch_index=batch_index,
+                    total_batches=total_batches,
+                    file_count=len(sub_batch),
+                    status="failed",
+                    message=str(exc),
+                )
+                combined_issues.append(issue)
+                logger.warning(
+                    "TypeScript call analyzer batch %s/%s retry %s/%s failed (%s files): %s",
+                    batch_index,
+                    total_batches,
+                    retry_index,
+                    len(sub_batches),
+                    len(sub_batch),
+                    exc,
+                )
+                if not continue_on_batch_failure:
+                    raise
+                for file_request in sub_batch:
+                    rel_path = str(file_request.get("path") or "")
+                    functions = {
+                        str(
+                            function_row.get("qualified_name")
+                            or function_row.get("name")
+                            or ""
+                        ): TypeScriptFunctionCallAnalysis(
+                            qualified_name=str(
+                                function_row.get("qualified_name")
+                                or function_row.get("name")
+                                or ""
+                            ),
+                            name=str(
+                                function_row.get("name")
+                                or function_row.get("qualified_name")
+                                or ""
+                            ),
+                            outgoing_calls=(),
+                        )
+                        for function_row in file_request.get("functions", [])
+                        if function_row.get("qualified_name") or function_row.get("name")
+                    }
+                    combined_results[rel_path] = TypeScriptFileCallAnalysis(
+                        rel_path=rel_path,
+                        functions=functions,
+                        diagnostics=(
+                            {
+                                "kind": "batch_failed",
+                                "level": "warning",
+                                "batch_index": batch_index,
+                                "total_batches": total_batches,
+                                "message": str(exc),
+                            },
+                        ),
+                        drop_reason_counts={},
+                    )
+        return combined_results, combined_issues
+
+    def _should_split_batch(
+        self,
+        exc: TypeScriptCallAnalyzerError,
+        files: list[dict[str, Any]],
+    ) -> bool:
+        """Return True when a failed batch is worth retrying in smaller pieces."""
+        if len(files) <= 1:
+            return False
+        return "timed out" in str(exc).lower()
 
     def _run_batch(
         self,

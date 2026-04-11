@@ -20,8 +20,8 @@ import argparse
 from pathlib import Path
 
 import httpx
-from fastapi import Body, Depends, FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi import Body, Depends, FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from desktop_shell.config import ShellSettings
@@ -52,6 +52,7 @@ def _proxy_json_response(
     path: str,
     *,
     json_body: dict | None = None,
+    query_params: dict[str, object] | None = None,
 ) -> dict:
     """Proxy a JSON request to the backend.
 
@@ -60,6 +61,7 @@ def _proxy_json_response(
         method: HTTP method to send upstream.
         path: Backend route path.
         json_body: Optional JSON request body forwarded to the backend.
+        query_params: Optional query-string parameters forwarded upstream.
 
     Returns:
         Parsed JSON payload returned by the backend.
@@ -69,7 +71,7 @@ def _proxy_json_response(
             reached over the network.
     """
     try:
-        response = client.request(method, path, json=json_body)
+        response = client.request(method, path, json=json_body, params=query_params)
     except httpx.RequestError as exc:
         backend_url = str(client.base_url).rstrip("/")
         raise HTTPException(
@@ -91,9 +93,10 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Agentic Memory Desktop Shell", version="0.1.0")
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-    @app.get("/", response_class=HTMLResponse)
-    def index() -> HTMLResponse:
-        return HTMLResponse((STATIC_DIR / "index.html").read_text(encoding="utf-8"))
+    @app.get("/", response_class=FileResponse)
+    def index() -> FileResponse:
+        """Serve the built dashboard entrypoint from the static bundle directory."""
+        return FileResponse(STATIC_DIR / "index.html")
 
     @app.get("/api/bootstrap")
     def bootstrap(settings: ShellSettings = Depends(get_settings)) -> dict:
@@ -112,6 +115,49 @@ def create_app() -> FastAPI:
     @app.get("/api/product/status")
     def product_status(client: httpx.Client = Depends(get_backend_client)) -> dict:
         return _proxy_json_response(client, "GET", "/product/status")
+
+    @app.get("/api/openclaw/metrics/summary")
+    def openclaw_metrics_summary(client: httpx.Client = Depends(get_backend_client)) -> dict:
+        """Proxy the dashboard overview metrics into the static shell bundle."""
+        return _proxy_json_response(client, "GET", "/openclaw/metrics/summary")
+
+    @app.get("/api/openclaw/health/detailed")
+    def openclaw_health_detailed(client: httpx.Client = Depends(get_backend_client)) -> dict:
+        """Proxy detailed runtime and request telemetry for the dashboard."""
+        return _proxy_json_response(client, "GET", "/openclaw/health/detailed")
+
+    @app.get("/api/openclaw/search/recent")
+    def openclaw_recent_searches(
+        limit: int = Query(default=20, ge=1, le=100),
+        client: httpx.Client = Depends(get_backend_client),
+    ) -> dict:
+        """Proxy recent OpenClaw search activity for the search dashboard view."""
+        return _proxy_json_response(
+            client,
+            "GET",
+            "/openclaw/search/recent",
+            query_params={"limit": limit},
+        )
+
+    @app.get("/api/openclaw/agents/{agent_id}/sessions")
+    def openclaw_agent_sessions(
+        agent_id: str,
+        workspace_id: str | None = Query(default=None),
+        client: httpx.Client = Depends(get_backend_client),
+    ) -> dict:
+        """Proxy agent-session inspection for the fleet detail panel."""
+        query_params = {"workspace_id": workspace_id} if workspace_id is not None else None
+        return _proxy_json_response(
+            client,
+            "GET",
+            f"/openclaw/agents/{agent_id}/sessions",
+            query_params=query_params,
+        )
+
+    @app.get("/api/openclaw/workspaces")
+    def openclaw_workspaces(client: httpx.Client = Depends(get_backend_client)) -> dict:
+        """Proxy the workspace/device/agent tree used by the workspace dashboard view."""
+        return _proxy_json_response(client, "GET", "/openclaw/workspaces")
 
     @app.post("/api/product/repos")
     def upsert_repo(

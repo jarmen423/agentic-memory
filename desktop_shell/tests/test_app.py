@@ -23,20 +23,63 @@ class _FakeResponse:
 class _FakeClient:
     def __init__(self) -> None:
         self.base_url = "http://127.0.0.1:8765"
-        self.requests: list[str] = []
+        self.requests: list[tuple[str, dict | None]] = []
         self.posts: list[tuple[str, dict | None]] = []
 
-    def request(self, method: str, path: str, json: dict | None = None) -> _FakeResponse:
+    def request(
+        self,
+        method: str,
+        path: str,
+        json: dict | None = None,
+        params: dict | None = None,
+    ) -> _FakeResponse:
         if method == "GET":
-            self.requests.append(path)
-            return _FakeResponse(
-                {
+            self.requests.append((path, params))
+            payload_by_path = {
+                "/product/status": {
                     "state_path": "C:/Users/jfrie/.agentic-memory/product-state.json",
                     "summary": {"repo_count": 2},
                     "integrations": [],
                     "runtime": {"server": {"status": "healthy", "version": "0.1.0"}},
-                }
-            )
+                },
+                "/openclaw/metrics/summary": {
+                    "status": "ok",
+                    "summary": {"health_score": 92, "cards": []},
+                    "request_metrics": [],
+                    "error_metrics": [],
+                },
+                "/openclaw/health/detailed": {
+                    "status": "ok",
+                    "components": [{"component": "server", "status": "healthy", "details": {}}],
+                    "request_metrics": [],
+                    "error_metrics": [],
+                    "summary": {"health_score": 92, "cards": []},
+                },
+                "/openclaw/search/recent": {
+                    "status": "ok",
+                    "recent_searches": [],
+                    "summary": {"returned": 0, "limit": params.get("limit", 20) if params else 20},
+                },
+                "/openclaw/workspaces": {
+                    "status": "ok",
+                    "workspaces": [
+                        {
+                            "workspace_id": "workspace-acme",
+                            "devices": [{"device_id": "laptop-01", "agents": []}],
+                            "active_projects": [],
+                            "automations": [],
+                        }
+                    ],
+                    "summary": {"workspace_count": 1, "device_count": 1, "agent_count": 0},
+                },
+                "/openclaw/agents/openclaw-agent-a/sessions": {
+                    "status": "ok",
+                    "agent_id": "openclaw-agent-a",
+                    "workspace_id": "workspace-acme",
+                    "sessions": [],
+                },
+            }
+            return _FakeResponse(payload_by_path[path])
         if method == "POST":
             self.posts.append((path, json))
             return _FakeResponse({"status": "ok", "echo": json or {}})
@@ -52,8 +95,8 @@ def test_index_serves_shell_markup():
     response = client.get("/")
 
     assert response.status_code == 200
-    assert "Agentic Memory Desktop" in response.text
-    assert "OpenClaw" in response.text
+    assert "<!doctype html>" in response.text.lower()
+    assert "Agentic Memory" in response.text
 
 
 def test_bootstrap_reports_backend_configuration(monkeypatch):
@@ -87,7 +130,89 @@ def test_product_status_proxies_backend_response(monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["summary"]["repo_count"] == 2
-    assert fake_client.requests == ["/product/status"]
+    assert fake_client.requests == [("/product/status", None)]
+
+
+def test_dashboard_metrics_summary_proxies_backend_get():
+    fake_client = _FakeClient()
+
+    def override() -> _FakeClient:
+        return fake_client
+
+    app.dependency_overrides = {}
+    app.dependency_overrides[get_backend_client] = override
+
+    try:
+        client = TestClient(app)
+        response = client.get("/api/openclaw/metrics/summary")
+    finally:
+        app.dependency_overrides = {}
+
+    assert response.status_code == 200
+    assert response.json()["summary"]["health_score"] == 92
+    assert fake_client.requests == [("/openclaw/metrics/summary", None)]
+
+
+def test_recent_searches_proxy_forwards_limit_query():
+    fake_client = _FakeClient()
+
+    def override() -> _FakeClient:
+        return fake_client
+
+    app.dependency_overrides = {}
+    app.dependency_overrides[get_backend_client] = override
+
+    try:
+        client = TestClient(app)
+        response = client.get("/api/openclaw/search/recent?limit=12")
+    finally:
+        app.dependency_overrides = {}
+
+    assert response.status_code == 200
+    assert response.json()["summary"]["limit"] == 12
+    assert fake_client.requests == [("/openclaw/search/recent", {"limit": 12})]
+
+
+def test_agent_sessions_proxy_forwards_workspace_query():
+    fake_client = _FakeClient()
+
+    def override() -> _FakeClient:
+        return fake_client
+
+    app.dependency_overrides = {}
+    app.dependency_overrides[get_backend_client] = override
+
+    try:
+        client = TestClient(app)
+        response = client.get("/api/openclaw/agents/openclaw-agent-a/sessions?workspace_id=workspace-acme")
+    finally:
+        app.dependency_overrides = {}
+
+    assert response.status_code == 200
+    assert response.json()["agent_id"] == "openclaw-agent-a"
+    assert fake_client.requests == [
+        ("/openclaw/agents/openclaw-agent-a/sessions", {"workspace_id": "workspace-acme"})
+    ]
+
+
+def test_workspaces_proxy_surfaces_workspace_tree():
+    fake_client = _FakeClient()
+
+    def override() -> _FakeClient:
+        return fake_client
+
+    app.dependency_overrides = {}
+    app.dependency_overrides[get_backend_client] = override
+
+    try:
+        client = TestClient(app)
+        response = client.get("/api/openclaw/workspaces")
+    finally:
+        app.dependency_overrides = {}
+
+    assert response.status_code == 200
+    assert response.json()["summary"]["workspace_count"] == 1
+    assert fake_client.requests == [("/openclaw/workspaces", None)]
 
 
 def test_openclaw_session_registration_proxies_backend_post():
@@ -272,7 +397,13 @@ def test_product_status_returns_503_when_backend_is_unreachable():
 
         base_url = "http://127.0.0.1:8765"
 
-        def request(self, method: str, path: str, json: dict | None = None) -> _FakeResponse:
+        def request(
+            self,
+            method: str,
+            path: str,
+            json: dict | None = None,
+            params: dict | None = None,
+        ) -> _FakeResponse:
             request = httpx.Request(method, f"{self.base_url}{path}")
             raise httpx.ConnectError("[WinError 10061] Connection refused", request=request)
 

@@ -53,7 +53,7 @@
     {
       "id": "W13-OC-02",
       "title": "Replace the static desktop shell with the am-dashboard workspace",
-      "status": "pending",
+      "status": "completed",
       "owner": "dashboard-shell",
       "depends_on": [
         "W13-OC-00"

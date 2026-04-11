@@ -4,6 +4,7 @@
   "workspaces": [
     "packages/am-temporal-kg",
     "packages/am-sync-neo4j",
+    "packages/am-dashboard",
     "packages/am-openclaw"
   ],
   "scripts": {

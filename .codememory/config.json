@@ -1,0 +1,44 @@
+{
+  "neo4j": {
+    "uri": "bolt://localhost:7687",
+    "user": "neo4j",
+    "password": "password"
+  },
+  "openai": {
+    "api_key": null
+  },
+  "gemini": {
+    "api_key": null
+  },
+  "indexing": {
+    "ignore_dirs": [
+      "node_modules",
+      "__pycache__",
+      ".git",
+      "dist",
+      "build",
+      ".venv",
+      "venv",
+      ".pytest_cache",
+      ".mypy_cache",
+      "target",
+      "bin",
+      "obj"
+    ],
+    "ignore_files": [],
+    "extensions": [
+      ".py",
+      ".js",
+      ".ts",
+      ".tsx",
+      ".jsx"
+    ]
+  },
+  "modules": {
+    "code": {
+      "embedding_provider": "gemini",
+      "embedding_model": "gemini-embedding-2-preview",
+      "embedding_dimensions": 3072
+    }
+  }
+}

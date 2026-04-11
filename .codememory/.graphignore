@@ -1,0 +1,22 @@
+# Patterns to exclude from codememory indexing
+# Supports simple glob-style patterns.
+# Examples: .venv*/, node_modules/, *.min.js
+
+node_modules/
+__pycache__/
+.git/
+dist/
+build/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+target/
+bin/
+obj/
+.venv*/
+venv*/
+__pypackages__/
+.env
+.env.*
+*.env

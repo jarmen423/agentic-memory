@@ -336,6 +336,13 @@ class TestChatSourceRegistration:
         import agentic_memory.chat.pipeline  # noqa: F401 — ensure module is imported
         from agentic_memory.core.registry import SOURCE_REGISTRY
 
-        for key in ("chat_mcp", "chat_proxy", "chat_ext", "chat_cli", "chat_openclaw"):
+        for key in (
+            "chat_mcp",
+            "chat_proxy",
+            "chat_ext",
+            "chat_cli",
+            "chat_openclaw",
+            "chat_codex_rollout",
+        ):
             assert key in SOURCE_REGISTRY, f"Source key {key!r} not in SOURCE_REGISTRY"
             assert SOURCE_REGISTRY[key] == ["Memory", "Conversation", "Turn"]

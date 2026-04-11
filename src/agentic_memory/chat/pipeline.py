@@ -31,11 +31,12 @@ register_source("chat_proxy", ["Memory", "Conversation", "Turn"])
 register_source("chat_ext", ["Memory", "Conversation", "Turn"])
 register_source("chat_cli", ["Memory", "Conversation", "Turn"])
 register_source("chat_openclaw", ["Memory", "Conversation", "Turn"])
+register_source("chat_codex_rollout", ["Memory", "Conversation", "Turn"])
 
 VALID_ROLES = frozenset({"user", "assistant", "system", "tool"})
 EMBEDDABLE_ROLES = frozenset({"user", "assistant"})
 VALID_SOURCE_KEYS = frozenset(
-    {"chat_mcp", "chat_proxy", "chat_ext", "chat_cli", "chat_openclaw"}
+    {"chat_mcp", "chat_proxy", "chat_ext", "chat_cli", "chat_openclaw", "chat_codex_rollout"}
 )
 
 

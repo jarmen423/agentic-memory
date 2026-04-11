@@ -12,6 +12,7 @@ another supported provider when explicitly requested).
 """
 
 import os
+import json
 import hashlib
 import logging
 import time
@@ -523,6 +524,10 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             (
                 "CREATE CONSTRAINT class_repo_name_unique IF NOT EXISTS "
                 "FOR (c:Class) REQUIRE (c.repo_id, c.qualified_name) IS UNIQUE"
+            ),
+            (
+                "CREATE CONSTRAINT code_trace_run_unique IF NOT EXISTS "
+                "FOR (t:CodeTraceRun) REQUIRE (t.repo_id, t.root_signature) IS UNIQUE"
             ),
             # 2. Vector Index for Hybrid Search
             f"""
@@ -1525,12 +1530,13 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                             batch_size=10,
                             continue_on_batch_failure=True,
                         )
-                        if analyzer.last_run_issues:
-                            failed_batches = len(analyzer.last_run_issues)
+                        analyzer_issues = list(getattr(analyzer, "last_run_issues", []) or [])
+                        if analyzer_issues:
+                            failed_batches = len(analyzer_issues)
                             total_batches = max(
-                                issue.total_batches for issue in analyzer.last_run_issues
+                                issue.total_batches for issue in analyzer_issues
                             )
-                            latest_issue = analyzer.last_run_issues[-1]
+                            latest_issue = analyzer_issues[-1]
                             self._record_call_analyzer_issue(
                                 session,
                                 repo_id=repo_id,
@@ -1589,12 +1595,13 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                             batch_size=25,
                             continue_on_batch_failure=True,
                         )
-                        if analyzer.last_run_issues:
-                            failed_batches = len(analyzer.last_run_issues)
+                        analyzer_issues = list(getattr(analyzer, "last_run_issues", []) or [])
+                        if analyzer_issues:
+                            failed_batches = len(analyzer_issues)
                             total_batches = max(
-                                issue.total_batches for issue in analyzer.last_run_issues
+                                issue.total_batches for issue in analyzer_issues
                             )
-                            latest_issue = analyzer.last_run_issues[-1]
+                            latest_issue = analyzer_issues[-1]
                             self._record_call_analyzer_issue(
                                 session,
                                 repo_id=repo_id,
@@ -1809,12 +1816,12 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                 ohash=file_hash,
             )
 
-        # Reuse the multi-pass logic for one changed file. Pass 2 and Pass 3 can
-        # now stay scoped to that file, while Pass 4 remains repo-wide so
-        # call-graph consistency does not silently regress.
+        # Reuse the multi-pass logic for one changed file. The JIT tracing pivot
+        # keeps structural graph rebuilds cheap by stopping at Pass 3; call-path
+        # exploration now happens on demand through the trace service instead of
+        # forcing every file change to re-run repo-wide CALLS analysis.
         self.pass_2_entity_definition(repo_path, target_paths={normalized_path})
         self.pass_3_imports(repo_path, target_paths={normalized_path})
-        self.pass_4_call_graph(repo_path)
 
     def delete_file(
         self,
@@ -1838,7 +1845,12 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         supported_extensions: Optional[Set[str]] = None,
     ) -> Dict:
         """
-        Executes the full 4-pass pipeline with cost tracking.
+        Execute the default code-ingestion pipeline with cost tracking.
+
+        The default pipeline intentionally stops after Pass 3. Repo-wide CALLS
+        reconstruction is now an explicit opt-in operation because it is too
+        expensive and too repo-fragile to be part of normal indexing or file
+        watch flows.
 
         Args:
             repo_path: Path to repository root (defaults to self.repo_root)
@@ -1861,7 +1873,6 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         )
         self.pass_2_entity_definition(repo_path, target_paths=changed_paths)
         self.pass_3_imports(repo_path, target_paths=changed_paths)
-        self.pass_4_call_graph(repo_path)
 
         elapsed = time.time() - start_time
 
@@ -1884,6 +1895,458 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             "tokens_used": self.token_usage["embedding_tokens"],
             "cost_usd": self.token_usage["total_cost_usd"],
         }
+
+    def build_calls(
+        self,
+        repo_path: Optional[Path] = None,
+    ) -> None:
+        """Run the experimental repo-wide CALLS build explicitly.
+
+        Normal indexing deliberately skips Pass 4. This wrapper keeps the older
+        CALLS pipeline available for diagnostics and experimentation without
+        making it part of the default ingestion tax.
+        """
+        self.pass_4_call_graph(repo_path)
+
+    def resolve_function_symbol(
+        self,
+        symbol: str,
+        *,
+        repo_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Resolve one user-facing symbol string to a repo-local function node.
+
+        Resolution order is intentionally deterministic:
+        1. exact ``path:qualified_name`` signature
+        2. unique repo-local ``qualified_name``
+        3. unique repo-local short ``name``
+
+        If a lookup remains ambiguous, the method returns candidate functions
+        instead of guessing. The JIT trace service depends on that behavior so
+        it can avoid inventing paths when the graph cannot pick one symbol safely.
+        """
+
+        def _execute_resolution() -> dict[str, Any]:
+            resolved_repo_id = repo_id or self.repo_id
+            if resolved_repo_id is None:
+                raise ValueError("repo_id is required for function symbol resolution")
+
+            normalized_symbol = str(symbol).strip()
+            if not normalized_symbol:
+                return {
+                    "status": "not_found",
+                    "match_type": "empty",
+                    "input": normalized_symbol,
+                    "candidates": [],
+                }
+
+            with self.driver.session() as session:
+                exact = session.run(
+                    """
+                    MATCH (fn:Function {repo_id: $repo_id, signature: $signature})
+                    RETURN fn.signature as signature,
+                           fn.qualified_name as qualified_name,
+                           fn.name as name,
+                           fn.parent_class as parent_class,
+                           fn.path as path
+                    """,
+                    repo_id=resolved_repo_id,
+                    signature=normalized_symbol.replace("\\", "/"),
+                ).single()
+                if exact:
+                    return {
+                        "status": "resolved",
+                        "match_type": "signature",
+                        "input": normalized_symbol,
+                        "candidate": dict(exact),
+                    }
+
+                qualified_rows = [
+                    dict(row)
+                    for row in session.run(
+                        """
+                        MATCH (fn:Function {repo_id: $repo_id, qualified_name: $qualified_name})
+                        RETURN fn.signature as signature,
+                               fn.qualified_name as qualified_name,
+                               fn.name as name,
+                               fn.parent_class as parent_class,
+                               fn.path as path
+                        ORDER BY fn.path ASC, fn.signature ASC
+                        """,
+                        repo_id=resolved_repo_id,
+                        qualified_name=normalized_symbol,
+                    )
+                ]
+                if len(qualified_rows) == 1:
+                    return {
+                        "status": "resolved",
+                        "match_type": "qualified_name",
+                        "input": normalized_symbol,
+                        "candidate": qualified_rows[0],
+                    }
+                if len(qualified_rows) > 1:
+                    return {
+                        "status": "ambiguous",
+                        "match_type": "qualified_name",
+                        "input": normalized_symbol,
+                        "candidates": qualified_rows,
+                    }
+
+                name_rows = [
+                    dict(row)
+                    for row in session.run(
+                        """
+                        MATCH (fn:Function {repo_id: $repo_id, name: $name})
+                        RETURN fn.signature as signature,
+                               fn.qualified_name as qualified_name,
+                               fn.name as name,
+                               fn.parent_class as parent_class,
+                               fn.path as path
+                        ORDER BY fn.path ASC, fn.signature ASC
+                        """,
+                        repo_id=resolved_repo_id,
+                        name=normalized_symbol,
+                    )
+                ]
+                if len(name_rows) == 1:
+                    return {
+                        "status": "resolved",
+                        "match_type": "name",
+                        "input": normalized_symbol,
+                        "candidate": name_rows[0],
+                    }
+                if len(name_rows) > 1:
+                    return {
+                        "status": "ambiguous",
+                        "match_type": "name",
+                        "input": normalized_symbol,
+                        "candidates": name_rows,
+                    }
+
+            return {
+                "status": "not_found",
+                "match_type": "none",
+                "input": normalized_symbol,
+                "candidates": [],
+            }
+
+        return self.circuit_breaker.call(_execute_resolution)
+
+    def get_function_trace_context(
+        self,
+        signature: str,
+        *,
+        repo_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Return the graph context package used by JIT function tracing.
+
+        The trace service needs enough deterministic structure to ground the LLM
+        before it reasons about behavioral edges. This method deliberately
+        returns:
+        - the root function node and source code
+        - file-level imports / reverse imports
+        - sibling functions and classes in the same file
+        - candidate target functions from the same file and directly imported files
+        """
+
+        def _execute_context_lookup() -> dict[str, Any] | None:
+            resolved_repo_id = repo_id or self.repo_id
+            if resolved_repo_id is None:
+                raise ValueError("repo_id is required for trace context lookup")
+
+            with self.driver.session() as session:
+                root = session.run(
+                    """
+                    MATCH (fn:Function {repo_id: $repo_id, signature: $signature})
+                    MATCH (file:File {repo_id: $repo_id, path: fn.path})
+                    OPTIONAL MATCH (file)-[:IMPORTS]->(imported:File {repo_id: $repo_id})
+                    OPTIONAL MATCH (dependent:File {repo_id: $repo_id})-[:IMPORTS]->(file)
+                    RETURN fn.signature as signature,
+                           fn.qualified_name as qualified_name,
+                           fn.name as name,
+                           fn.parent_class as parent_class,
+                           fn.path as path,
+                           fn.code as code,
+                           file.ohash as file_ohash,
+                           collect(DISTINCT imported.path) as imports,
+                           collect(DISTINCT dependent.path) as imported_by
+                    """,
+                    repo_id=resolved_repo_id,
+                    signature=signature,
+                ).single()
+                if not root:
+                    return None
+
+                file_path = str(root["path"])
+                siblings = [
+                    dict(row)
+                    for row in session.run(
+                        """
+                        MATCH (:File {repo_id: $repo_id, path: $path})-[:DEFINES]->(fn:Function {repo_id: $repo_id})
+                        RETURN fn.signature as signature,
+                               fn.qualified_name as qualified_name,
+                               fn.name as name,
+                               fn.parent_class as parent_class
+                        ORDER BY fn.signature ASC
+                        """,
+                        repo_id=resolved_repo_id,
+                        path=file_path,
+                    )
+                ]
+                classes = [
+                    dict(row)
+                    for row in session.run(
+                        """
+                        MATCH (:File {repo_id: $repo_id, path: $path})-[:DEFINES]->(cls:Class {repo_id: $repo_id})
+                        RETURN cls.qualified_name as qualified_name,
+                               cls.name as name
+                        ORDER BY cls.qualified_name ASC
+                        """,
+                        repo_id=resolved_repo_id,
+                        path=file_path,
+                    )
+                ]
+                candidate_paths = {file_path}
+                candidate_paths.update(path for path in (root["imports"] or []) if path)
+                candidate_functions = [
+                    dict(row)
+                    for row in session.run(
+                        """
+                        MATCH (file:File {repo_id: $repo_id})-[:DEFINES]->(fn:Function {repo_id: $repo_id})
+                        WHERE file.path IN $paths
+                        RETURN file.path as path,
+                               fn.signature as signature,
+                               fn.qualified_name as qualified_name,
+                               fn.name as name,
+                               fn.parent_class as parent_class
+                        ORDER BY file.path ASC, fn.signature ASC
+                        """,
+                        repo_id=resolved_repo_id,
+                        paths=sorted(candidate_paths),
+                    )
+                ]
+
+            return {
+                "root": dict(root),
+                "siblings": siblings,
+                "classes": classes,
+                "candidate_functions": candidate_functions,
+            }
+
+        return self.circuit_breaker.call(_execute_context_lookup)
+
+    def get_cached_jit_trace(
+        self,
+        root_signature: str,
+        *,
+        repo_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Return one reusable cached JIT trace when the root file hash still matches."""
+
+        def _execute_cache_lookup() -> dict[str, Any] | None:
+            resolved_repo_id = repo_id or self.repo_id
+            if resolved_repo_id is None:
+                raise ValueError("repo_id is required for JIT trace cache lookup")
+
+            with self.driver.session() as session:
+                trace = session.run(
+                    """
+                    MATCH (trace:CodeTraceRun {repo_id: $repo_id, root_signature: $root_signature, status: 'completed'})
+                    MATCH (root:Function {repo_id: $repo_id, signature: $root_signature})
+                    MATCH (file:File {repo_id: $repo_id, path: root.path})
+                    WHERE trace.root_file_ohash = file.ohash
+                    RETURN trace.trace_id as trace_id,
+                           trace.root_signature as root_signature,
+                           trace.root_file_ohash as root_file_ohash,
+                           trace.model as model,
+                           trace.max_depth as max_depth,
+                           trace.created_at as created_at,
+                           trace.unresolved_json as unresolved_json
+                    """,
+                    repo_id=resolved_repo_id,
+                    root_signature=root_signature,
+                ).single()
+                if not trace:
+                    return None
+
+                edges = [
+                    dict(row)
+                    for row in session.run(
+                        """
+                        MATCH (caller:Function {repo_id: $repo_id, signature: $root_signature})-[r]->(callee:Function {repo_id: $repo_id})
+                        WHERE type(r) IN ['JIT_CALLS_DIRECT', 'JIT_CALLS_CALLBACK', 'JIT_MESSAGE_FLOW']
+                          AND r.trace_id = $trace_id
+                        RETURN type(r) as relationship_type,
+                               caller.signature as caller_signature,
+                               callee.signature as callee_signature,
+                               callee.qualified_name as callee_qualified_name,
+                               callee.name as callee_name,
+                               callee.path as callee_path,
+                               coalesce(r.edge_type, '') as edge_type,
+                               coalesce(r.confidence, 0.0) as confidence,
+                               coalesce(r.rationale, '') as rationale,
+                               coalesce(r.evidence, '') as evidence
+                        ORDER BY callee.signature ASC
+                        """,
+                        repo_id=resolved_repo_id,
+                        root_signature=root_signature,
+                        trace_id=trace["trace_id"],
+                    )
+                ]
+
+            unresolved_json = trace.get("unresolved_json") or "[]"
+            try:
+                unresolved = json.loads(unresolved_json)
+            except json.JSONDecodeError:
+                unresolved = []
+
+            payload = dict(trace)
+            payload["edges"] = edges
+            payload["unresolved"] = unresolved
+            return payload
+
+        return self.circuit_breaker.call(_execute_cache_lookup)
+
+    def store_jit_trace_result(
+        self,
+        *,
+        repo_id: str,
+        root_signature: str,
+        root_file_ohash: str,
+        trace_id: str,
+        model: str,
+        max_depth: int,
+        edges: list[dict[str, Any]],
+        unresolved: list[dict[str, Any]],
+    ) -> None:
+        """Persist one per-root JIT trace cache and its derived relationships."""
+
+        def _execute_store() -> None:
+            with self.driver.session() as session:
+                session.run(
+                    """
+                    MATCH (trace:CodeTraceRun {repo_id: $repo_id, root_signature: $root_signature})
+                    DETACH DELETE trace
+                    """,
+                    repo_id=repo_id,
+                    root_signature=root_signature,
+                )
+                session.run(
+                    """
+                    MATCH (caller:Function {repo_id: $repo_id, signature: $root_signature})-[r]->()
+                    WHERE type(r) IN ['JIT_CALLS_DIRECT', 'JIT_CALLS_CALLBACK', 'JIT_MESSAGE_FLOW']
+                    DELETE r
+                    """,
+                    repo_id=repo_id,
+                    root_signature=root_signature,
+                )
+                session.run(
+                    """
+                    CREATE (trace:CodeTraceRun {
+                        repo_id: $repo_id,
+                        root_signature: $root_signature,
+                        trace_id: $trace_id,
+                        model: $model,
+                        max_depth: $max_depth,
+                        status: 'completed',
+                        unresolved_json: $unresolved_json,
+                        root_file_ohash: $root_file_ohash,
+                        created_at: datetime()
+                    })
+                    """,
+                    repo_id=repo_id,
+                    root_signature=root_signature,
+                    trace_id=trace_id,
+                    model=model,
+                    max_depth=max_depth,
+                    unresolved_json=json.dumps(unresolved),
+                    root_file_ohash=root_file_ohash,
+                )
+                session.run(
+                    """
+                    MATCH (trace:CodeTraceRun {repo_id: $repo_id, root_signature: $root_signature})
+                    MATCH (root:Function {repo_id: $repo_id, signature: $root_signature})
+                    MERGE (trace)-[:TRACES_ROOT]->(root)
+                    """,
+                    repo_id=repo_id,
+                    root_signature=root_signature,
+                )
+                if edges:
+                    session.run(
+                        """
+                        MATCH (caller:Function {repo_id: $repo_id, signature: $root_signature})
+                        UNWIND $edges as edge
+                        MATCH (callee:Function {repo_id: $repo_id, signature: edge.callee_signature})
+                        CALL {
+                            WITH caller, callee, edge
+                            WITH caller, callee, edge
+                            WHERE edge.relationship_type = 'JIT_CALLS_DIRECT'
+                            MERGE (caller)-[r:JIT_CALLS_DIRECT]->(callee)
+                            SET r.trace_id = edge.trace_id,
+                                r.root_signature = edge.root_signature,
+                                r.source = edge.source,
+                                r.edge_type = edge.edge_type,
+                                r.confidence = edge.confidence,
+                                r.rationale = edge.rationale,
+                                r.evidence = edge.evidence,
+                                r.model = edge.model,
+                                r.root_file_ohash = edge.root_file_ohash,
+                                r.created_at = datetime()
+                            RETURN 1 as _
+                            UNION
+                            WITH caller, callee, edge
+                            WHERE edge.relationship_type = 'JIT_CALLS_CALLBACK'
+                            MERGE (caller)-[r:JIT_CALLS_CALLBACK]->(callee)
+                            SET r.trace_id = edge.trace_id,
+                                r.root_signature = edge.root_signature,
+                                r.source = edge.source,
+                                r.edge_type = edge.edge_type,
+                                r.confidence = edge.confidence,
+                                r.rationale = edge.rationale,
+                                r.evidence = edge.evidence,
+                                r.model = edge.model,
+                                r.root_file_ohash = edge.root_file_ohash,
+                                r.created_at = datetime()
+                            RETURN 1 as _
+                            UNION
+                            WITH caller, callee, edge
+                            WHERE edge.relationship_type = 'JIT_MESSAGE_FLOW'
+                            MERGE (caller)-[r:JIT_MESSAGE_FLOW]->(callee)
+                            SET r.trace_id = edge.trace_id,
+                                r.root_signature = edge.root_signature,
+                                r.source = edge.source,
+                                r.edge_type = edge.edge_type,
+                                r.confidence = edge.confidence,
+                                r.rationale = edge.rationale,
+                                r.evidence = edge.evidence,
+                                r.model = edge.model,
+                                r.root_file_ohash = edge.root_file_ohash,
+                                r.created_at = datetime()
+                            RETURN 1 as _
+                        }
+                        RETURN count(*) as written
+                        """,
+                        repo_id=repo_id,
+                        root_signature=root_signature,
+                        edges=[
+                            {
+                                "callee_signature": edge["callee_signature"],
+                                "relationship_type": edge["relationship_type"],
+                                "trace_id": trace_id,
+                                "root_signature": root_signature,
+                                "source": "jit_trace",
+                                "edge_type": edge["edge_type"],
+                                "confidence": float(edge["confidence"]),
+                                "rationale": edge.get("rationale") or "",
+                                "evidence": edge.get("evidence") or "",
+                                "model": model,
+                                "root_file_ohash": root_file_ohash,
+                            }
+                            for edge in edges
+                        ],
+                    )
+
+        self.circuit_breaker.call(_execute_store)
 
     # =========================================================================
     # SEMANTIC SEARCH (for MCP Server)

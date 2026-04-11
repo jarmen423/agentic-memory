@@ -70,6 +70,7 @@ from agentic_memory.config import (
 )
 from agentic_memory.core.runtime_embedding import resolve_embedding_runtime
 from agentic_memory.telemetry import TelemetryStore, resolve_telemetry_db_path
+from agentic_memory.trace.service import TraceExecutionService
 
 PRIMARY_CLI_NAME = "agentic-memory"
 
@@ -220,6 +221,67 @@ def _parse_json_arg(
         raise AssertionError("unreachable")
 
     return parsed
+
+
+def _format_trace_execution_report(result: dict[str, Any]) -> str:
+    """Render one human-readable execution trace report for CLI users."""
+    status = result.get("status") or "unknown"
+    if status != "resolved":
+        lines = ["## Trace Execution", ""]
+        lines.append(f"Start symbol: `{result.get('start_symbol', '')}`")
+        lines.append(f"Status: `{status}`")
+        candidates = result.get("candidates") or []
+        if candidates:
+            lines.append("")
+            lines.append("Candidate Functions")
+            for candidate in candidates:
+                lines.append(
+                    f"- `{candidate.get('signature')}`"
+                    f" ({candidate.get('path')}, {candidate.get('qualified_name')})"
+                )
+        return "\n".join(lines)
+
+    root = result["root"]
+    lines = [
+        "## Trace Execution",
+        "",
+        f"Start symbol: `{result.get('start_symbol', '')}`",
+        f"Resolved root: `{root.get('signature')}`",
+        f"Max depth: {result.get('max_depth')}",
+        f"Cache hits: {result.get('cache_hits', 0)}",
+        f"Cache misses: {result.get('cache_misses', 0)}",
+        "",
+    ]
+
+    for trace in result.get("traces") or []:
+        lines.append(
+            f"### Depth {trace.get('depth')} :: `{trace.get('root_signature')}`"
+            f" {'[cache]' if trace.get('cache_hit') else '[fresh]'}"
+        )
+        edges = trace.get("edges") or []
+        if edges:
+            lines.append("Resolved Edges")
+            for edge in edges:
+                lines.append(
+                    f"- `{edge.get('edge_type')}` -> `{edge.get('callee_signature')}` "
+                    f"(confidence={float(edge.get('confidence') or 0.0):.2f})"
+                )
+                if edge.get("evidence"):
+                    lines.append(f"  evidence: {edge['evidence']}")
+        else:
+            lines.append("Resolved Edges")
+            lines.append("- None")
+
+        unresolved = trace.get("unresolved") or []
+        if unresolved:
+            lines.append("Unresolved")
+            for row in unresolved:
+                label = row.get("target_name") or "<unknown>"
+                reason = row.get("reason") or "unresolved"
+                lines.append(f"- `{label}` :: {reason}")
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
 
 
 def _resolve_repo_and_config(
@@ -758,7 +820,12 @@ def cmd_status(args):
 
 
 def cmd_index(args):
-    """Run a one-time full pipeline ingestion."""
+    """Run the default one-time code ingestion pipeline.
+
+    The default pipeline intentionally stops after Pass 3. Repo-wide CALLS
+    reconstruction is now an explicit experimental command (`build-calls`)
+    rather than part of normal indexing.
+    """
     repo_root, config = _resolve_repo_and_config(args, require_initialized=True)
 
     if not args.quiet and not _is_json_mode(args):
@@ -790,6 +857,10 @@ def cmd_index(args):
             print(f"\n✅ Indexing complete!")
             print(f"   Processed {metrics['embedding_calls']} entities")
             print(f"   Cost: ${metrics['cost_usd']:.4f} USD")
+            print(
+                "   Repo-wide CALLS were not built. Use "
+                f"`{_command_example('build-calls')}` for the experimental path."
+            )
     except Exception as e:
         _exit_with_error(
             args,
@@ -801,7 +872,12 @@ def cmd_index(args):
 
 
 def cmd_watch(args):
-    """Start continuous file watching and ingestion."""
+    """Start continuous file watching and structural reindexing.
+
+    Watch mode keeps files, entities, chunks, and imports in sync. It no longer
+    rebuilds repo-wide CALLS on every change; behavioral tracing now happens
+    just in time through the trace service.
+    """
     repo_root, config = _resolve_repo_and_config(args, require_initialized=True)
 
     print(f"👀 Starting Observer on: {repo_root}")
@@ -818,6 +894,36 @@ def cmd_watch(args):
         supported_extensions=set(indexing_cfg.get("extensions", [])),
         initial_scan=not args.no_scan,
     )
+
+
+def cmd_build_calls(args):
+    """Run the experimental repo-wide CALLS build explicitly."""
+    repo_root, config = _resolve_repo_and_config(args, require_initialized=True)
+    builder = _build_code_graph_builder(repo_root=repo_root, config=config)
+
+    try:
+        builder.build_calls(repo_root)
+        if _emit_success(
+            args,
+            data={
+                "repository": str(repo_root),
+                "status": "completed",
+                "mode": "experimental_call_graph",
+            },
+            metrics={},
+        ):
+            return
+        print("📞 Experimental CALLS build complete.")
+        print(f"Repository: {repo_root}")
+        print(f"Use `{_command_example('call-status')}` to inspect coverage and diagnostics.")
+    except Exception as exc:
+        _exit_with_error(
+            args,
+            error=f"Experimental CALLS build failed: {exc}",
+            human_lines=[f"❌ Experimental CALLS build failed: {exc}"],
+        )
+    finally:
+        builder.close()
 
 
 def cmd_serve(args):
@@ -1271,6 +1377,55 @@ def cmd_call_status(args):
     finally:
         if builder is not None:
             builder.close()
+
+
+def cmd_trace_execution(args):
+    """Trace one function's behavioral path on demand using the JIT trace service."""
+    repo_root, config = _resolve_repo_and_config(args, require_initialized=True)
+    builder = _build_code_graph_builder(repo_root=repo_root, config=config)
+
+    try:
+        service = TraceExecutionService(graph=builder)
+        result = service.trace_execution_path(
+            start_symbol=args.start_symbol,
+            repo_id=str(repo_root),
+            max_depth=args.max_depth,
+            force_refresh=bool(args.force_refresh),
+        )
+        diagnostics = result.get("diagnostics") or builder.get_call_diagnostics(
+            repo_id=str(repo_root)
+        )
+        if _emit_success(
+            args,
+            data={
+                "repository": str(repo_root),
+                "trace": result,
+                "diagnostics": diagnostics,
+            },
+            metrics={
+                "total_edges": int(result.get("total_edges", 0) or 0),
+                "total_unresolved": int(result.get("total_unresolved", 0) or 0),
+                "cache_hits": int(result.get("cache_hits", 0) or 0),
+                "cache_misses": int(result.get("cache_misses", 0) or 0),
+                "total_call_edges": int(diagnostics.get("total_call_edges", 0) or 0),
+                "function_coverage_ratio": float(
+                    diagnostics.get("function_coverage_ratio", 0.0) or 0.0
+                ),
+                "high_confidence_ratio": float(
+                    diagnostics.get("high_confidence_ratio", 0.0) or 0.0
+                ),
+            },
+        ):
+            return
+        print(_format_trace_execution_report(result))
+    except Exception as exc:
+        _exit_with_error(
+            args,
+            error=f"Trace execution failed: {exc}",
+            human_lines=[f"❌ Trace execution failed: {exc}"],
+        )
+    finally:
+        builder.close()
 
 
 def cmd_deps(args):
@@ -2648,8 +2803,10 @@ Quick Start:
 Commands:
   {primary_name} index             # One-time full index
   {primary_name} watch             # Continuous monitoring
+  {primary_name} build-calls       # Experimental repo-wide CALLS build
   {primary_name} serve             # Start MCP server
   {primary_name} search <query>    # Test code semantic search
+  {primary_name} trace-execution   # JIT trace one function path
   {primary_name} debug-py-calls    # Inspect Python analyzer output for one file
   {primary_name} debug-ts-calls    # Inspect JS/TS analyzer output for one file
   {primary_name} call-status       # Show CALLS-edge coverage and provenance
@@ -2743,6 +2900,21 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
         help="Emit machine-readable JSON output",
     )
 
+    build_calls_parser = subparsers.add_parser(
+        "build-calls",
+        help="Run the experimental repo-wide CALLS build explicitly",
+    )
+    build_calls_parser.add_argument(
+        "--repo",
+        type=str,
+        help="Repository root path (defaults to detected current repository)",
+    )
+    build_calls_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output",
+    )
+
     # Command: watch (continuous monitoring)
     watch_parser = subparsers.add_parser("watch", help="Start continuous ingestion and monitoring")
     watch_parser.add_argument(
@@ -2780,6 +2952,36 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
         "--limit", "-l", type=int, default=5, help="Maximum results to return"
     )
     search_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output",
+    )
+
+    trace_parser = subparsers.add_parser(
+        "trace-execution",
+        help="Trace one function path on demand using the JIT trace service",
+    )
+    trace_parser.add_argument(
+        "start_symbol",
+        help="Function signature or symbol name to trace (prefer path:qualified_name for exact matching)",
+    )
+    trace_parser.add_argument(
+        "--max-depth",
+        type=int,
+        default=2,
+        help="Maximum recursive direct-call depth to expand",
+    )
+    trace_parser.add_argument(
+        "--force-refresh",
+        action="store_true",
+        help="Ignore any cached trace and recompute from current graph context",
+    )
+    trace_parser.add_argument(
+        "--repo",
+        type=str,
+        help="Repository root path (defaults to detected current repository)",
+    )
+    trace_parser.add_argument(
         "--json",
         action="store_true",
         help="Emit machine-readable JSON output",
@@ -3243,10 +3445,14 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
         cmd_index(args)
     elif args.command == "watch":
         cmd_watch(args)
+    elif args.command == "build-calls":
+        cmd_build_calls(args)
     elif args.command == "serve":
         cmd_serve(args)
     elif args.command == "search":
         cmd_search(args)
+    elif args.command == "trace-execution":
+        cmd_trace_execution(args)
     elif args.command == "debug-py-calls":
         cmd_debug_py_calls(args)
     elif args.command == "debug-ts-calls":

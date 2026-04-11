@@ -35,6 +35,7 @@ from agentic_memory.temporal.seeds import (
     parse_as_of_to_micros,
 )
 from agentic_memory.telemetry import TelemetryStore, resolve_telemetry_db_path
+from agentic_memory.trace.service import TraceExecutionService
 
 logger = logging.getLogger(__name__)
 
@@ -874,6 +875,87 @@ def get_file_info(file_path: str, repo_id: str | None = None) -> str:
     except Exception as e:
         logger.error(f"Unexpected file info error: {e}")
         return f"❌ Failed to get file info: {str(e)}"
+
+
+@mcp.tool()
+@rate_limit
+@log_tool_call
+def trace_execution_path(
+    start_symbol: str,
+    max_depth: int = 2,
+    force_refresh: bool = False,
+    repo_id: str | None = None,
+) -> str:
+    """Trace one function's behavioral path on demand.
+
+    This is the JIT replacement for mandatory repo-wide CALLS computation.
+    Agents should use it when they need to understand what one function likely
+    invokes, rather than relying on a global call graph built at index time.
+    """
+    current_graph = get_graph()
+    if not current_graph:
+        return "❌ Graph not initialized. Check Neo4j connection."
+
+    try:
+        service = TraceExecutionService(graph=current_graph)
+        result = service.trace_execution_path(
+            start_symbol=start_symbol,
+            repo_id=repo_id,
+            max_depth=max_depth,
+            force_refresh=force_refresh,
+        )
+        if result.get("status") != "resolved":
+            output = "## Trace Execution\n\n"
+            output += f"Start symbol: `{start_symbol}`\n"
+            output += f"Status: `{result.get('status')}`\n"
+            candidates = result.get("candidates") or []
+            if candidates:
+                output += "\n### Candidate Functions\n"
+                for candidate in candidates:
+                    output += (
+                        f"- `{candidate.get('signature')}`"
+                        f" ({candidate.get('path')}, {candidate.get('qualified_name')})\n"
+                    )
+            return validate_tool_output(output.strip())
+
+        output = "## Trace Execution\n\n"
+        output += f"Start symbol: `{start_symbol}`\n"
+        output += f"Resolved root: `{result['root']['signature']}`\n"
+        output += f"Max depth: {result.get('max_depth')}\n"
+        output += f"Cache hits: {result.get('cache_hits', 0)}\n"
+        output += f"Cache misses: {result.get('cache_misses', 0)}\n\n"
+
+        for trace in result.get("traces") or []:
+            output += (
+                f"### Depth {trace.get('depth')} :: `{trace.get('root_signature')}` "
+                f"{'[cache]' if trace.get('cache_hit') else '[fresh]'}\n"
+            )
+            edges = trace.get("edges") or []
+            if edges:
+                output += "Resolved Edges:\n"
+                for edge in edges:
+                    output += (
+                        f"- `{edge.get('edge_type')}` -> `{edge.get('callee_signature')}` "
+                        f"(confidence={float(edge.get('confidence') or 0.0):.2f})\n"
+                    )
+                    if edge.get("evidence"):
+                        output += f"  Evidence: {edge['evidence']}\n"
+            else:
+                output += "Resolved Edges:\n- None\n"
+
+            unresolved = trace.get("unresolved") or []
+            if unresolved:
+                output += "Unresolved:\n"
+                for row in unresolved:
+                    label = row.get("target_name") or "<unknown>"
+                    reason = row.get("reason") or "unresolved"
+                    output += f"- `{label}` :: {reason}\n"
+            output += "\n"
+
+        return validate_tool_output(output.strip())
+    except Exception as e:
+        logger.error(f"Trace execution error: {e}")
+        return f"❌ Failed to trace execution path: {str(e)}"
 
 
 # ---------------------------------------------------------------------------

@@ -213,6 +213,28 @@ def test_index_json_success_envelope(monkeypatch, capsys, tmp_path):
     }
 
 
+def test_build_calls_json_success(monkeypatch, capsys, tmp_path):
+    """build-calls invokes the explicit experimental CALLS path."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    mock_cfg = _mock_config(exists=True)
+    mock_builder = Mock()
+
+    monkeypatch.setattr(cli, "find_repo_root", Mock(return_value=repo_root))
+    monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
+    monkeypatch.setattr(cli, "_build_code_graph_builder", Mock(return_value=mock_builder))
+
+    cli.cmd_build_calls(argparse.Namespace(json=True))
+
+    payload = _parse_json_stdout(capsys)
+    assert payload["ok"] is True
+    assert payload["data"]["status"] == "completed"
+    assert payload["data"]["mode"] == "experimental_call_graph"
+    mock_builder.build_calls.assert_called_once_with(repo_root)
+    mock_builder.close.assert_called_once()
+
+
 def test_index_loads_gemini_key_from_agentic_memory_dotenv(monkeypatch, tmp_path):
     """Index loads GEMINI_API_KEY from <repo>/.agentic-memory/.env before building the graph."""
     repo_root = tmp_path / "repo"
@@ -618,6 +640,76 @@ def test_call_status_json_success(monkeypatch, capsys, tmp_path):
     payload = _parse_json_stdout(capsys)
     assert payload["ok"] is True
     assert payload["error"] is None
+
+
+def test_trace_execution_json_success(monkeypatch, capsys, tmp_path):
+    """trace-execution returns the JIT trace payload inside the standard envelope."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    mock_cfg = _mock_config(exists=True)
+    mock_builder = Mock()
+    mock_builder.get_call_diagnostics.return_value = {
+        "repo_id": str(repo_root),
+        "files_with_analyzer_attempts": 3,
+        "drop_reasons": [
+            {
+                "reason": "ambiguous_name_match",
+                "drop_count": 2,
+            }
+        ],
+        "analyzer_issues": [
+            {
+                "source": "typescript_service",
+                "status": "failed",
+                "message": "TypeScript call analyzer timed out after 60s.",
+                "updated_at": "2026-04-10T21:00:00Z",
+            }
+        ],
+        "total_call_edges": 9,
+        "function_coverage_ratio": 0.6,
+        "high_confidence_ratio": 7 / 9,
+    }
+    mock_service = Mock()
+    mock_service.trace_execution_path.return_value = {
+        "status": "resolved",
+        "root": {"signature": "src/a.py:foo"},
+        "max_depth": 2,
+        "cache_hits": 1,
+        "cache_misses": 0,
+        "traces": [],
+        "total_edges": 3,
+        "total_unresolved": 1,
+    }
+
+    monkeypatch.setattr(cli, "find_repo_root", Mock(return_value=repo_root))
+    monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
+    monkeypatch.setattr(cli, "_build_code_graph_builder", Mock(return_value=mock_builder))
+    monkeypatch.setattr(cli, "TraceExecutionService", Mock(return_value=mock_service))
+
+    cli.cmd_trace_execution(
+        argparse.Namespace(
+            json=True,
+            start_symbol="src/a.py:foo",
+            max_depth=2,
+            force_refresh=False,
+        )
+    )
+
+    payload = _parse_json_stdout(capsys)
+    assert payload["ok"] is True
+    assert payload["data"]["trace"]["status"] == "resolved"
+    assert payload["metrics"]["total_edges"] == 3
+    assert payload["metrics"]["total_unresolved"] == 1
+    assert payload["metrics"]["cache_hits"] == 1
+    assert payload["metrics"]["cache_misses"] == 0
+    mock_service.trace_execution_path.assert_called_once_with(
+        start_symbol="src/a.py:foo",
+        repo_id=str(repo_root),
+        max_depth=2,
+        force_refresh=False,
+    )
+    mock_builder.close.assert_called_once()
     assert payload["data"]["repository"] == str(repo_root)
     assert payload["data"]["diagnostics"]["repo_id"] == str(repo_root)
     assert payload["data"]["diagnostics"]["files_with_analyzer_attempts"] == 3

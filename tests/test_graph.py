@@ -149,7 +149,8 @@ class TestKnowledgeGraphBuilder:
         Pass 1 already computes file content hashes. This regression protects the
         Phase 11 fix that threads that changed-file set into Pass 2 and Pass 3
         so `agentic-memory index` does not re-embed the entire repo when only a
-        subset of files changed.
+        subset of files changed. The JIT tracing pivot also means the default
+        pipeline now stops after Pass 3 instead of forcing repo-wide CALLS work.
         """
         repo_root = tmp_path
         changed_paths = ["src/changed.py"]
@@ -158,20 +159,16 @@ class TestKnowledgeGraphBuilder:
         pass_1 = Mock(return_value=changed_paths)
         pass_2 = Mock()
         pass_3 = Mock()
-        pass_4 = Mock()
-
         monkeypatch.setattr(builder, "setup_database", setup_database)
         monkeypatch.setattr(builder, "pass_1_structure_scan", pass_1)
         monkeypatch.setattr(builder, "pass_2_entity_definition", pass_2)
         monkeypatch.setattr(builder, "pass_3_imports", pass_3)
-        monkeypatch.setattr(builder, "pass_4_call_graph", pass_4)
 
         builder.run_pipeline(repo_root)
 
         pass_1.assert_called_once()
         pass_2.assert_called_once_with(repo_root, target_paths=changed_paths)
         pass_3.assert_called_once_with(repo_root, target_paths=changed_paths)
-        pass_4.assert_called_once_with(repo_root)
 
     def test_reindex_file_scopes_entity_and_import_passes_to_one_file(
         self,
@@ -195,15 +192,22 @@ class TestKnowledgeGraphBuilder:
         monkeypatch.setattr(builder, "_calculate_ohash", lambda path: "hash-a")
         pass_2 = Mock()
         pass_3 = Mock()
-        pass_4 = Mock()
         monkeypatch.setattr(builder, "pass_2_entity_definition", pass_2)
         monkeypatch.setattr(builder, "pass_3_imports", pass_3)
-        monkeypatch.setattr(builder, "pass_4_call_graph", pass_4)
 
         builder.reindex_file("pkg/a.py", repo_path=repo_root)
 
         pass_2.assert_called_once_with(repo_root, target_paths={"pkg/a.py"})
         pass_3.assert_called_once_with(repo_root, target_paths={"pkg/a.py"})
+
+    def test_build_calls_delegates_to_explicit_pass_4(self, builder, monkeypatch, tmp_path):
+        """Experimental CALLS builds should still route through Pass 4 explicitly."""
+        repo_root = tmp_path
+        pass_4 = Mock()
+        monkeypatch.setattr(builder, "pass_4_call_graph", pass_4)
+
+        builder.build_calls(repo_root)
+
         pass_4.assert_called_once_with(repo_root)
 
     def test_extract_js_ts_import_modules(self, builder):

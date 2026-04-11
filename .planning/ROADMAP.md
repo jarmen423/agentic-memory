@@ -3,7 +3,7 @@
 **Project:** Modular Knowledge Graph (Code + Web Research + Conversation Memory)
 **Created:** 2026-03-20
 **Last Updated:** 2026-04-11
-**Status:** Active — OpenClaw foundation wave is now the active delivery track; Phase 10 and Phase 11 are paused but preserved
+**Status:** Active — OpenClaw testing + dashboard is now the active delivery track; Phase 10 and Phase 11 remain paused but preserved
 
 ---
 
@@ -453,5 +453,40 @@ Plans:
 - switching local product state from JSON to SQLite must preserve current callers and migrate existing state safely
 - the plugin package already has local in-flight changes, so transport hardening must avoid trampling unrelated edits
 
+### Phase 13: OpenClaw Testing + Dashboard
+
+**Goal:** Replace the placeholder desktop shell with a real dashboard surface and deepen OpenClaw verification with CI-backed dashboard, E2E, load, and chaos coverage while keeping packaging and GTM work out of scope.
+
+**Plans:** 1 execution plan + wave registry
+
+Plans:
+- [x] 13-01-PLAN.md — OpenClaw testing + dashboard wave: registry alignment, dashboard API contract, dashboard shell replacement, operational test harnesses, and CI gates
+
+**Deliverables:**
+- `.planning` truth updated so the next active OpenClaw wave is Phase 13, with the completed `w12-openclaw-foundation` registry archived
+- a new `packages/am-dashboard/` workspace with a production build pipeline instead of the placeholder `desktop_shell/static/**` shell
+- authenticated dashboard read APIs for summary metrics, detailed health, recent searches, agent sessions, and workspace topology
+- desktop shell routes that serve the built dashboard and proxy the dashboard-facing OpenClaw read surface
+- operational verification harnesses for dashboard shell coverage plus OpenClaw E2E, load, and chaos execution
+- CI gates that build/test/typecheck the dashboard and keep the backend contract visible while this wave is active
+
+**Success Criteria:**
+- Phase 13 planning state is truthful in `PROJECT.md`, `ROADMAP.md`, `STATE.md`, and `.planning/execution/*`
+- `packages/am-dashboard` builds successfully and the desktop shell serves that build instead of the static placeholder assets
+- dashboard pages can render real backend-backed data for overview, agents, memory health, search quality, and workspace views
+- dashboard APIs expose stable machine-readable responses protected by the same authenticated backend contract
+- new E2E, load, and chaos test harnesses exist and are wired into the wave merge gates
+- merge gates pass:
+  - `python -m pytest tests/test_am_server.py tests/test_openclaw_contract.py desktop_shell/tests/test_app.py -q`
+  - `python -m pytest tests/e2e/test_openclaw_e2e.py tests/load/test_openclaw_load.py tests/chaos/test_openclaw_chaos.py -q`
+  - `npm run build --workspace am-dashboard`
+  - `npm run test --workspace am-dashboard`
+  - `npm run typecheck --workspace am-dashboard`
+
+**Key Risks:**
+- backend dashboard read APIs can drift from the frontend data model if the contract is not frozen before parallel work starts
+- replacing `desktop_shell/static/**` with a built SPA can break the local shell bootstrap path if asset mounting is not kept explicit and test-covered
+- load and chaos harnesses can become flaky if they are introduced before the local test environment is deterministic enough to support them
+
 ---
-*Last updated: 2026-04-11 after Phase 12 was added as the active OpenClaw foundation wave (total phases: 12)*
+*Last updated: 2026-04-11 after Phase 13 was added as the active OpenClaw testing + dashboard wave (total phases: 13)*

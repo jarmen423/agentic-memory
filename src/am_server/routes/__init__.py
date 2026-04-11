@@ -13,6 +13,7 @@ Route modules:
     - ``product``   — product/project memory endpoints.
     - ``ext``       — browser-extension–facing endpoints.
     - ``openclaw``  — Claude Code plugin (openclaw) memory read/write endpoints.
+    - ``dashboard`` — OpenClaw dashboard read endpoints.
 
 Dependencies:
     - fastapi — ``APIRouter``, ``Depends``, HTTP exception helpers.

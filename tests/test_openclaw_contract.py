@@ -189,3 +189,63 @@ def test_openclaw_contract_metrics_include_openclaw_route_labels(client):
     assert metrics_response.status_code == 200
     assert 'path="/openclaw/session/register"' in metrics_response.text
     assert "am_http_requests_total" in metrics_response.text
+
+
+def test_openclaw_dashboard_summary_is_authenticated_and_machine_readable(client):
+    """Dashboard summary should stay behind auth and expose a stable response shape."""
+
+    unauthorized = client.get("/openclaw/metrics/summary")
+    _assert_error_envelope(
+        unauthorized,
+        code="auth_missing_api_key",
+        status_code=401,
+        message_contains="Missing API key.",
+    )
+
+    authorized = client.get(
+        "/openclaw/metrics/summary",
+        headers={"Authorization": "Bearer new-key"},
+    )
+
+    assert authorized.status_code == 200
+    body = authorized.json()
+    assert body["status"] == "ok"
+    assert "summary" in body
+    assert "cards" in body["summary"]
+
+
+def test_openclaw_dashboard_recent_searches_returns_openclaw_search_activity(client, monkeypatch):
+    """Recent-search route should expose search activity once OpenClaw calls search."""
+
+    monkeypatch.setattr(openclaw, "get_graph", lambda: object())
+    monkeypatch.setattr(openclaw, "get_pipeline", lambda: "research")
+    monkeypatch.setattr(openclaw, "get_conversation_pipeline", lambda: "conversation")
+    monkeypatch.setattr(
+        openclaw,
+        "search_all_memory_sync",
+        lambda **kwargs: {"results": []},
+    )
+
+    search_response = client.post(
+        "/openclaw/memory/search",
+        headers={"Authorization": "Bearer new-key"},
+        json={
+            "workspace_id": "workspace-1",
+            "device_id": "device-1",
+            "agent_id": "agent-1",
+            "session_id": "session-1",
+            "query": "memory",
+        },
+    )
+    assert search_response.status_code == 200
+
+    recent_response = client.get(
+        "/openclaw/search/recent?limit=5",
+        headers={"Authorization": "Bearer new-key"},
+    )
+
+    assert recent_response.status_code == 200
+    body = recent_response.json()
+    assert body["status"] == "ok"
+    assert body["recent_searches"]
+    assert body["recent_searches"][0]["event_type"] == "openclaw_memory_search"

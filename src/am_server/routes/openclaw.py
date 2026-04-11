@@ -490,6 +490,21 @@ async def search_openclaw_memory(body: OpenClawMemorySearchRequest) -> dict:
         conversation_pipeline=conversation_pipeline,
     )
     payload = _serialize(response)
+    get_product_store().record_event(
+        event_type="openclaw_memory_search",
+        actor="openclaw",
+        details={
+            "workspace_id": body.workspace_id,
+            "device_id": body.device_id,
+            "agent_id": body.agent_id,
+            "session_id": body.session_id,
+            "project_id": effective_project_id,
+            "query": body.query,
+            "limit": body.limit,
+            "result_count": len(payload.get("results", [])),
+            "modules": body.modules or [],
+        },
+    )
     return {
         "status": "ok",
         "identity": {**body.model_dump(), "project_id": effective_project_id},
@@ -579,6 +594,21 @@ async def resolve_openclaw_context(body: OpenClawContextResolveRequest) -> dict:
             "Use the retrieved OpenClaw workspace memory first; "
             "prefer recent session-specific hits when scores are similar."
         )
+    get_product_store().record_event(
+        event_type="openclaw_context_resolve",
+        actor="openclaw",
+        details={
+            "workspace_id": body.workspace_id,
+            "device_id": body.device_id,
+            "agent_id": body.agent_id,
+            "session_id": body.session_id,
+            "project_id": effective_project_id,
+            "query": body.query,
+            "limit": body.limit,
+            "result_count": len(blocks),
+            "context_engine": body.context_engine,
+        },
+    )
     return {
         "status": "ok",
         "identity": {**body.model_dump(), "project_id": effective_project_id},

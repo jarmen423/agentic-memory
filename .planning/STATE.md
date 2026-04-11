@@ -2,30 +2,30 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: — Full Multi-Module Memory System with Temporal GraphRAG
-current_phase: 12
+current_phase: 13
 status: active
-last_updated: "2026-04-11T14:30:00Z"
+last_updated: "2026-04-11T20:50:00Z"
 progress:
-  total_phases: 12
+  total_phases: 13
   completed_phases: 10
-  total_plans: 19
-  completed_plans: 18
+  total_plans: 20
+  completed_plans: 19
 ---
 
 # Agentic Memory — Project State
 
 **Last Updated:** 2026-04-11
-**Current Phase:** 12
-**Phase Status:** Complete
-**Last Session Stopped At:** Phase 12 merge gates passed. Phase 10 still needs live manual verification from the runbooks, and Phase 11 has an archived execution registry under `.planning/execution/archive/w11-calls/`. Both paused tracks remain resumable.
+**Current Phase:** 13
+**Phase Status:** Execution in progress
+**Last Session Stopped At:** Phase 13 was activated and Wave 0 was locked. Next up is the parallel dashboard/testing wave: backend dashboard APIs, dashboard shell replacement, and operational test harnesses. Phase 10 still needs live manual verification from the runbooks, and Phase 11 remains resumable from `.planning/execution/archive/w11-calls/`.
 
 ---
 
 ## Active Phase
 
-**Phase 12: OpenClaw Foundation**
+**Phase 13: OpenClaw Testing + Dashboard**
 
-**Next Action:** Choose the next delivery track: resume Phase 10 manual verification, resume Phase 11 code-graph hardening from the archived registry, or start the next OpenClaw wave.
+**Next Action:** Execute `w13-openclaw-dashboard-and-testing` Wave 1 in parallel: backend dashboard APIs, the `am-dashboard` shell replacement, and operational OpenClaw test harnesses.
 
 ---
 
@@ -33,7 +33,7 @@ progress:
 
 | Branch | Description |
 |--------|-------------|
-| `main` | Full v1 with temporal GraphRAG plus the active OpenClaw foundation wave |
+| `main` | Full v1 with temporal GraphRAG plus the active OpenClaw testing + dashboard wave |
 | `v1-baseline` | Frozen at Phase 5 completion — finish original Phase 6 + 7 here for A/B comparison |
 
 ---
@@ -54,6 +54,7 @@ progress:
 | 10 | Cross-Module Integration & Hardening | Paused pending manual verification |
 | 11 | Code Graph Foundation and Code PPR | Paused with archived `w11-calls` registry |
 | 12 | OpenClaw Foundation | Complete |
+| 13 | OpenClaw Testing + Dashboard | In Progress |
 
 ---
 
@@ -92,6 +93,7 @@ progress:
 
 - Phase 11 added: Code Graph Foundation and Code PPR
 - Phase 12 added: OpenClaw Foundation
+- Phase 13 added: OpenClaw Testing + Dashboard
 
 ---
 

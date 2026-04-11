@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from am_server import dependencies
 from am_server.app import create_app
-from am_server.routes import openclaw
+from am_server.routes import dashboard, openclaw
 
 
 def _iter_result(rows):
@@ -55,7 +55,7 @@ def _assert_error_envelope(
 
 
 @pytest.fixture()
-def client(monkeypatch):
+def client(monkeypatch, tmp_path):
     """TestClient with all env vars set and pipeline patched."""
     monkeypatch.setenv("AM_SERVER_API_KEY", "test-key-abc")
     monkeypatch.setenv("NEO4J_URI", "bolt://localhost:7687")
@@ -63,7 +63,7 @@ def client(monkeypatch):
     monkeypatch.setenv("NEO4J_PASSWORD", "test")
     monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini")
     monkeypatch.setenv("GROQ_API_KEY", "fake-groq")
-    monkeypatch.setenv("CODEMEMORY_PRODUCT_STATE", "/tmp/am-product-state.json")
+    monkeypatch.setenv("CODEMEMORY_PRODUCT_STATE", str(tmp_path / "product-state.json"))
 
     mock_pipeline = MagicMock()
     mock_pipeline.ingest.return_value = {"stored": True}
@@ -716,6 +716,14 @@ class _FakeOpenClawStore:
         self.events: list[dict] = []
         self.bindings: dict[tuple[str, str, str], dict] = {}
         self.automations: list[dict] = []
+        self.runtime_components = {
+            "server": {"status": "healthy", "details": {}, "updated_at": "2026-04-11T20:00:00+00:00"},
+            "openclaw_memory": {
+                "status": "healthy",
+                "details": {"mode": "capture_only"},
+                "updated_at": "2026-04-11T20:00:00+00:00",
+            },
+        }
 
     def upsert_integration(self, *, surface, target, status, config, last_error=None):
         record = {
@@ -758,6 +766,7 @@ class _FakeOpenClawStore:
             "status": status,
             "actor": actor,
             "details": details or {},
+            "timestamp": "2026-04-11T20:00:00+00:00",
         }
         self.events.append(record)
         return record
@@ -809,6 +818,21 @@ class _FakeOpenClawStore:
         }
         self.automations.append(record)
         return record
+
+    def status_payload(self, *, repo_root=None):
+        return {
+            "integrations": list(self.integrations),
+            "active_projects": list(self.bindings.values()),
+            "project_automations": list(self.automations),
+            "events": list(self.events),
+            "runtime": {"components": dict(self.runtime_components)},
+            "summary": {
+                "integration_count": len(self.integrations),
+                "active_project_count": len(self.bindings),
+                "project_automation_count": len(self.automations),
+                "event_count": len(self.events),
+            },
+        }
 
 
 def test_openclaw_session_register_updates_store_and_echoes_identity(
@@ -933,6 +957,180 @@ def test_openclaw_project_endpoints_can_infer_session_id(client, auth_headers, m
     body = activate.json()
     assert body["identity"]["session_id"] == "session-inferred"
     assert body["binding"]["session_id"] == "session-inferred"
+
+
+def test_dashboard_metrics_summary_returns_cards_and_counts(client, auth_headers, monkeypatch):
+    """Dashboard summary exposes operator-friendly counters from state + metrics."""
+
+    fake_store = _FakeOpenClawStore()
+    fake_store.upsert_integration(
+        surface="openclaw",
+        target="workspace-1:device-a:agent-x",
+        status="connected",
+        config={
+            "workspace_id": "workspace-1",
+            "device_id": "device-a",
+            "agent_id": "agent-x",
+            "session_id": "session-1",
+            "mode": "capture_only",
+            "context_engine": "agentic-memory",
+        },
+    )
+    monkeypatch.setattr(dashboard, "get_product_store", lambda: fake_store)
+    monkeypatch.setattr(
+        dashboard,
+        "snapshot_metrics",
+        lambda: {
+            "request_counts": [
+                {"method": "POST", "path": "/openclaw/memory/ingest-turn", "status_code": 202, "count": 3},
+                {"method": "POST", "path": "/openclaw/memory/search", "status_code": 200, "count": 2},
+                {"method": "POST", "path": "/openclaw/context/resolve", "status_code": 200, "count": 1},
+            ],
+            "duration_summaries": [
+                {"method": "POST", "path": "/openclaw/memory/ingest-turn", "count": 3, "sum_seconds": 0.9, "avg_seconds": 0.3},
+                {"method": "POST", "path": "/openclaw/memory/search", "count": 2, "sum_seconds": 0.6, "avg_seconds": 0.3},
+                {"method": "POST", "path": "/openclaw/context/resolve", "count": 1, "sum_seconds": 0.4, "avg_seconds": 0.4},
+            ],
+            "error_counts": [
+                {"code": "internal_server_error", "path": "/openclaw/memory/search", "status_code": 500, "count": 1}
+            ],
+        },
+    )
+
+    resp = client.get("/openclaw/metrics/summary", headers=auth_headers)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["summary"]["active_agents"] == 1
+    assert body["summary"]["active_sessions"] == 1
+    assert body["summary"]["turns_ingested"] == 3
+    assert body["summary"]["searches_total"] == 2
+    assert body["summary"]["context_resolves_total"] == 1
+    assert body["summary"]["error_responses_total"] == 1
+    assert body["summary"]["health_score"] == 95
+    assert {card["key"] for card in body["summary"]["cards"]} == {
+        "active_agents",
+        "turns_ingested",
+        "searches_total",
+        "health_score",
+    }
+
+
+def test_dashboard_recent_searches_returns_latest_search_events(client, auth_headers, monkeypatch):
+    """Recent-search endpoint reads the bounded OpenClaw event log in reverse order."""
+
+    fake_store = _FakeOpenClawStore()
+    fake_store.record_event(
+        event_type="openclaw_memory_search",
+        actor="openclaw",
+        details={
+            "workspace_id": "workspace-1",
+            "agent_id": "agent-x",
+            "session_id": "session-1",
+            "query": "first query",
+            "result_count": 2,
+        },
+    )
+    fake_store.record_event(
+        event_type="openclaw_context_resolve",
+        actor="openclaw",
+        details={
+            "workspace_id": "workspace-1",
+            "agent_id": "agent-x",
+            "session_id": "session-1",
+            "query": "second query",
+            "result_count": 3,
+            "project_id": "project-1",
+        },
+    )
+    monkeypatch.setattr(dashboard, "get_product_store", lambda: fake_store)
+
+    resp = client.get("/openclaw/search/recent?limit=2", headers=auth_headers)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["summary"]["returned"] == 2
+    assert body["recent_searches"][0]["event_type"] == "openclaw_context_resolve"
+    assert body["recent_searches"][0]["query"] == "second query"
+    assert body["recent_searches"][1]["event_type"] == "openclaw_memory_search"
+
+
+def test_dashboard_agent_sessions_and_workspaces_group_topology(client, auth_headers, monkeypatch):
+    """Dashboard routes group OpenClaw registrations by agent and workspace/device tree."""
+
+    fake_store = _FakeOpenClawStore()
+    fake_store.upsert_integration(
+        surface="openclaw",
+        target="workspace-1:device-a:agent-x",
+        status="connected",
+        config={
+            "workspace_id": "workspace-1",
+            "device_id": "device-a",
+            "agent_id": "agent-x",
+            "session_id": "session-1",
+            "context_engine": "agentic-memory",
+            "mode": "capture_only",
+        },
+    )
+    fake_store.upsert_integration(
+        surface="openclaw",
+        target="workspace-1:device-b:agent-y",
+        status="connected",
+        config={
+            "workspace_id": "workspace-1",
+            "device_id": "device-b",
+            "agent_id": "agent-y",
+            "session_id": "session-2",
+            "context_engine": "agentic-memory",
+            "mode": "augment_context",
+        },
+    )
+    fake_store.activate_project_for_openclaw_identity(
+        workspace_id="workspace-1",
+        agent_id="agent-x",
+        session_id="session-1",
+        project_id="project-1",
+        device_id="device-a",
+    )
+    fake_store.upsert_project_automation(
+        workspace_id="workspace-1",
+        project_id="project-1",
+        automation_kind="research_ingestion",
+        enabled=True,
+    )
+    fake_store.record_event(
+        event_type="openclaw_memory_search",
+        actor="openclaw",
+        details={
+            "workspace_id": "workspace-1",
+            "agent_id": "agent-x",
+            "session_id": "session-1",
+            "query": "hello",
+            "result_count": 1,
+        },
+    )
+    monkeypatch.setattr(dashboard, "get_product_store", lambda: fake_store)
+
+    sessions_resp = client.get(
+        "/openclaw/agents/agent-x/sessions?workspace_id=workspace-1",
+        headers=auth_headers,
+    )
+    assert sessions_resp.status_code == 200
+    sessions = sessions_resp.json()["sessions"]
+    assert len(sessions) == 1
+    assert sessions[0]["project_id"] == "project-1"
+    assert sessions[0]["event_count"] == 1
+
+    workspaces_resp = client.get("/openclaw/workspaces", headers=auth_headers)
+    assert workspaces_resp.status_code == 200
+    body = workspaces_resp.json()
+    assert body["summary"]["workspace_count"] == 1
+    assert body["summary"]["device_count"] == 2
+    assert body["summary"]["agent_count"] == 2
+    assert body["workspaces"][0]["workspace_id"] == "workspace-1"
+    assert len(body["workspaces"][0]["devices"]) == 2
+    assert body["workspaces"][0]["active_projects"][0]["project_id"] == "project-1"
+    assert body["workspaces"][0]["automations"][0]["automation_kind"] == "research_ingestion"
 
 
 def test_openclaw_memory_ingest_turn_resolves_active_project(client, auth_headers, monkeypatch):

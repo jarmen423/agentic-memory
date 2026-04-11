@@ -1,0 +1,134 @@
+{
+  "active_wave_id": "w12-openclaw-foundation",
+  "phase": "12-openclaw-foundation",
+  "tasks": [
+    {
+      "id": "W12-OC-00",
+      "title": "Lock execution contract for the OpenClaw foundation wave",
+      "status": "completed",
+      "owner": "orchestrator",
+      "depends_on": [],
+      "write_scope": [
+        ".planning/PROJECT.md",
+        ".planning/ROADMAP.md",
+        ".planning/STATE.md",
+        ".planning/execution/README.md",
+        ".planning/execution/ROADMAP.md",
+        ".planning/execution/tasks.json",
+        ".planning/phases/12-openclaw-foundation/12-CONTEXT.md",
+        ".planning/phases/12-openclaw-foundation/12-UAT.md",
+        ".planning/phases/12-openclaw-foundation/12-TASKS.md",
+        ".planning/phases/12-openclaw-foundation/12-01-PLAN.md"
+      ],
+      "verify": [],
+      "handoff_path": ".planning/execution/handoffs/w12-openclaw-foundation/W12-OC-00.md"
+    },
+    {
+      "id": "W12-OC-01",
+      "title": "Harden backend auth, error envelope, metrics, and backend tests",
+      "status": "completed",
+      "owner": "backend-foundation",
+      "depends_on": [
+        "W12-OC-00"
+      ],
+      "write_scope": [
+        "src/am_server/auth.py",
+        "src/am_server/app.py",
+        "src/am_server/models.py",
+        "src/am_server/routes/openclaw.py",
+        "src/am_server/routes/health.py",
+        "src/am_server/metrics.py",
+        "tests/test_am_server.py"
+      ],
+      "do_not_touch": [
+        "packages/am-openclaw/**",
+        "src/agentic_memory/product/**"
+      ],
+      "verify": [
+        "python -m pytest tests/test_am_server.py -q"
+      ],
+      "handoff_path": ".planning/execution/handoffs/w12-openclaw-foundation/W12-OC-01.md"
+    },
+    {
+      "id": "W12-OC-02",
+      "title": "Replace JSON product state persistence with SQLite behind the same API",
+      "status": "completed",
+      "owner": "product-foundation",
+      "depends_on": [
+        "W12-OC-00"
+      ],
+      "write_scope": [
+        "src/agentic_memory/product/state.py",
+        "tests/test_product_state.py"
+      ],
+      "do_not_touch": [
+        "src/am_server/routes/openclaw.py",
+        "packages/am-openclaw/**"
+      ],
+      "verify": [
+        "python -m pytest tests/test_product_state.py -q"
+      ],
+      "handoff_path": ".planning/execution/handoffs/w12-openclaw-foundation/W12-OC-02.md"
+    },
+    {
+      "id": "W12-OC-03",
+      "title": "Harden am-openclaw transport and add package-local TypeScript tests",
+      "status": "completed",
+      "owner": "plugin-foundation",
+      "depends_on": [
+        "W12-OC-00"
+      ],
+      "write_scope": [
+        "packages/am-openclaw/package.json",
+        "packages/am-openclaw/src/backend-client.ts",
+        "packages/am-openclaw/src/runtime.ts",
+        "packages/am-openclaw/src/setup.ts",
+        "packages/am-openclaw/tsconfig.json",
+        "packages/am-openclaw/tests/**"
+      ],
+      "do_not_touch": [
+        "src/am_server/**",
+        "src/agentic_memory/product/**"
+      ],
+      "verify": [
+        "npm run test --workspace agentic-memory",
+        "npm run build --workspace agentic-memory",
+        "npm run typecheck --workspace agentic-memory"
+      ],
+      "handoff_path": ".planning/execution/handoffs/w12-openclaw-foundation/W12-OC-03.md"
+    },
+    {
+      "id": "W12-OC-04",
+      "title": "Close the OpenClaw integration gate with contract tests and CI",
+      "status": "completed",
+      "owner": "orchestrator",
+      "depends_on": [
+        "W12-OC-01",
+        "W12-OC-02",
+        "W12-OC-03"
+      ],
+      "write_scope": [
+        "src/am_server/dependencies.py",
+        "tests/test_openclaw_contract.py",
+        "tests/test_openclaw_shared_memory.py",
+        ".github/workflows/ci.yml",
+        "package.json"
+      ],
+      "verify": [
+        "python -m pytest tests/test_am_server.py tests/test_openclaw_shared_memory.py tests/test_product_state.py -q",
+        "python -m pytest tests/test_openclaw_contract.py -q",
+        "npm run test --workspace agentic-memory",
+        "npm run build --workspace agentic-memory",
+        "npm run typecheck --workspace agentic-memory"
+      ],
+      "handoff_path": ".planning/execution/handoffs/w12-openclaw-foundation/W12-OC-04.md"
+    }
+  ],
+  "merge_gates": [
+    "python -m pytest tests/test_am_server.py tests/test_openclaw_shared_memory.py tests/test_product_state.py -q",
+    "python -m pytest tests/test_openclaw_contract.py -q",
+    "npm run test --workspace agentic-memory",
+    "npm run build --workspace agentic-memory",
+    "npm run typecheck --workspace agentic-memory"
+  ]
+}

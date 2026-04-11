@@ -60,12 +60,12 @@ AI agents get seamless, persistent memory that works regardless of content type 
 - [ ] CLI commands: web-init, web-ingest, web-search, chat-init, chat-ingest
 - [ ] Documentation for module setup and configuration
 
-**OpenClaw Foundation Wave (`w12-openclaw-foundation`):**
-- [ ] Make OpenClaw the active next delivery track in planning and execution artifacts
-- [ ] Harden `am-server` for the current `/openclaw/*` contract: multi-key auth, request-id-bearing machine-readable errors, authenticated `/metrics`
-- [ ] Replace local JSON product state with SQLite-backed persistence without changing the `ProductStateStore` public method surface
-- [ ] Add retry/backoff and package-local tests to `packages/am-openclaw`
-- [ ] Add explicit OpenClaw contract coverage and minimal TypeScript CI gates
+**OpenClaw Testing + Dashboard Wave (`w13-openclaw-dashboard-and-testing`):**
+- [ ] Replace the static desktop shell under `desktop_shell/static/` with a workspace-backed React dashboard in `packages/am-dashboard/`
+- [ ] Add authenticated dashboard read APIs for OpenClaw metrics, sessions, search quality, and workspace views
+- [ ] Add OpenClaw operational verification harnesses: E2E, load, chaos, and dashboard shell coverage
+- [ ] Wire `am-dashboard` into the npm workspace and CI build/test/typecheck gates
+- [ ] Keep packaging, marketplace, hosted auth, and GTM rollout deferred until this wave is green
 
 ### Out of Scope
 
@@ -75,7 +75,7 @@ AI agents get seamless, persistent memory that works regardless of content type 
 - Real-time collaboration features — Single-user focus for v1
 - Advanced conversation analytics (sentiment, topic modeling) — Basic retrieval first
 - Video/audio transcription — Rely on external tools, ingest transcripts only
-- Broad universal adapter expansion beyond the current shipped integrations — post-v1. The targeted OpenClaw foundation hardening wave is active now.
+- Broad universal adapter expansion beyond the current shipped integrations — post-v1. The targeted OpenClaw testing and dashboard wave is active now.
 - Simple cron scheduling (repeat same query) — Replaced by smart scheduled research with LLM-driven variable substitution
 
 ## Context
@@ -123,4 +123,4 @@ AI agents get seamless, persistent memory that works regardless of content type 
 | Modular architecture | Each module independently usable, scales to future content types | ✓ Confirmed |
 
 ---
-*Last updated: 2026-04-11 after the OpenClaw foundation wave was activated and implemented*
+*Last updated: 2026-04-11 after the OpenClaw testing and dashboard wave was activated*

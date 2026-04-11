@@ -260,3 +260,112 @@ class OpenClawTurnIngestRequest(OpenClawProjectScopedIdentityModel):
     timestamp: str | None = None
     ingestion_mode: str = "active"
     source_key: str = "chat_openclaw"
+
+
+class OpenClawDashboardMetricCardModel(BaseModel):
+    """One top-level dashboard metric card."""
+
+    key: str
+    label: str
+    value: int | float
+    unit: str | None = None
+    status: str = "info"
+    description: str | None = None
+
+
+class OpenClawDashboardSummaryModel(BaseModel):
+    """Overview payload used by the dashboard home page."""
+
+    active_agents: int
+    active_sessions: int
+    turns_ingested: int
+    searches_total: int
+    context_resolves_total: int
+    error_responses_total: int
+    health_score: int
+    cards: list[OpenClawDashboardMetricCardModel] = Field(default_factory=list)
+
+
+class OpenClawDashboardAgentSessionModel(BaseModel):
+    """Latest-known state for one OpenClaw agent session."""
+
+    workspace_id: str
+    device_id: str | None = None
+    agent_id: str
+    session_id: str
+    status: str
+    mode: str | None = None
+    project_id: str | None = None
+    context_engine: str | None = None
+    integration_updated_at: str | None = None
+    last_activity_at: str | None = None
+    event_count: int = 0
+
+
+class OpenClawDashboardHealthComponentModel(BaseModel):
+    """Normalized runtime health record for one backend component."""
+
+    component: str
+    status: str
+    details: dict[str, Any] = Field(default_factory=dict)
+    updated_at: str | None = None
+
+
+class OpenClawDashboardRequestMetricModel(BaseModel):
+    """Structured request metric suitable for dashboard charts and tables."""
+
+    method: str
+    path: str
+    status_code: int
+    count: int
+    avg_seconds: float | None = None
+
+
+class OpenClawDashboardErrorMetricModel(BaseModel):
+    """Structured normalized error counter for dashboard diagnostics."""
+
+    code: str
+    path: str
+    status_code: int
+    count: int
+
+
+class OpenClawDashboardRecentSearchModel(BaseModel):
+    """Recent search or context-resolution activity visible to operators."""
+
+    event_type: str
+    timestamp: str
+    workspace_id: str | None = None
+    agent_id: str | None = None
+    session_id: str | None = None
+    query: str | None = None
+    result_count: int | None = None
+    project_id: str | None = None
+
+
+class OpenClawDashboardWorkspaceAgentModel(BaseModel):
+    """One agent grouped under a workspace/device entry."""
+
+    agent_id: str
+    session_id: str
+    status: str
+    project_id: str | None = None
+    mode: str | None = None
+    context_engine: str | None = None
+    updated_at: str | None = None
+
+
+class OpenClawDashboardWorkspaceDeviceModel(BaseModel):
+    """One device node in the dashboard workspace tree."""
+
+    device_id: str
+    agents: list[OpenClawDashboardWorkspaceAgentModel] = Field(default_factory=list)
+
+
+class OpenClawDashboardWorkspaceModel(BaseModel):
+    """Workspace topology used by the dashboard workspace page."""
+
+    workspace_id: str
+    devices: list[OpenClawDashboardWorkspaceDeviceModel] = Field(default_factory=list)
+    active_projects: list[dict[str, Any]] = Field(default_factory=list)
+    automations: list[dict[str, Any]] = Field(default_factory=list)

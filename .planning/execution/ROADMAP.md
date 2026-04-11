@@ -1,25 +1,30 @@
 # Wave Roadmap
 
-## Active Track: `w12-openclaw-foundation`
+## Active Track: `w13-openclaw-dashboard-and-testing`
 
 ### Wave 0: Orchestrator lock
 
-- `W12-OC-00`: archive the existing `w11-calls` registry, update `.planning`
-  truth, and freeze write ownership and merge gates for the OpenClaw wave.
+- `W13-OC-00`: archive the completed `w12-openclaw-foundation` registry, update
+  `.planning` truth, and freeze write ownership and merge gates for the next
+  OpenClaw wave.
 
-### Wave 1: Foundation threads
+### Wave 1: Parallel implementation threads
 
-- `W12-OC-01`: backend auth, machine-readable errors, `/metrics`, and backend tests.
-- `W12-OC-02`: SQLite-backed `ProductStateStore` plus durability/concurrency tests.
-- `W12-OC-03`: `packages/am-openclaw` retry/backoff hardening and package-local TypeScript tests.
+- `W13-OC-01`: backend dashboard read APIs, response models, and backend
+  contract coverage.
+- `W13-OC-02`: `packages/am-dashboard` workspace plus desktop shell replacement
+  and proxy integration.
+- `W13-OC-03`: OpenClaw operational harnesses for E2E, load, and chaos
+  execution.
 
 ### Wave 2: Integration gate
 
-- `W12-OC-04`: reconcile shared contracts, add explicit OpenClaw contract tests,
-  and update CI to enforce Python + TypeScript merge gates.
+- `W13-OC-04`: wire dashboard CI/build gates, reconcile frontend/backend
+  contracts, and close the testing + dashboard merge boundary.
 
 ### Wave 3: Verification
 
-- run the Python merge gates for backend, shared-memory, product-state, and OpenClaw contract tests
-- run the OpenClaw package build/typecheck/test gates
-- update task registry statuses and handoffs so paused Phase 10/11 work remains resumable
+- run the backend, contract, and desktop shell merge gates
+- run the dashboard workspace build/test/typecheck gates
+- run the E2E, load, and chaos harness merge gates
+- update task registry statuses and handoffs so the completed W12 wave remains resumable from archive

@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from am_server.dependencies import get_conversation_pipeline, get_pipeline
 from am_server.metrics import record_error_response, record_http_request
 from am_server.middleware import REQUEST_ID_HEADER, request_id_middleware
-from am_server.routes import conversation, ext, health, openclaw, product, research, search
+from am_server.routes import conversation, dashboard, ext, health, openclaw, product, research, search
 
 logger = logging.getLogger(__name__)
 
@@ -208,6 +208,7 @@ def create_app() -> FastAPI:
     app.include_router(search.router)
     app.include_router(ext.router)
     app.include_router(openclaw.router)
+    app.include_router(dashboard.router)
     app.include_router(product.router)
 
     return app

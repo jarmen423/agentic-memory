@@ -52,6 +52,60 @@ def record_error_response(*, code: str, path: str, status_code: int) -> None:
         _ERROR_COUNTS[error_key] += 1
 
 
+def snapshot_metrics() -> dict[str, object]:
+    """Return the current in-process metrics as structured Python data.
+
+    The Prometheus text endpoint is useful for operators and CI smoke checks,
+    but the Phase 13 dashboard APIs also need a machine-readable view of the
+    same counters. This helper keeps the dashboard route layer from parsing its
+    own text output and makes future route-level aggregation easier to test.
+
+    Returns:
+        Dict containing request counters, duration summaries, and normalized
+        error counters keyed by the same labels exposed from `/metrics`.
+    """
+
+    with _LOCK:
+        request_counts = [
+            {
+                "method": method,
+                "path": path,
+                "status_code": int(status_code),
+                "count": count,
+            }
+            for (method, path, status_code), count in sorted(_REQUEST_COUNTS.items())
+        ]
+        duration_summaries = [
+            {
+                "method": method,
+                "path": path,
+                "count": _REQUEST_DURATION_COUNTS[(method, path)],
+                "sum_seconds": _REQUEST_DURATION_SUMS[(method, path)],
+                "avg_seconds": (
+                    _REQUEST_DURATION_SUMS[(method, path)] / _REQUEST_DURATION_COUNTS[(method, path)]
+                    if _REQUEST_DURATION_COUNTS[(method, path)]
+                    else 0.0
+                ),
+            }
+            for (method, path) in sorted(_REQUEST_DURATION_COUNTS.keys())
+        ]
+        error_counts = [
+            {
+                "code": code,
+                "path": path,
+                "status_code": int(status_code),
+                "count": count,
+            }
+            for (code, path, status_code), count in sorted(_ERROR_COUNTS.items())
+        ]
+
+    return {
+        "request_counts": request_counts,
+        "duration_summaries": duration_summaries,
+        "error_counts": error_counts,
+    }
+
+
 def render_prometheus_metrics() -> str:
     """Render the current in-process metrics in Prometheus text format."""
 

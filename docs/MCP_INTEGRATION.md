@@ -14,6 +14,18 @@ This guide explains how to integrate Agentic Memory with AI clients using the Mo
 
 ---
 
+## Passive CLI proxy (am-proxy) vs MCP
+
+**MCP** (`agentic-memory serve`) exposes **tools** to the agent over MCP.
+
+**am-proxy** (`packages/am-proxy`) wraps an agent CLI, tees **JSON-RPC** traffic, and POSTs turns to **am-server** (`POST /ingest/conversation`) for **passive conversation memory**. That path is separate from MCP configuration.
+
+**am-codex-watch** (`packages/am-codex-watch`) tails **session artifact** files (Codex rollout JSONL first; pluggable adapters for more CLIs) when you use **interactive terminal TUIs** not covered by `am-proxy`. See **[AM_PROXY_CODEX.md](AM_PROXY_CODEX.md)**, **[CODEX_ROLLOUT_JSONL.md](CODEX_ROLLOUT_JSONL.md)**, and **[SESSION_ARTIFACT_ADAPTERS.md](SESSION_ARTIFACT_ADAPTERS.md)**.
+
+For **OpenAI Codex** on Windows, stdio defaults, and ingest method mapping, see **[AM_PROXY_CODEX.md](AM_PROXY_CODEX.md)**.
+
+---
+
 ## What is MCP?
 
 The **Model Context Protocol (MCP)** is a standardized protocol for connecting AI assistants to external tools and data sources. With MCP, Agentic Memory exposes high-level "skills" to AI agents, allowing them to:

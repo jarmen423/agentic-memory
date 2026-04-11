@@ -27,7 +27,7 @@ class ProxyConfig:
     All fields have defaults so the proxy works with zero configuration.
     """
 
-    endpoint: str = "http://localhost:8000"
+    endpoint: str = "http://127.0.0.1:8765"
     api_key: str = ""
     default_project_id: str = "default"
     timeout_seconds: float = 5.0
@@ -57,7 +57,7 @@ def load_config(config_path: Path | None = None) -> ProxyConfig:
 
     section: dict[str, Any] = data.get("am_proxy", {})
     return ProxyConfig(
-        endpoint=section.get("endpoint", "http://localhost:8000"),
+        endpoint=section.get("endpoint", "http://127.0.0.1:8765"),
         api_key=section.get("api_key", ""),
         default_project_id=section.get("default_project_id", "default"),
         timeout_seconds=float(section.get("timeout_seconds", 5.0)),

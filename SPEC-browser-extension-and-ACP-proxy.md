@@ -144,7 +144,13 @@ args = ["--acp"]
 
 [agents.codex]
 binary = "/usr/local/bin/codex"
-args = ["--acp"]
+# Current OpenAI Codex CLI: use App Server stdio (e.g. `app-server`), not a literal `--acp` flag.
+# See docs/AM_PROXY_CODEX.md and packages/am-proxy — `am-proxy --agent codex` defaults to `codex app-server`.
+args = ["app-server"]
+
+# For interactive terminal `codex` (TUI), `am-proxy` does not apply — use `am-codex-watch` to tail
+# `~/.codex/sessions/**/*.jsonl` into POST /ingest/conversation. See docs/AM_PROXY_CODEX.md and
+# docs/CODEX_ROLLOUT_JSONL.md. OpenClaw uses packages/am-openclaw (native hooks), not this proxy.
 
 [agents.gemini]
 binary = "/usr/local/bin/gemini"

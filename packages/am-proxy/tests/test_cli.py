@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from am_proxy.cli import _build_parser, _cmd_setup, main
+from am_proxy.cli import (
+    _build_parser,
+    _cmd_setup,
+    _default_codex_child_args,
+    _normalize_child_args,
+    main,
+)
 
 
 # --- Argument parser ---
@@ -16,24 +23,51 @@ def test_parser_requires_agent_for_run() -> None:
     """--agent is required for the run path."""
     parser = _build_parser()
     args, _ = parser.parse_known_args(["--project", "p1"])
-    assert args.agent is None  # Missing --agent captured without error by parse_known_args
+    assert args.agent is None
 
 
 def test_parser_captures_agent_args() -> None:
     """Unknown flag-style args after known flags are captured in remaining."""
     parser = _build_parser()
-    # Unknown flags are passed through via parse_known_args remaining
     args, remaining = parser.parse_known_args(
         ["--agent", "claude", "--project", "proj", "--verbose"]
     )
     assert "--verbose" in remaining
 
 
-def test_parser_setup_subcommand() -> None:
-    """setup subcommand sets subcommand='setup'."""
+def test_parser_passes_resume_and_session_name() -> None:
+    """Positional args (e.g. codex resume <name>) are not mistaken for subcommands."""
     parser = _build_parser()
-    args, _ = parser.parse_known_args(["setup"])
-    assert args.subcommand == "setup"
+    args, remaining = parser.parse_known_args(
+        ["--agent", "codex", "--project", "proj", "resume", "Radiology"]
+    )
+    assert args.agent == "codex"
+    assert remaining == ["resume", "Radiology"]
+
+
+def test_parser_passes_double_dash_and_flags_to_child() -> None:
+    """``--`` and following tokens remain in ``remaining`` for the child process."""
+    parser = _build_parser()
+    args, remaining = parser.parse_known_args(
+        ["--agent", "codex", "--project", "p", "--", "--acp"]
+    )
+    assert remaining == ["--", "--acp"]
+
+
+def test_parser_app_server_listen_passthrough() -> None:
+    parser = _build_parser()
+    _, remaining = parser.parse_known_args(
+        [
+            "--agent",
+            "codex",
+            "--project",
+            "p",
+            "app-server",
+            "--listen",
+            "stdio://",
+        ]
+    )
+    assert remaining == ["app-server", "--listen", "stdio://"]
 
 
 def test_parser_debug_flag() -> None:
@@ -62,6 +96,26 @@ def test_parser_project_override() -> None:
     parser = _build_parser()
     args, _ = parser.parse_known_args(["--agent", "claude", "--project", "my-project"])
     assert args.project == "my-project"
+
+
+def test_default_codex_child_args_app_server_when_empty() -> None:
+    assert _default_codex_child_args([]) == ["app-server"]
+
+
+def test_default_codex_child_args_preserves_explicit() -> None:
+    assert _default_codex_child_args(["resume", "--last"]) == ["resume", "--last"]
+
+
+def test_normalize_child_args_strips_double_dash_separator() -> None:
+    assert _normalize_child_args(["--", "app-server", "--listen", "stdio://"]) == [
+        "app-server",
+        "--listen",
+        "stdio://",
+    ]
+
+
+def test_normalize_child_args_preserves_regular_passthrough() -> None:
+    assert _normalize_child_args(["resume", "Radiology"]) == ["resume", "Radiology"]
 
 
 # --- setup subcommand ---
@@ -99,9 +153,11 @@ def test_cmd_setup_single_agent(capsys) -> None:
 
 def _make_asyncio_run_mock(return_value: int = 0):
     """Create an asyncio.run side_effect that closes the coroutine and returns value."""
+
     def fake_run(coro):
         coro.close()
         return return_value
+
     return fake_run
 
 
@@ -113,6 +169,8 @@ def test_windows_policy_set_on_win32() -> None:
         patch("asyncio.run", side_effect=_make_asyncio_run_mock(0)),
         patch("sys.exit"),
         patch("sys.argv", ["am-proxy", "--agent", "claude"]),
+        patch("am_proxy.cli.resolved_binary_for_agent", return_value="claude"),
+        patch("am_proxy.cli._run_proxy", AsyncMock(return_value=0)),
     ):
         main()
         mock_set_policy.assert_called_once()
@@ -128,6 +186,8 @@ def test_windows_policy_not_set_on_linux() -> None:
         patch("asyncio.run", side_effect=_make_asyncio_run_mock(0)),
         patch("sys.exit"),
         patch("sys.argv", ["am-proxy", "--agent", "claude"]),
+        patch("am_proxy.cli.resolved_binary_for_agent", return_value="claude"),
+        patch("am_proxy.cli._run_proxy", AsyncMock(return_value=0)),
     ):
         main()
         mock_set_policy.assert_not_called()
@@ -141,6 +201,8 @@ def test_main_exits_with_subprocess_exit_code() -> None:
         patch("asyncio.run", side_effect=_make_asyncio_run_mock(42)),
         patch("sys.exit") as mock_exit,
         patch("sys.argv", ["am-proxy", "--agent", "claude"]),
+        patch("am_proxy.cli.resolved_binary_for_agent", return_value="claude"),
+        patch("am_proxy.cli._run_proxy", AsyncMock(return_value=0)),
     ):
         main()
         mock_exit.assert_called_once_with(42)
@@ -178,6 +240,8 @@ def test_main_exit_code_zero() -> None:
         patch("asyncio.run", side_effect=_make_asyncio_run_mock(0)),
         patch("sys.exit") as mock_exit,
         patch("sys.argv", ["am-proxy", "--agent", "claude"]),
+        patch("am_proxy.cli.resolved_binary_for_agent", return_value="claude"),
+        patch("am_proxy.cli._run_proxy", AsyncMock(return_value=0)),
     ):
         main()
         mock_exit.assert_called_once_with(0)
@@ -189,27 +253,73 @@ def test_main_exit_code_nonzero_error() -> None:
         patch("asyncio.run", side_effect=_make_asyncio_run_mock(1)),
         patch("sys.exit") as mock_exit,
         patch("sys.argv", ["am-proxy", "--agent", "claude"]),
+        patch("am_proxy.cli.resolved_binary_for_agent", return_value="claude"),
+        patch("am_proxy.cli._run_proxy", AsyncMock(return_value=0)),
     ):
         main()
         mock_exit.assert_called_once_with(1)
 
 
 def test_main_passes_agent_args_through() -> None:
-    """Extra args after --agent are passed through to the proxy."""
-    captured_call: list = []
-
-    def fake_asyncio_run(coro):
-        captured_call.append(coro)
-        coro.close()
-        return 0
+    """Extra args after flags are passed to the proxy (e.g. positional for child)."""
+    run_proxy = AsyncMock(return_value=0)
 
     with (
-        patch("asyncio.run", side_effect=fake_asyncio_run),
+        patch("asyncio.run", side_effect=asyncio.run),
         patch("sys.exit"),
         patch("sys.argv", ["am-proxy", "--agent", "claude", "--project", "p1", "some-file.py"]),
+        patch("am_proxy.cli.resolved_binary_for_agent", return_value="claude"),
+        patch("am_proxy.cli._run_proxy", run_proxy),
     ):
         main()
-        assert len(captured_call) == 1
+
+    run_proxy.assert_called_once()
+    assert run_proxy.call_args.kwargs["agent_args"] == ["some-file.py"]
+
+
+def test_main_codex_defaults_app_server() -> None:
+    """Codex with no extra argv gets default app-server child args."""
+    run_proxy = AsyncMock(return_value=0)
+
+    with (
+        patch("asyncio.run", side_effect=asyncio.run),
+        patch("sys.exit"),
+        patch("sys.argv", ["am-proxy", "--agent", "codex", "--project", "p1"]),
+        patch("am_proxy.cli.resolved_binary_for_agent", return_value="codex"),
+        patch("am_proxy.cli._run_proxy", run_proxy),
+    ):
+        main()
+
+    assert run_proxy.call_args.kwargs["agent_args"] == ["app-server"]
+
+
+def test_main_strips_double_dash_before_child_args() -> None:
+    """Leading separator is not forwarded to Codex."""
+    run_proxy = AsyncMock(return_value=0)
+
+    with (
+        patch("asyncio.run", side_effect=asyncio.run),
+        patch("sys.exit"),
+        patch(
+            "sys.argv",
+            [
+                "am-proxy",
+                "--agent",
+                "codex",
+                "--project",
+                "p1",
+                "--",
+                "app-server",
+                "--listen",
+                "stdio://",
+            ],
+        ),
+        patch("am_proxy.cli.resolved_binary_for_agent", return_value="codex"),
+        patch("am_proxy.cli._run_proxy", run_proxy),
+    ):
+        main()
+
+    assert run_proxy.call_args.kwargs["agent_args"] == ["app-server", "--listen", "stdio://"]
 
 
 def test_main_no_agent_error() -> None:
@@ -220,3 +330,10 @@ def test_main_no_agent_error() -> None:
     ):
         main()
     assert exc_info.value.code != 0
+
+
+def test_cmd_setup_calls_detect_installed_agents() -> None:
+    """_cmd_setup calls detect_installed_agents."""
+    with patch("am_proxy.cli.detect_installed_agents", return_value=[]) as det:
+        _cmd_setup()
+        det.assert_called_once()

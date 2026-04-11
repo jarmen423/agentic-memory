@@ -298,3 +298,149 @@ def test_threads_create_initializes_session(test_config: ProxyConfig) -> None:
     proxy._handle_line(line, direction="in")
     proxy._ingest_client.fire_and_forget.assert_not_called()
     assert proxy._session_turn_counts.get("sess-new") == 0
+
+
+# --- Codex App Server (openai_codex) ---
+
+
+def test_codex_turn_start_ingests_user(test_config: ProxyConfig) -> None:
+    proxy = make_proxy(test_config)
+    line = encode(
+        {
+            "jsonrpc": "2.0",
+            "method": "turn/start",
+            "params": {"threadId": "thr_1", "input": "hello codex"},
+        }
+    )
+    proxy._handle_line(line, direction="in", source_agent="openai_codex")
+    proxy._ingest_client.fire_and_forget.assert_called_once()
+    turn = proxy._ingest_client.fire_and_forget.call_args[0][0]
+    assert turn["role"] == "user"
+    assert turn["content"] == "hello codex"
+    assert turn["session_id"] == "thr_1"
+    assert turn["source_key"] == "chat_proxy"
+
+
+def test_codex_turn_start_ingests_typed_input_array(test_config: ProxyConfig) -> None:
+    proxy = make_proxy(test_config)
+    line = encode(
+        {
+            "jsonrpc": "2.0",
+            "method": "turn/start",
+            "params": {
+                "threadId": "thr_array",
+                "input": [
+                    {"type": "input_text", "text": "hello"},
+                    {"type": "input_image", "image_url": "ignored"},
+                    {"type": "input_text", "text": "world"},
+                ],
+            },
+        }
+    )
+    proxy._handle_line(line, direction="in", source_agent="openai_codex")
+    proxy._ingest_client.fire_and_forget.assert_called_once()
+    turn = proxy._ingest_client.fire_and_forget.call_args[0][0]
+    assert turn["role"] == "user"
+    assert turn["content"] == "hello\nworld"
+
+
+def test_codex_turn_start_ingests_nested_turn_input_array(test_config: ProxyConfig) -> None:
+    proxy = make_proxy(test_config)
+    line = encode(
+        {
+            "method": "turn/start",
+            "params": {
+                "threadId": "thr_nested",
+                "turn": {"input": [{"type": "input_text", "text": "nested"}]},
+            },
+        }
+    )
+    proxy._handle_line(line, direction="in", source_agent="openai_codex")
+    proxy._ingest_client.fire_and_forget.assert_called_once()
+    turn = proxy._ingest_client.fire_and_forget.call_args[0][0]
+    assert turn["content"] == "nested"
+
+
+def test_codex_turn_start_method_prefix_without_source_agent(test_config: ProxyConfig) -> None:
+    """thread/turn/item methods route even when source_agent is unknown."""
+    proxy = make_proxy(test_config)
+    line = encode(
+        {
+            "method": "turn/start",
+            "params": {"threadId": "t2", "input": "hi"},
+        }
+    )
+    proxy._handle_line(line, direction="in", source_agent="")
+    proxy._ingest_client.fire_and_forget.assert_called_once()
+
+
+def test_codex_thread_started_resets_turn_counter(test_config: ProxyConfig) -> None:
+    proxy = make_proxy(test_config)
+    proxy._session_turn_counts["thr_x"] = 99
+    line = encode(
+        {
+            "method": "thread/started",
+            "params": {"thread": {"id": "thr_x"}},
+        }
+    )
+    proxy._handle_line(line, direction="out", source_agent="openai_codex")
+    assert proxy._session_turn_counts.get("thr_x") == 0
+    proxy._ingest_client.fire_and_forget.assert_not_called()
+
+
+def test_codex_item_completed_ingests_assistant(test_config: ProxyConfig) -> None:
+    proxy = make_proxy(test_config)
+    line = encode(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "item": {"type": "agent_message", "text": "Done."},
+            },
+        }
+    )
+    proxy._handle_line(line, direction="out", source_agent="openai_codex")
+    proxy._ingest_client.fire_and_forget.assert_called_once()
+    turn = proxy._ingest_client.fire_and_forget.call_args[0][0]
+    assert turn["role"] == "assistant"
+    assert turn["content"] == "Done."
+
+
+def test_codex_item_completed_ingests_typed_content_array(test_config: ProxyConfig) -> None:
+    proxy = make_proxy(test_config)
+    line = encode(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "item": {
+                    "type": "agent_message",
+                    "content": [
+                        {"type": "output_text", "text": "Line 1"},
+                        {"type": "output_image", "image_url": "ignored"},
+                        {"type": "output_text", "text": "Line 2"},
+                    ],
+                },
+            },
+        }
+    )
+    proxy._handle_line(line, direction="out", source_agent="openai_codex")
+    proxy._ingest_client.fire_and_forget.assert_called_once()
+    turn = proxy._ingest_client.fire_and_forget.call_args[0][0]
+    assert turn["role"] == "assistant"
+    assert turn["content"] == "Line 1\nLine 2"
+
+
+def test_codex_item_completed_skips_tool_like_items(test_config: ProxyConfig) -> None:
+    proxy = make_proxy(test_config)
+    line = encode(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "item": {"type": "tool_call", "text": "ignored"},
+            },
+        }
+    )
+    proxy._handle_line(line, direction="out", source_agent="openai_codex")
+    proxy._ingest_client.fire_and_forget.assert_not_called()

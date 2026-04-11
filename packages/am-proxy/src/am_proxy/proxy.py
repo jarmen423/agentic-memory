@@ -15,6 +15,13 @@ import sys
 from typing import Any
 from uuid import uuid4
 
+from am_proxy.codex_routing import (
+    extract_item_completed_text,
+    extract_thread_id,
+    extract_user_turn_text,
+    should_route_codex,
+    tool_like_item,
+)
 from am_proxy.config import ProxyConfig
 from am_proxy.ingest import IngestClient
 
@@ -234,10 +241,63 @@ class ACPProxy:
                 self._ingest_client.fire_and_forget(call_turn)
                 self._ingest_client.fire_and_forget(result_turn)
 
+            elif should_route_codex(method, source_agent or ""):
+                self._handle_codex_app_server(method, params, direction, source_agent)
+
             # All other methods: pass-through only, no ingest
 
         except Exception:
             pass  # Silent failure — routing errors MUST NOT surface to caller
+
+    def _handle_codex_app_server(
+        self,
+        method: str,
+        params: dict[str, Any],
+        direction: str,
+        source_agent: str,
+    ) -> None:
+        """Map Codex App Server JSON-RPC to passive ingest (OpenAI Codex CLI)."""
+        tid = extract_thread_id(params, self._fallback_session_id)
+
+        if method == "thread/started":
+            self._session_turn_counts[tid] = 0
+            return
+
+        if method in ("turn/start", "turn/steer") and direction == "in":
+            text = extract_user_turn_text(params)
+            if not text.strip():
+                return
+            turn: dict[str, Any] = {
+                "role": "user",
+                "content": text,
+                "session_id": tid,
+                "project_id": self._project_id,
+                "turn_index": self._next_turn_index(tid),
+                "source_agent": source_agent or None,
+                "ingestion_mode": "passive",
+                "source_key": "chat_proxy",
+            }
+            self._ingest_client.fire_and_forget(turn)
+            return
+
+        if method == "item/completed" and direction == "out":
+            item = params.get("item")
+            if isinstance(item, dict) and tool_like_item(item):
+                return
+            text = extract_item_completed_text(params)
+            if not text.strip():
+                return
+            assistant_turn: dict[str, Any] = {
+                "role": "assistant",
+                "content": text,
+                "session_id": tid,
+                "project_id": self._project_id,
+                "turn_index": self._next_turn_index(tid),
+                "source_agent": source_agent or None,
+                "ingestion_mode": "passive",
+                "source_key": "chat_proxy",
+            }
+            self._ingest_client.fire_and_forget(assistant_turn)
 
     async def run(self) -> int:
         """Spawn agent subprocess and proxy stdin/stdout bidirectionally.
@@ -257,6 +317,19 @@ class ACPProxy:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+
+        if sys.stdin.isatty():
+            child_cmd = " ".join([self._binary, *self._args])
+            print(
+                "am-proxy: stdin is a terminal, so this process is waiting for JSON-RPC "
+                "lines from a client (typically your IDE) on stdin. "
+                "If you ran this by hand in a shell, it will look idle until that client "
+                "connects — configure the editor to use am-proxy as the agent command, "
+                "or pipe a protocol client to stdin.\n"
+                f"       (child: {child_cmd})",
+                file=sys.stderr,
+                flush=True,
+            )
 
         async def stdin_to_child() -> None:
             loop = asyncio.get_running_loop()

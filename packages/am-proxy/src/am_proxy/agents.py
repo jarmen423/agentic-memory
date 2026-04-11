@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import dataclasses
 import shutil
+from pathlib import Path
+
+from am_proxy.exec_resolve import resolve_spawn_binary
 
 
 @dataclasses.dataclass
@@ -33,6 +36,24 @@ AGENT_CONFIGS: dict[str, AgentConfig] = {
 }
 
 
+def logical_agent_key(name: str) -> str:
+    """Map argv or path (e.g. ``codex.cmd``) to a known registry key when possible.
+
+    Args:
+        name: User ``--agent`` value (short name or path to binary).
+
+    Returns:
+        Lowercase registry key if basename matches a known agent, else ``name``.
+    """
+    stem = Path(name).stem.lower()
+    if stem in AGENT_CONFIGS:
+        return stem
+    lowered = name.lower()
+    if lowered in AGENT_CONFIGS:
+        return lowered
+    return name
+
+
 def get_agent_config(name: str) -> AgentConfig:
     """Return AgentConfig for a given agent name (case-insensitive).
 
@@ -40,13 +61,25 @@ def get_agent_config(name: str) -> AgentConfig:
     both the binary and source_agent — allowing unknown agents to be proxied
     without configuration.
 
+    Paths to known launchers (e.g. ``.../codex.cmd``) are mapped via
+    :func:`logical_agent_key` so ``source_agent`` matches the canonical id.
+
     Args:
         name: Agent name (e.g. "claude", "CLAUDE", "my-custom-agent").
 
     Returns:
         AgentConfig for the named agent, or a passthrough config for unknown names.
     """
-    return AGENT_CONFIGS.get(name.lower(), AgentConfig(binary=name, source_agent=name))
+    key = logical_agent_key(name)
+    if key in AGENT_CONFIGS:
+        return AGENT_CONFIGS[key]
+    return AgentConfig(binary=name, source_agent=name)
+
+
+def resolved_binary_for_agent(name: str) -> str:
+    """Return the spawn argv0 for *name*, after Windows-safe resolution."""
+    cfg = get_agent_config(name)
+    return resolve_spawn_binary(cfg.binary)
 
 
 def detect_installed_agents() -> list[str]:
@@ -59,4 +92,11 @@ def detect_installed_agents() -> list[str]:
         List of agent name keys (e.g. ["claude", "codex"]) whose binaries
         are present on PATH.
     """
-    return [name for name, cfg in AGENT_CONFIGS.items() if shutil.which(cfg.binary) is not None]
+    present: list[str] = []
+    for name, cfg in AGENT_CONFIGS.items():
+        if shutil.which(cfg.binary) is None:
+            continue
+        resolved = resolve_spawn_binary(cfg.binary)
+        if Path(resolved).is_file():
+            present.append(name)
+    return present

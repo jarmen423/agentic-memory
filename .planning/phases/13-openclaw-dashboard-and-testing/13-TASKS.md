@@ -14,12 +14,12 @@
 
 ## Wave 2
 
-- [ ] Wire dashboard build/test/typecheck into CI.
-- [ ] Reconcile frontend/backend contracts and close the merge boundary.
+- [x] Wire dashboard build/test/typecheck into CI.
+- [x] Reconcile frontend/backend contracts and close the merge boundary.
 
 ## Wave 3
 
-- [ ] Run the backend, contract, and desktop shell merge gates.
-- [ ] Run the dashboard workspace build/test/typecheck gates.
-- [ ] Run the E2E, load, and chaos harness merge gates.
-- [ ] Write handoffs and mark the wave complete.
+- [x] Run the backend, contract, and desktop shell merge gates.
+- [x] Run the dashboard workspace build/test/typecheck gates.
+- [x] Run the E2E, load, and chaos harness merge gates.
+- [x] Write handoffs and mark the wave complete.

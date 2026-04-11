@@ -107,7 +107,7 @@
     {
       "id": "W13-OC-04",
       "title": "Close the dashboard/testing integration gate and wire CI",
-      "status": "pending",
+      "status": "completed",
       "owner": "orchestrator",
       "depends_on": [
         "W13-OC-01",

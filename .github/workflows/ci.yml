@@ -50,6 +50,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
+      - name: Run OpenClaw dashboard API merge gate
+        run: python -m pytest tests/test_am_server.py tests/test_openclaw_contract.py desktop_shell/tests/test_app.py -q
+
+      - name: Run OpenClaw E2E/load/chaos merge gate
+        run: python -m pytest tests/e2e/test_openclaw_e2e.py tests/load/test_openclaw_load.py tests/chaos/test_openclaw_chaos.py -q
+
       - name: Run unit tests with coverage
         run: pytest --cov=agentic_memory --cov=am_server --cov-report=xml --cov-report=term-missing -m "not integration" tests/
 
@@ -132,3 +138,12 @@ jobs:
 
       - name: Typecheck OpenClaw package
         run: npm run typecheck --workspace agentic-memory
+
+      - name: Build dashboard workspace
+        run: npm run build --workspace am-dashboard
+
+      - name: Run dashboard workspace tests
+        run: npm run test --workspace am-dashboard
+
+      - name: Typecheck dashboard workspace
+        run: npm run typecheck --workspace am-dashboard

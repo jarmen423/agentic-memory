@@ -9,7 +9,7 @@
 
 ## Wave 1
 
-- [ ] Finalize user/operator docs, troubleshooting/install guidance, and committed OpenAPI output.
+- [x] Finalize user/operator docs, troubleshooting/install guidance, and committed OpenAPI output.
 - [x] Lock package identity, publish/install surfaces, and marketplace preparation artifacts.
 - [ ] Prepare private-beta onboarding, support, and partner-operations runbooks.
 

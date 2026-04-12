@@ -5,10 +5,66 @@ Complete reference for Agentic Memory's CLI commands, MCP tools, configuration o
 ## Table of Contents
 
 - [CLI Commands](#cli-commands)
+- [OpenClaw REST Surface](#openclaw-rest-surface)
 - [MCP Tools](#mcp-tools)
 - [Configuration Options](#configuration-options)
 - [Python API](#python-api)
 - [Error Codes](#error-codes)
+
+---
+
+## OpenClaw REST Surface
+
+The OpenClaw private-beta REST contract is now committed separately from the
+general CLI/MCP reference.
+
+Primary artifact:
+
+- `D:\code\agentic-memory\docs\openclaw\openapi\agentic-memory-openclaw.openapi.json`
+
+Artifact notes:
+
+- this is a filtered OpenAPI export from `create_app().openapi()`
+- it keeps the OpenClaw operator surface plus the shared `/health` and
+  authenticated `/metrics` endpoints
+- it does not include unrelated product/admin/search routes outside the
+  OpenClaw beta contract
+
+OpenClaw-specific docs:
+
+- `D:\code\agentic-memory\docs\openclaw\guides\PRIVATE_BETA_QUICKSTART.md`
+- `D:\code\agentic-memory\docs\openclaw\openapi\README.md`
+
+Core endpoints in the committed OpenClaw surface:
+
+- `GET /health`
+- `GET /metrics`
+- `POST /openclaw/session/register`
+- `POST /openclaw/memory/search`
+- `POST /openclaw/memory/read`
+- `POST /openclaw/memory/ingest-turn`
+- `POST /openclaw/context/resolve`
+- `POST /openclaw/project/activate`
+- `POST /openclaw/project/deactivate`
+- `POST /openclaw/project/status`
+- `POST /openclaw/project/automation`
+- `GET /openclaw/health/detailed`
+- `GET /openclaw/metrics/summary`
+- `GET /openclaw/search/recent`
+- `GET /openclaw/agents/{agent_id}/sessions`
+- `GET /openclaw/workspaces`
+
+Auth model:
+
+- `/health`
+  - no bearer token required
+- `/metrics`
+  - bearer token required
+- `/openclaw/*`
+  - bearer token required
+
+The rest of this document covers the broader CLI, MCP, config, and Python API
+surfaces for Agentic Memory as a whole.
 
 ---
 

@@ -7,6 +7,7 @@ Common issues and solutions when using Agentic Memory.
 ## Table of Contents
 
 - [Installation Issues](#installation-issues)
+- [OpenClaw Plugin Issues](#openclaw-plugin-issues)
 - [Neo4j Connection Issues](#neo4j-connection-issues)
 - [Indexing Issues](#indexing-issues)
 - [MCP Server Issues](#mcp-server-issues)
@@ -52,6 +53,87 @@ export PATH="$HOME/.local/bin:$PATH"
 # Or use pipx for isolated installation (recommended)
 pipx install agentic-memory
 ```
+
+---
+
+## OpenClaw Plugin Issues
+
+### `openclaw plugin install agentic-memory-openclaw` fails
+
+**Symptom:** OpenClaw cannot find the plugin package or npm installation fails.
+
+**Solution:**
+```bash
+# Verify you are using the locked beta package name
+openclaw plugin install agentic-memory-openclaw
+
+# Confirm npm can see the package once it has been published for your beta flow
+npm view agentic-memory-openclaw version
+```
+
+If npm cannot resolve the package at all, stop and verify that the beta package
+has actually been published for the environment you are testing.
+
+### `openclaw agentic-memory setup` cannot reach the backend
+
+**Symptom:** Setup fails with connection refused, timeout, or backend-unhealthy
+errors.
+
+**Solution:**
+```bash
+# Backend liveness
+curl http://127.0.0.1:8765/health
+
+# OpenClaw-facing detailed health
+curl -H "Authorization: Bearer replace-with-real-rest-key" \
+  http://127.0.0.1:8765/openclaw/health/detailed
+```
+
+Then confirm:
+
+- the backend URL passed to setup is correct
+- `am-server` is running
+- the OpenClaw operator can reach that host/port
+- the backend was started with a real `AM_SERVER_API_KEYS` value
+
+### OpenClaw plugin auth fails with `401` or `403`
+
+**Symptom:** Setup succeeds, but memory search, project status, or metrics calls
+come back unauthorized.
+
+**Solution:**
+```bash
+openclaw agentic-memory setup --backend-url http://127.0.0.1:8765
+```
+
+Re-enter a valid API key or interpolation template, then verify the same token
+directly against the backend:
+
+```bash
+curl -H "Authorization: Bearer replace-with-real-rest-key" \
+  http://127.0.0.1:8765/metrics
+```
+
+Remember:
+
+- the plugin talks to the REST/OpenClaw surfaces using `AM_SERVER_API_KEYS`
+- `HTTPBearer` auth is required on `/metrics` and `/openclaw/*`
+
+### OpenClaw memory works, but custom context does not appear
+
+**Symptom:** Search and capture work, but no Agentic Memory context block is
+being added to prompts.
+
+**Cause:** The plugin is probably configured in `capture_only` mode.
+
+**Solution:**
+Run setup again and enable context augmentation, or explicitly set the mode you
+want during setup.
+
+See:
+
+- `D:\code\agentic-memory\packages\am-openclaw\README.md`
+- `D:\code\agentic-memory\docs\openclaw\guides\PRIVATE_BETA_QUICKSTART.md`
 
 ---
 

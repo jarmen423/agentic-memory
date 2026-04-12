@@ -28,7 +28,7 @@
     {
       "id": "W15-OC-01",
       "title": "Finalize user/operator docs, troubleshooting/install guidance, and committed OpenAPI output",
-      "status": "pending",
+      "status": "completed",
       "owner": "docs-contract",
       "depends_on": [
         "W15-OC-00"

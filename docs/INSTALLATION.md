@@ -4,12 +4,46 @@ This guide covers installing and configuring Agentic Memory for local developmen
 
 ## Table of Contents
 
+- [OpenClaw Private Beta](#openclaw-private-beta)
 - [Prerequisites](#prerequisites)
 - [Installation Methods](#installation-methods)
 - [Neo4j Setup](#neo4j-setup)
 - [Environment Configuration](#environment-configuration)
 - [Initial Setup](#initial-setup)
 - [Troubleshooting](#troubleshooting)
+
+---
+
+## OpenClaw Private Beta
+
+If you are installing Agentic Memory specifically for the OpenClaw beta, use
+the OpenClaw plugin flow instead of the Python CLI install paths below.
+
+The operator path is:
+
+```bash
+openclaw plugin install agentic-memory-openclaw
+openclaw agentic-memory setup --backend-url http://127.0.0.1:8765
+openclaw agentic-memory project status
+```
+
+Important distinctions:
+
+- `agentic-memory-openclaw`
+  - npm package name used by `openclaw plugin install`
+- `agentic-memory`
+  - runtime plugin id used by OpenClaw after install
+- Agentic Memory backend
+  - separate service that must already be reachable by the plugin
+
+Use these docs for the beta flow:
+
+- `D:\code\agentic-memory\docs\openclaw\guides\PRIVATE_BETA_QUICKSTART.md`
+- `D:\code\agentic-memory\docs\openclaw\DEPLOYMENT_RUNBOOK.md`
+- `D:\code\agentic-memory\docs\openclaw\BETA_ROLLOUT.md`
+
+The rest of this guide covers the Python/CLI install surface for the broader
+Agentic Memory product.
 
 ---
 

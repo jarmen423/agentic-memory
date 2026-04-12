@@ -50,6 +50,10 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
+      "schemaVersion": {
+        "type": "integer",
+        "default": 1
+      },
       "backendUrl": {
         "type": "string"
       },

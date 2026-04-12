@@ -25,6 +25,7 @@ export interface OpenClawIdentity {
  * setup artifact so the CLI-generated config can be used directly by OpenClaw.
  */
 export interface AgenticMemoryPluginConfig extends Partial<OpenClawIdentity> {
+  schemaVersion?: number;
   backendUrl?: string;
   apiKey?: string | null;
   projectId?: string | null;
@@ -53,6 +54,7 @@ export type SearchManagerStatus = {
 export type OpenClawConfig = Record<string, unknown>;
 
 export type ResolvedPluginConfig = Required<OpenClawIdentity> & {
+  schemaVersion: number;
   backendUrl: string;
   apiKey: string | null;
   projectId: string | null;
@@ -60,18 +62,30 @@ export type ResolvedPluginConfig = Required<OpenClawIdentity> & {
   mode: "capture_only" | "augment_context";
 };
 
+export const PLUGIN_CONFIG_SCHEMA_VERSION = 1;
 export const DEFAULT_BACKEND_URL = "http://127.0.0.1:8765";
 export const DEFAULT_CONTEXT_ENGINE_ID = "agentic-memory";
 export const PLUGIN_ID = "agentic-memory";
 
 /**
  * Human-readable package metadata used by setup flows and documentation.
+ *
+ * The npm package name is intentionally more specific than the plugin id:
+ *
+ * - operators install `agentic-memory-openclaw`
+ * - once installed, OpenClaw still registers the plugin under the stable
+ *   `agentic-memory` memory/context-engine id
+ *
+ * Keeping those identities separate lets the public npm surface stay explicit
+ * about its OpenClaw role without breaking the runtime ids already baked into
+ * the host config shape.
  */
 export const OPENCLAW_PACKAGE_INFO = {
-  packageName: "agentic-memory",
+  packageName: "agentic-memory-openclaw",
   pluginId: PLUGIN_ID,
   contextEngineId: DEFAULT_CONTEXT_ENGINE_ID,
   productName: "Agentic Memory OpenClaw Integration",
+  schemaVersion: PLUGIN_CONFIG_SCHEMA_VERSION,
   defaultMode: "capture_only",
   supportedModes: ["capture_only", "augment_context"] as const,
 } as const;
@@ -87,6 +101,7 @@ export const PLUGIN_CONFIG_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
+    schemaVersion: { type: "integer" },
     backendUrl: { type: "string" },
     apiKey: { type: "string" },
     workspaceId: { type: "string" },
@@ -145,6 +160,7 @@ export function buildOpenClawBootstrapConfig(
         [PLUGIN_ID]: {
           enabled: true,
           config: {
+            schemaVersion: PLUGIN_CONFIG_SCHEMA_VERSION,
             backendUrl: options.backendUrl.trim(),
             apiKey:
               options.backendApiKey?.trim() ||
@@ -256,6 +272,10 @@ export function resolveAgenticMemoryPluginConfig(
   const mode: "capture_only" | "augment_context" =
     pluginConfig.mode === "augment_context" ? "augment_context" : "capture_only";
   const resolved = {
+    schemaVersion:
+      typeof pluginConfig.schemaVersion === "number" && Number.isFinite(pluginConfig.schemaVersion)
+        ? pluginConfig.schemaVersion
+        : PLUGIN_CONFIG_SCHEMA_VERSION,
     backendUrl: asString(pluginConfig.backendUrl) ?? DEFAULT_BACKEND_URL,
     apiKey: asString(pluginConfig.apiKey) ?? null,
     workspaceId: asString(pluginConfig.workspaceId) ?? createDefaultWorkspaceId(resolvedAgentId),

@@ -117,6 +117,9 @@ jobs:
 
   openclaw-typescript:
     runs-on: ubuntu-latest
+    env:
+      OPENCLAW_WORKSPACE: packages/am-openclaw
+      OPENCLAW_PACKAGE_NAME: agentic-memory-openclaw
 
     steps:
       - uses: actions/checkout@v4
@@ -130,14 +133,22 @@ jobs:
       - name: Install workspace dependencies
         run: npm ci
 
+      - name: Verify OpenClaw package identity
+        run: |
+          ACTUAL_NAME=$(node -p "require('./packages/am-openclaw/package.json').name")
+          test "$ACTUAL_NAME" = "$OPENCLAW_PACKAGE_NAME"
+
       - name: Run OpenClaw package tests
-        run: npm run test --workspace agentic-memory
+        run: npm run test --workspace "$OPENCLAW_WORKSPACE"
 
       - name: Build OpenClaw package
-        run: npm run build --workspace agentic-memory
+        run: npm run build --workspace "$OPENCLAW_WORKSPACE"
 
       - name: Typecheck OpenClaw package
-        run: npm run typecheck --workspace agentic-memory
+        run: npm run typecheck --workspace "$OPENCLAW_WORKSPACE"
+
+      - name: Pack OpenClaw package
+        run: npm pack --workspace "$OPENCLAW_WORKSPACE" --dry-run
 
       - name: Build dashboard workspace
         run: npm run build --workspace am-dashboard
@@ -147,3 +158,6 @@ jobs:
 
       - name: Typecheck dashboard workspace
         run: npm run typecheck --workspace am-dashboard
+
+      - name: Validate release deployment scaffold
+        run: docker compose -f docker-compose.prod.yml config

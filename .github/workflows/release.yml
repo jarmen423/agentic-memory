@@ -1,0 +1,162 @@
+name: openclaw-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_label:
+        description: "Human-readable label for this beta candidate."
+        required: false
+        default: beta
+        type: string
+      publish_to_npm:
+        description: "Publish the already-built package tarball to npm."
+        required: false
+        default: false
+        type: boolean
+      npm_tag:
+        description: "npm dist-tag to use if publish_to_npm is enabled."
+        required: false
+        default: beta
+        type: choice
+        options:
+          - beta
+          - latest
+
+concurrency:
+  group: openclaw-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  OPENCLAW_PACKAGE_WORKSPACE: packages/am-openclaw
+  OPENCLAW_PACKAGE_NAME: agentic-memory-openclaw
+
+jobs:
+  build-openclaw-package:
+    name: Build OpenClaw Package Artifact
+    runs-on: ubuntu-latest
+    outputs:
+      manifest_name: ${{ steps.manifest.outputs.name }}
+      manifest_version: ${{ steps.manifest.outputs.version }}
+      tarball_name: ${{ steps.pack.outputs.tarball_name }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install workspace dependencies
+        run: npm ci
+
+      - name: Read package manifest
+        id: manifest
+        run: |
+          NAME=$(node -p "require('./packages/am-openclaw/package.json').name")
+          VERSION=$(node -p "require('./packages/am-openclaw/package.json').version")
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build package
+        run: npm run build --workspace "$OPENCLAW_PACKAGE_WORKSPACE"
+
+      - name: Run package tests
+        run: npm run test --workspace "$OPENCLAW_PACKAGE_WORKSPACE"
+
+      - name: Run package typecheck
+        run: npm run typecheck --workspace "$OPENCLAW_PACKAGE_WORKSPACE"
+
+      - name: Pack npm artifact
+        id: pack
+        run: |
+          mkdir -p release-artifacts
+          npm pack --workspace "$OPENCLAW_PACKAGE_WORKSPACE" --pack-destination ./release-artifacts
+          TARBALL_NAME=$(basename release-artifacts/*.tgz)
+          echo "tarball_name=$TARBALL_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Upload package artifact bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: openclaw-package-${{ steps.manifest.outputs.version }}
+          path: |
+            release-artifacts/*.tgz
+            docs/openclaw/**
+            docker-compose.prod.yml
+          if-no-files-found: error
+
+      - name: Summarize package artifact
+        run: |
+          {
+            echo "## OpenClaw Package Artifact"
+            echo
+            echo "- Release label: \`${{ inputs.release_label }}\`"
+            echo "- Manifest name: \`${{ steps.manifest.outputs.name }}\`"
+            echo "- Manifest version: \`${{ steps.manifest.outputs.version }}\`"
+            echo "- Tarball: \`${{ steps.pack.outputs.tarball_name }}\`"
+            echo "- Publish requested: \`${{ inputs.publish_to_npm }}\`"
+            echo "- Locked npm package name: \`${{ env.OPENCLAW_PACKAGE_NAME }}\`"
+            echo
+            echo "npm publish is still manual, but the package identity is now locked in the manifest and workflow."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  validate-deployment-artifacts:
+    name: Validate Production Compose
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Render production compose
+        run: |
+          mkdir -p release-artifacts
+          docker compose -f docker-compose.prod.yml config > release-artifacts/docker-compose.prod.rendered.yml
+
+      - name: Upload rendered compose file
+        uses: actions/upload-artifact@v4
+        with:
+          name: openclaw-deployment-config
+          path: release-artifacts/docker-compose.prod.rendered.yml
+          if-no-files-found: error
+
+  publish-openclaw-package:
+    name: Publish OpenClaw Package
+    needs:
+      - build-openclaw-package
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_to_npm }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js for npm publish
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Download package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: openclaw-package-${{ needs.build-openclaw-package.outputs.manifest_version }}
+          path: release-artifacts
+
+      - name: Verify publish target matches manifest
+        run: |
+          CURRENT_NAME="${{ needs.build-openclaw-package.outputs.manifest_name }}"
+          TARGET_NAME="${{ env.OPENCLAW_PACKAGE_NAME }}"
+
+          if [ "$CURRENT_NAME" != "$TARGET_NAME" ]; then
+            echo "::error::Manifest name '$CURRENT_NAME' does not match requested publish name '$TARGET_NAME'."
+            echo "::error::Fix packages/am-openclaw/package.json before enabling npm publish."
+            exit 1
+          fi
+
+      - name: Publish tarball to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm publish "release-artifacts/${{ needs.build-openclaw-package.outputs.tarball_name }}" \
+            --access public \
+            --tag "${{ inputs.npm_tag }}"

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { OPENCLAW_PACKAGE_INFO } from "../src/shared.js";
 import { mergeAgenticMemoryPluginConfigIntoOpenClawConfig } from "../src/setup.js";
 
 test("setup config merge enables the plugin and fills both OpenClaw slots", () => {
@@ -32,6 +33,7 @@ test("setup config merge enables the plugin and fills both OpenClaw slots", () =
   const config = agenticMemory.config as Record<string, unknown>;
 
   assert.equal(agenticMemory.enabled, true);
+  assert.equal(config.schemaVersion, 1);
   assert.equal(config.backendUrl, "http://127.0.0.1:8765");
   assert.equal(config.workspaceId, "workspace-1");
   assert.equal(config.deviceId, "device-1");
@@ -40,4 +42,10 @@ test("setup config merge enables the plugin and fills both OpenClaw slots", () =
   assert.equal(slots.memory, "agentic-memory");
   assert.equal(slots.contextEngine, "agentic-memory");
   assert.ok(pluginEntry["existing"]);
+});
+
+test("package metadata keeps npm install identity separate from the plugin id", () => {
+  assert.equal(OPENCLAW_PACKAGE_INFO.packageName, "agentic-memory-openclaw");
+  assert.equal(OPENCLAW_PACKAGE_INFO.pluginId, "agentic-memory");
+  assert.equal(OPENCLAW_PACKAGE_INFO.contextEngineId, "agentic-memory");
 });

@@ -19,6 +19,7 @@ import {
   DEFAULT_BACKEND_URL,
   DEFAULT_CONTEXT_ENGINE_ID,
   OpenClawConfig,
+  PLUGIN_CONFIG_SCHEMA_VERSION,
   PLUGIN_ID,
   PluginLogger,
 } from "./shared.js";
@@ -39,6 +40,7 @@ export type SetupCommandOptions = {
 };
 
 export type ResolvedSetupValues = {
+  schemaVersion: number;
   backendUrl: string;
   apiKey: string;
   workspaceId: string;
@@ -87,6 +89,7 @@ export function mergeAgenticMemoryPluginConfigIntoOpenClawConfig(
     ...nextPluginEntry,
     enabled: true,
     config: {
+      schemaVersion: values.schemaVersion ?? PLUGIN_CONFIG_SCHEMA_VERSION,
       backendUrl: values.backendUrl,
       apiKey: values.apiKey,
       workspaceId: values.workspaceId,
@@ -204,6 +207,7 @@ async function resolveSetupValues(
 
   if (!interactive) {
     return {
+      schemaVersion: PLUGIN_CONFIG_SCHEMA_VERSION,
       backendUrl: backendUrlDefault,
       apiKey: apiKeyDefault,
       workspaceId: workspaceIdDefault,
@@ -225,6 +229,7 @@ async function resolveSetupValues(
   );
 
   return {
+    schemaVersion: PLUGIN_CONFIG_SCHEMA_VERSION,
     backendUrl,
     apiKey,
     workspaceId,
@@ -243,6 +248,7 @@ function printSetupResult(
   const payload = {
     ok: true,
     pluginId: PLUGIN_ID,
+    schemaVersion: values.schemaVersion,
     backendUrl: values.backendUrl,
     workspaceId: values.workspaceId,
     deviceId: values.deviceId,
@@ -359,6 +365,7 @@ async function activateProjectForSession(
   const config = resolveProjectCommandConfig(ctx.config, options);
   const client = new AgenticMemoryBackendClient(
     {
+      schemaVersion: PLUGIN_CONFIG_SCHEMA_VERSION,
       ...config,
       projectId: null,
       contextEngineId: DEFAULT_CONTEXT_ENGINE_ID,
@@ -493,6 +500,7 @@ export function registerAgenticMemoryCli(ctx: AgenticMemoryCliContext): void {
       const config = resolveProjectCommandConfig(ctx.config, options);
       const client = new AgenticMemoryBackendClient(
         {
+          schemaVersion: PLUGIN_CONFIG_SCHEMA_VERSION,
           ...config,
           projectId: null,
           contextEngineId: DEFAULT_CONTEXT_ENGINE_ID,
@@ -528,6 +536,7 @@ export function registerAgenticMemoryCli(ctx: AgenticMemoryCliContext): void {
       const config = resolveProjectCommandConfig(ctx.config, options);
       const client = new AgenticMemoryBackendClient(
         {
+          schemaVersion: PLUGIN_CONFIG_SCHEMA_VERSION,
           ...config,
           projectId: null,
           contextEngineId: DEFAULT_CONTEXT_ENGINE_ID,

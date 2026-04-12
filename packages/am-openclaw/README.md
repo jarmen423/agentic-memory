@@ -1,6 +1,21 @@
-# agentic-memory
+# agentic-memory-openclaw
 
 Native OpenClaw plugin package for Agentic Memory.
+
+Install surface:
+
+```bash
+openclaw plugin install agentic-memory-openclaw
+```
+
+Runtime identity inside OpenClaw:
+
+```bash
+openclaw agentic-memory setup
+```
+
+That split is intentional. The npm package is OpenClaw-specific, while the
+plugin id that lives in OpenClaw config remains `agentic-memory`.
 
 This package now contains a real OpenClaw-native runtime surface:
 
@@ -10,6 +25,26 @@ This package now contains a real OpenClaw-native runtime surface:
   - the optional `agentic-memory` context engine
   - the OpenClaw-native CLI command `openclaw agentic-memory setup`
 - `package.json` exposes the native plugin entry through `openclaw.extensions`
+- `setup-api.js` performs setup-time config migration and stamps a package-side
+  `schemaVersion` so future releases can evolve the install config without
+  guessing which shape an operator already has
+
+## Distribution status
+
+This package is now shaped to produce a publishable npm artifact rather than
+remaining workspace-private only.
+
+Package metadata now includes:
+
+- license, repository, homepage, and issue tracker fields
+- npm publish config for a public artifact
+- explicit package exports for runtime/setup/shared entrypoints
+- a config `schemaVersion` written into the plugin config payload
+
+The public npm package name is now locked to `agentic-memory-openclaw`.
+
+The OpenClaw plugin id intentionally stays `agentic-memory`, so existing slot
+and setup semantics do not need to change.
 
 ## How OpenClaw Uses Agentic Memory
 
@@ -55,6 +90,7 @@ model.
 After installing the plugin into OpenClaw, configure it from the OpenClaw CLI:
 
 ```bash
+openclaw plugin install agentic-memory-openclaw
 openclaw agentic-memory setup
 ```
 
@@ -73,6 +109,15 @@ Example:
 
 ```bash
 openclaw agentic-memory setup
+```
+
+Build and artifact validation from this repo:
+
+```bash
+npm run build:openclaw
+npm run test:openclaw
+npm run typecheck:openclaw
+npm run pack:openclaw
 ```
 
 Normal setup no longer asks for workspace unless you explicitly override it.
@@ -144,3 +189,15 @@ The runtime is backend-first and intentionally conservative:
 That means the next hardening step is to expand canonical read support beyond
 conversation turns so code and research hits can also be re-opened without
 depending on the cached search snippet.
+
+## Publish artifact notes
+
+The package dry-run tarball intentionally contains only:
+
+- `dist/`
+- `setup-api.js`
+- `openclaw.plugin.json`
+- `README.md`
+
+That keeps the shipped plugin artifact small and avoids leaking repo-local test
+or planning files into the install payload.

@@ -22,6 +22,7 @@ import { definePluginEntry } from "openclaw/plugin-sdk/core";
 const PLUGIN_ID = "agentic-memory";
 const DEFAULT_CONTEXT_ENGINE_ID = "agentic-memory";
 const DEFAULT_MODE = "capture_only";
+const PLUGIN_CONFIG_SCHEMA_VERSION = 1;
 
 /**
  * Narrow an unknown value to a plain object record.
@@ -87,6 +88,11 @@ export default definePluginEntry({
 
       const rawEntry = isRecord(next.plugins.entries[PLUGIN_ID]) ? next.plugins.entries[PLUGIN_ID] : {};
       const rawConfig = isRecord(rawEntry.config) ? rawEntry.config : {};
+
+      if (rawConfig.schemaVersion !== PLUGIN_CONFIG_SCHEMA_VERSION) {
+        rawConfig.schemaVersion = PLUGIN_CONFIG_SCHEMA_VERSION;
+        changes.push(`defaulted plugins.entries.agentic-memory.config.schemaVersion to ${PLUGIN_CONFIG_SCHEMA_VERSION}`);
+      }
 
       if (rawConfig.mode !== "capture_only" && rawConfig.mode !== "augment_context") {
         rawConfig.mode = DEFAULT_MODE;

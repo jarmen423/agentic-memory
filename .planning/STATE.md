@@ -2,30 +2,30 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: — Full Multi-Module Memory System with Temporal GraphRAG
-current_phase: 13
+current_phase: 15
 status: active
-last_updated: "2026-04-11T20:50:00Z"
+last_updated: "2026-04-12T16:20:00Z"
 progress:
-  total_phases: 13
-  completed_phases: 10
-  total_plans: 20
-  completed_plans: 19
+  total_phases: 15
+  completed_phases: 12
+  total_plans: 22
+  completed_plans: 21
 ---
 
 # Agentic Memory — Project State
 
-**Last Updated:** 2026-04-11
-**Current Phase:** 13
-**Phase Status:** Execution in progress
-**Last Session Stopped At:** Phase 13 was activated and Wave 0 was locked. Next up is the parallel dashboard/testing wave: backend dashboard APIs, dashboard shell replacement, and operational test harnesses. Phase 10 still needs live manual verification from the runbooks, and Phase 11 remains resumable from `.planning/execution/archive/w11-calls/`.
+**Last Updated:** 2026-04-12
+**Current Phase:** 15
+**Phase Status:** Phase 14 complete; Phase 15 locked and ready for execution
+**Last Session Stopped At:** Phase 14 is complete and archived under `.planning/execution/archive/w14-openclaw-scaling-and-packaging/`. The next OpenClaw GTM tranche is now active: Docs + Private Beta. That phase carries the remaining package-name decision, committed OpenAPI output, marketplace prep, and private-beta onboarding/support artifacts. Phase 10 still needs live manual verification from the runbooks, and Phase 11 remains resumable from `.planning/execution/archive/w11-calls/`.
 
 ---
 
 ## Active Phase
 
-**Phase 13: OpenClaw Testing + Dashboard**
+**Phase 15: OpenClaw Docs + Private Beta**
 
-**Next Action:** Execute `w13-openclaw-dashboard-and-testing` Wave 1 in parallel: backend dashboard APIs, the `am-dashboard` shell replacement, and operational OpenClaw test harnesses.
+**Next Action:** Execute `w15-openclaw-docs-and-private-beta` Wave 1 in parallel: finalize user/operator docs and committed OpenAPI output, lock package identity + marketplace-ready publish surfaces, and prepare private-beta onboarding/support artifacts.
 
 ---
 
@@ -33,7 +33,7 @@ progress:
 
 | Branch | Description |
 |--------|-------------|
-| `main` | Full v1 with temporal GraphRAG plus the active OpenClaw testing + dashboard wave |
+| `main` | Full v1 with temporal GraphRAG plus the active OpenClaw docs + private beta wave |
 | `v1-baseline` | Frozen at Phase 5 completion — finish original Phase 6 + 7 here for A/B comparison |
 
 ---
@@ -54,7 +54,9 @@ progress:
 | 10 | Cross-Module Integration & Hardening | Paused pending manual verification |
 | 11 | Code Graph Foundation and Code PPR | Paused with archived `w11-calls` registry |
 | 12 | OpenClaw Foundation | Complete |
-| 13 | OpenClaw Testing + Dashboard | In Progress |
+| 13 | OpenClaw Testing + Dashboard | Complete |
+| 14 | OpenClaw Scaling + Packaging | Complete |
+| 15 | OpenClaw Docs + Private Beta | In Progress |
 
 ---
 
@@ -94,6 +96,8 @@ progress:
 - Phase 11 added: Code Graph Foundation and Code PPR
 - Phase 12 added: OpenClaw Foundation
 - Phase 13 added: OpenClaw Testing + Dashboard
+- Phase 14 added: OpenClaw Scaling + Packaging
+- Phase 15 added: OpenClaw Docs + Private Beta
 
 ---
 

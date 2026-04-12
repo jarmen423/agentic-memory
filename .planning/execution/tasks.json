@@ -1,10 +1,10 @@
 {
-  "active_wave_id": "w13-openclaw-dashboard-and-testing",
-  "phase": "13-openclaw-dashboard-and-testing",
+  "active_wave_id": "w15-openclaw-docs-and-private-beta",
+  "phase": "15-openclaw-docs-and-private-beta",
   "tasks": [
     {
-      "id": "W13-OC-00",
-      "title": "Lock execution contract for the OpenClaw testing + dashboard wave",
+      "id": "W15-OC-00",
+      "title": "Lock execution contract for the OpenClaw docs + private beta wave",
       "status": "completed",
       "owner": "orchestrator",
       "depends_on": [],
@@ -15,123 +15,149 @@
         ".planning/execution/README.md",
         ".planning/execution/ROADMAP.md",
         ".planning/execution/tasks.json",
-        ".planning/phases/13-openclaw-dashboard-and-testing/13-CONTEXT.md",
-        ".planning/phases/13-openclaw-dashboard-and-testing/13-UAT.md",
-        ".planning/phases/13-openclaw-dashboard-and-testing/13-TASKS.md",
-        ".planning/phases/13-openclaw-dashboard-and-testing/13-01-PLAN.md"
+        ".planning/phases/14-openclaw-scaling-and-packaging/14-TASKS.md",
+        ".planning/phases/14-openclaw-scaling-and-packaging/14-UAT.md",
+        ".planning/phases/15-openclaw-docs-and-private-beta/15-CONTEXT.md",
+        ".planning/phases/15-openclaw-docs-and-private-beta/15-UAT.md",
+        ".planning/phases/15-openclaw-docs-and-private-beta/15-TASKS.md",
+        ".planning/phases/15-openclaw-docs-and-private-beta/15-01-PLAN.md"
       ],
       "verify": [],
-      "handoff_path": ".planning/execution/handoffs/w13-openclaw-dashboard-and-testing/W13-OC-00.md"
+      "handoff_path": ".planning/execution/handoffs/w15-openclaw-docs-and-private-beta/W15-OC-00.md"
     },
     {
-      "id": "W13-OC-01",
-      "title": "Add dashboard backend APIs, response models, and backend contract coverage",
-      "status": "completed",
-      "owner": "backend-dashboard",
+      "id": "W15-OC-01",
+      "title": "Finalize user/operator docs, troubleshooting/install guidance, and committed OpenAPI output",
+      "status": "pending",
+      "owner": "docs-contract",
       "depends_on": [
-        "W13-OC-00"
+        "W15-OC-00"
       ],
       "write_scope": [
-        "src/am_server/app.py",
-        "src/am_server/models.py",
-        "src/am_server/routes/dashboard.py",
-        "tests/test_am_server.py",
-        "tests/test_openclaw_contract.py"
+        "docs/openclaw/guides/**",
+        "docs/openclaw/openapi/**",
+        "docs/INSTALLATION.md",
+        "docs/TROUBLESHOOTING.md",
+        "docs/API.md"
       ],
       "do_not_touch": [
-        "packages/am-dashboard/**",
-        "desktop_shell/**",
-        "tests/e2e/**",
-        "tests/load/**",
-        "tests/chaos/**"
-      ],
-      "verify": [
-        "python -m pytest tests/test_am_server.py tests/test_openclaw_contract.py -q"
-      ],
-      "handoff_path": ".planning/execution/handoffs/w13-openclaw-dashboard-and-testing/W13-OC-01.md"
-    },
-    {
-      "id": "W13-OC-02",
-      "title": "Replace the static desktop shell with the am-dashboard workspace",
-      "status": "completed",
-      "owner": "dashboard-shell",
-      "depends_on": [
-        "W13-OC-00"
-      ],
-      "write_scope": [
+        "packages/am-openclaw/**",
         "package.json",
         "package-lock.json",
-        "packages/am-dashboard/**",
-        "desktop_shell/app.py",
-        "desktop_shell/README.md",
-        "desktop_shell/static/**",
-        "desktop_shell/tests/test_app.py"
-      ],
-      "do_not_touch": [
-        "src/am_server/**",
-        "tests/e2e/**",
-        "tests/load/**",
-        "tests/chaos/**"
+        ".github/workflows/**",
+        "desktop_shell/**",
+        "src/**"
       ],
       "verify": [
-        "python -m pytest desktop_shell/tests/test_app.py -q",
-        "npm run build --workspace am-dashboard",
-        "npm run test --workspace am-dashboard",
-        "npm run typecheck --workspace am-dashboard"
+        "python -c \"from am_server.app import create_app; spec = create_app().openapi(); assert '/openclaw/memory/search' in spec['paths']; print('openapi ok')\""
       ],
-      "handoff_path": ".planning/execution/handoffs/w13-openclaw-dashboard-and-testing/W13-OC-02.md"
+      "handoff_path": ".planning/execution/handoffs/w15-openclaw-docs-and-private-beta/W15-OC-01.md"
     },
     {
-      "id": "W13-OC-03",
-      "title": "Add OpenClaw E2E, load, and chaos harnesses",
+      "id": "W15-OC-02",
+      "title": "Lock package identity, publish/install surfaces, and marketplace preparation artifacts",
       "status": "completed",
-      "owner": "verification-harness",
+      "owner": "distribution",
       "depends_on": [
-        "W13-OC-00"
+        "W15-OC-00"
       ],
       "write_scope": [
-        "tests/e2e/**",
-        "tests/load/**",
-        "tests/chaos/**"
+        "packages/am-openclaw/**",
+        "package.json",
+        "package-lock.json",
+        ".github/workflows/ci.yml",
+        ".github/workflows/release.yml",
+        "docs/openclaw/marketplace/**"
       ],
       "do_not_touch": [
-        "src/am_server/**",
-        "packages/am-dashboard/**",
+        "docs/openclaw/guides/**",
+        "docs/openclaw/openapi/**",
+        "docs/openclaw/beta/**",
+        "docs/openclaw/support/**",
+        "desktop_shell/**",
+        "src/am_server/**"
+      ],
+      "verify": [
+        "npm run build",
+        "npm run typecheck",
+        "npm run build:openclaw",
+        "npm run test:openclaw",
+        "npm run typecheck:openclaw",
+        "npm run pack:openclaw"
+      ],
+      "handoff_path": ".planning/execution/handoffs/w15-openclaw-docs-and-private-beta/W15-OC-02.md"
+    },
+    {
+      "id": "W15-OC-03",
+      "title": "Prepare private-beta onboarding, support, and partner-operations runbooks",
+      "status": "pending",
+      "owner": "beta-ops",
+      "depends_on": [
+        "W15-OC-00"
+      ],
+      "write_scope": [
+        "docs/openclaw/beta/**",
+        "docs/openclaw/support/**"
+      ],
+      "do_not_touch": [
+        "packages/am-openclaw/**",
+        "package.json",
+        "package-lock.json",
+        ".github/workflows/**",
+        "src/**",
         "desktop_shell/**"
       ],
       "verify": [
-        "python -m pytest tests/e2e/test_openclaw_e2e.py tests/load/test_openclaw_load.py tests/chaos/test_openclaw_chaos.py -q"
+        "Get-ChildItem docs/openclaw/beta, docs/openclaw/support"
       ],
-      "handoff_path": ".planning/execution/handoffs/w13-openclaw-dashboard-and-testing/W13-OC-03.md"
+      "handoff_path": ".planning/execution/handoffs/w15-openclaw-docs-and-private-beta/W15-OC-03.md"
     },
     {
-      "id": "W13-OC-04",
-      "title": "Close the dashboard/testing integration gate and wire CI",
-      "status": "completed",
+      "id": "W15-OC-04",
+      "title": "Close the docs + private beta integration gate and validate release-ready operator surfaces",
+      "status": "pending",
       "owner": "orchestrator",
       "depends_on": [
-        "W13-OC-01",
-        "W13-OC-02",
-        "W13-OC-03"
+        "W15-OC-01",
+        "W15-OC-02",
+        "W15-OC-03"
       ],
       "write_scope": [
-        ".github/workflows/ci.yml"
+        ".github/workflows/ci.yml",
+        ".github/workflows/release.yml",
+        "docs/openclaw/README.md"
       ],
       "verify": [
         "python -m pytest tests/test_am_server.py tests/test_openclaw_contract.py desktop_shell/tests/test_app.py -q",
         "python -m pytest tests/e2e/test_openclaw_e2e.py tests/load/test_openclaw_load.py tests/chaos/test_openclaw_chaos.py -q",
+        "npm run build",
+        "npm run typecheck",
+        "npm run build:openclaw",
+        "npm run test:openclaw",
+        "npm run typecheck:openclaw",
         "npm run build --workspace am-dashboard",
         "npm run test --workspace am-dashboard",
-        "npm run typecheck --workspace am-dashboard"
+        "npm run typecheck --workspace am-dashboard",
+        "npm run pack:openclaw",
+        "npm run validate:release-artifacts",
+        "python -c \"from am_server.app import create_app; spec = create_app().openapi(); assert '/openclaw/memory/search' in spec['paths']; print('openapi ok')\""
       ],
-      "handoff_path": ".planning/execution/handoffs/w13-openclaw-dashboard-and-testing/W13-OC-04.md"
+      "handoff_path": ".planning/execution/handoffs/w15-openclaw-docs-and-private-beta/W15-OC-04.md"
     }
   ],
   "merge_gates": [
     "python -m pytest tests/test_am_server.py tests/test_openclaw_contract.py desktop_shell/tests/test_app.py -q",
     "python -m pytest tests/e2e/test_openclaw_e2e.py tests/load/test_openclaw_load.py tests/chaos/test_openclaw_chaos.py -q",
+    "npm run build",
+    "npm run typecheck",
+    "npm run build:openclaw",
+    "npm run test:openclaw",
+    "npm run typecheck:openclaw",
     "npm run build --workspace am-dashboard",
     "npm run test --workspace am-dashboard",
-    "npm run typecheck --workspace am-dashboard"
+    "npm run typecheck --workspace am-dashboard",
+    "npm run pack:openclaw",
+    "npm run validate:release-artifacts",
+    "python -c \"from am_server.app import create_app; spec = create_app().openapi(); assert '/openclaw/memory/search' in spec['paths']; print('openapi ok')\""
   ]
 }

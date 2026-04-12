@@ -1,31 +1,34 @@
 # Execution Registry
 
-This directory is the active wave-execution registry for the current Phase 13
-OpenClaw testing + dashboard work.
+This directory is the active wave-execution registry for the current Phase 15
+OpenClaw docs + private beta work.
 
 Why it exists:
 
 - The OpenClaw GTM plan is the program/reference document, not the execution registry.
-- Phase 12 is complete, so the active registry must move forward without losing
-  the completed `w12-openclaw-foundation` handoffs and task state.
-- This phase now spans three real parallel tracks: backend dashboard APIs,
-  dashboard shell/frontend replacement, and operational test harnesses. The
-  write scopes must stay disjoint before implementation begins.
+- Phase 14 is complete, so the active registry must move forward without losing
+  the completed `w14-openclaw-scaling-and-packaging` handoffs and task state.
+- This phase spans three real parallel tracks from the GTM plan:
+  - docs and committed OpenAPI output
+  - package identity, marketplace, and publish-surface prep
+  - private-beta onboarding/support operations artifacts
+- The package-name decision is still unresolved, so the new wave must keep that
+  decision explicit rather than burying it inside install docs or release steps.
 
 Active feature:
 
-- Phase 13: OpenClaw Testing + Dashboard
-- Active wave: `w13-openclaw-dashboard-and-testing`
+- Phase 15: OpenClaw Docs + Private Beta
+- Active wave: `w15-openclaw-docs-and-private-beta`
 
 Execution rules for this registry:
 
 1. Split work by disjoint write scope, not by broad topic names.
 2. `.planning/*` lock and registry rewrites remain orchestrator-owned.
-3. Backend dashboard files under `src/am_server/**` stay isolated from
-   `packages/am-dashboard/**` and the operational harnesses under `tests/**`.
-4. The desktop shell boundary (`desktop_shell/**`) is owned by the dashboard
-   implementation thread, not the backend or test-harness threads.
+3. `docs/openclaw/guides/**` and `docs/openclaw/openapi/**` stay isolated from
+   package-identity work in `packages/am-openclaw/**`.
+4. Marketplace/publish-surface changes that touch package manifests or release
+   workflows stay separate from private-beta onboarding/support docs.
 5. Every task writes a handoff under
-   `.planning/execution/handoffs/w13-openclaw-dashboard-and-testing/` before
+   `.planning/execution/handoffs/w15-openclaw-docs-and-private-beta/` before
    the task is considered done.
 6. Verification commands in `tasks.json` are merge gates, not optional notes.

@@ -1,0 +1,156 @@
+{
+  "active_wave_id": "w14-openclaw-scaling-and-packaging",
+  "phase": "14-openclaw-scaling-and-packaging",
+  "tasks": [
+    {
+      "id": "W14-OC-00",
+      "title": "Lock execution contract for the OpenClaw scaling + packaging wave",
+      "status": "completed",
+      "owner": "orchestrator",
+      "depends_on": [],
+      "write_scope": [
+        ".planning/PROJECT.md",
+        ".planning/ROADMAP.md",
+        ".planning/STATE.md",
+        ".planning/execution/README.md",
+        ".planning/execution/ROADMAP.md",
+        ".planning/execution/tasks.json",
+        ".planning/phases/13-openclaw-dashboard-and-testing/13-UAT.md",
+        ".planning/phases/14-openclaw-scaling-and-packaging/14-CONTEXT.md",
+        ".planning/phases/14-openclaw-scaling-and-packaging/14-UAT.md",
+        ".planning/phases/14-openclaw-scaling-and-packaging/14-TASKS.md",
+        ".planning/phases/14-openclaw-scaling-and-packaging/14-01-PLAN.md"
+      ],
+      "verify": [],
+      "handoff_path": ".planning/execution/handoffs/w14-openclaw-scaling-and-packaging/W14-OC-00.md"
+    },
+    {
+      "id": "W14-OC-01",
+      "title": "Harden backend scale paths, MCP surfaces, and observability for OpenClaw packaging readiness",
+      "status": "completed",
+      "owner": "backend-scale",
+      "depends_on": [
+        "W14-OC-00"
+      ],
+      "write_scope": [
+        "src/am_server/app.py",
+        "src/am_server/auth.py",
+        "src/am_server/dependencies.py",
+        "src/am_server/metrics.py",
+        "src/am_server/routes/openclaw.py",
+        "tests/test_am_server.py",
+        "tests/test_openclaw_contract.py",
+        "tests/load/**"
+      ],
+      "do_not_touch": [
+        "packages/am-dashboard/**",
+        "packages/am-openclaw/**",
+        "desktop_shell/**",
+        ".github/workflows/release.yml",
+        "docker-compose.prod.yml"
+      ],
+      "verify": [
+        "python -m pytest tests/test_am_server.py tests/test_openclaw_contract.py -q",
+        "python -m pytest tests/load/test_openclaw_load.py -q"
+      ],
+      "handoff_path": ".planning/execution/handoffs/w14-openclaw-scaling-and-packaging/W14-OC-01.md"
+    },
+    {
+      "id": "W14-OC-02",
+      "title": "Make packages/am-openclaw distribution-ready with packaging metadata, install docs, and artifact checks",
+      "status": "completed",
+      "owner": "plugin-packaging",
+      "depends_on": [
+        "W14-OC-00"
+      ],
+      "write_scope": [
+        "packages/am-openclaw/**"
+      ],
+      "do_not_touch": [
+        "src/am_server/**",
+        "desktop_shell/**",
+        "packages/am-dashboard/**",
+        ".github/workflows/ci.yml",
+        ".github/workflows/release.yml"
+      ],
+      "verify": [
+        "npm run build --workspace agentic-memory",
+        "npm run test --workspace agentic-memory",
+        "npm run typecheck --workspace agentic-memory",
+        "npm pack --workspace agentic-memory --dry-run"
+      ],
+      "handoff_path": ".planning/execution/handoffs/w14-openclaw-scaling-and-packaging/W14-OC-02.md"
+    },
+    {
+      "id": "W14-OC-03",
+      "title": "Add production deployment and release artifacts for OpenClaw beta rollout",
+      "status": "completed",
+      "owner": "release-ops",
+      "depends_on": [
+        "W14-OC-00"
+      ],
+      "write_scope": [
+        ".github/workflows/release.yml",
+        "docker-compose.prod.yml",
+        "docs/openclaw/**"
+      ],
+      "do_not_touch": [
+        "src/am_server/**",
+        "packages/am-openclaw/**",
+        "packages/am-dashboard/**",
+        "desktop_shell/**",
+        ".github/workflows/ci.yml"
+      ],
+      "verify": [
+        "docker compose -f docker-compose.prod.yml config",
+        "Get-Content .github/workflows/release.yml"
+      ],
+      "handoff_path": ".planning/execution/handoffs/w14-openclaw-scaling-and-packaging/W14-OC-03.md"
+    },
+    {
+      "id": "W14-OC-04",
+      "title": "Close the scaling + packaging integration gate and wire CI and release validation",
+      "status": "completed",
+      "owner": "orchestrator",
+      "depends_on": [
+        "W14-OC-01",
+        "W14-OC-02",
+        "W14-OC-03"
+      ],
+      "write_scope": [
+        ".github/workflows/ci.yml",
+        "package.json",
+        "package-lock.json"
+      ],
+      "verify": [
+        "python -m pytest tests/test_am_server.py tests/test_openclaw_contract.py desktop_shell/tests/test_app.py -q",
+        "python -m pytest tests/e2e/test_openclaw_e2e.py tests/load/test_openclaw_load.py tests/chaos/test_openclaw_chaos.py -q",
+        "npm run build",
+        "npm run typecheck",
+        "npm run build:openclaw",
+        "npm run test:openclaw",
+        "npm run typecheck:openclaw",
+        "npm run build --workspace am-dashboard",
+        "npm run test --workspace am-dashboard",
+        "npm run typecheck --workspace am-dashboard",
+        "npm run pack:openclaw",
+        "npm run validate:release-artifacts"
+      ],
+      "handoff_path": ".planning/execution/handoffs/w14-openclaw-scaling-and-packaging/W14-OC-04.md"
+    }
+  ],
+  "merge_gates": [
+    "python -m pytest tests/test_am_server.py tests/test_openclaw_contract.py desktop_shell/tests/test_app.py -q",
+    "python -m pytest tests/e2e/test_openclaw_e2e.py tests/load/test_openclaw_load.py tests/chaos/test_openclaw_chaos.py -q",
+    "npm run build",
+    "npm run typecheck",
+    "npm run build:openclaw",
+    "npm run test:openclaw",
+    "npm run typecheck:openclaw",
+    "npm run build --workspace am-dashboard",
+    "npm run test --workspace am-dashboard",
+    "npm run typecheck --workspace am-dashboard",
+    "npm run pack:openclaw",
+    "npm run validate:release-artifacts"
+  ]
+}

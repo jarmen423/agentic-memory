@@ -60,12 +60,25 @@ AI agents get seamless, persistent memory that works regardless of content type 
 - [ ] CLI commands: web-init, web-ingest, web-search, chat-init, chat-ingest
 - [ ] Documentation for module setup and configuration
 
-**OpenClaw Testing + Dashboard Wave (`w13-openclaw-dashboard-and-testing`):**
-- [ ] Replace the static desktop shell under `desktop_shell/static/` with a workspace-backed React dashboard in `packages/am-dashboard/`
-- [ ] Add authenticated dashboard read APIs for OpenClaw metrics, sessions, search quality, and workspace views
-- [ ] Add OpenClaw operational verification harnesses: E2E, load, chaos, and dashboard shell coverage
-- [ ] Wire `am-dashboard` into the npm workspace and CI build/test/typecheck gates
-- [ ] Keep packaging, marketplace, hosted auth, and GTM rollout deferred until this wave is green
+**OpenClaw Testing + Dashboard Wave (`w13-openclaw-dashboard-and-testing`) — Completed in Phase 13:**
+- [x] Replace the static desktop shell under `desktop_shell/static/` with a workspace-backed React dashboard in `packages/am-dashboard/`
+- [x] Add authenticated dashboard read APIs for OpenClaw metrics, sessions, search quality, and workspace views
+- [x] Add OpenClaw operational verification harnesses: E2E, load, chaos, and dashboard shell coverage
+- [x] Wire `am-dashboard` into the npm workspace and CI build/test/typecheck gates
+- [x] Keep packaging, marketplace, hosted auth, and GTM rollout deferred until this wave is green
+
+**OpenClaw Scaling + Packaging Wave (`w14-openclaw-scaling-and-packaging`) — Completed in Phase 14:**
+- [x] Scale the OpenClaw backend for the GTM plan's 10-agent target with load-path observability, cache hardening, MCP surface boundary clarity, and fail-fast runtime defaults
+- [x] Package `packages/am-openclaw` for distribution by removing private-only metadata, locking release/package fields, and validating installable artifacts
+- [x] Add production deployment and release artifacts for `am-server`, including Docker/release workflow outputs aligned to the GTM plan
+- [x] Close the CI/release integration gate so package validation no longer depends on the unresolved public package name
+
+**OpenClaw Docs + Private Beta Wave (`w15-openclaw-docs-and-private-beta`) — Active in Phase 15:**
+- [ ] Finalize the public install/setup story, including the remaining package-name decision and the OpenClaw install command used in docs and marketplace surfaces
+- [ ] Commit the OpenAPI contract for the OpenClaw-facing backend surface and keep it aligned with the actual app routes
+- [ ] Prepare marketplace listing artifacts and publish metadata for private beta distribution
+- [ ] Write the user, operator, and support docs needed to onboard the first 5 private beta partners
+- [ ] Keep public beta, hosted multi-tenant auth, SSO, and GA launch collateral deferred until the next follow-on phase
 
 ### Out of Scope
 
@@ -75,7 +88,7 @@ AI agents get seamless, persistent memory that works regardless of content type 
 - Real-time collaboration features — Single-user focus for v1
 - Advanced conversation analytics (sentiment, topic modeling) — Basic retrieval first
 - Video/audio transcription — Rely on external tools, ingest transcripts only
-- Broad universal adapter expansion beyond the current shipped integrations — post-v1. The targeted OpenClaw testing and dashboard wave is active now.
+- Broad universal adapter expansion beyond the current shipped integrations — post-v1. The targeted OpenClaw docs + private beta wave is active now.
 - Simple cron scheduling (repeat same query) — Replaced by smart scheduled research with LLM-driven variable substitution
 
 ## Context
@@ -123,4 +136,4 @@ AI agents get seamless, persistent memory that works regardless of content type 
 | Modular architecture | Each module independently usable, scales to future content types | ✓ Confirmed |
 
 ---
-*Last updated: 2026-04-11 after the OpenClaw testing and dashboard wave was activated*
+*Last updated: 2026-04-12 after Phase 14 closed and Phase 15 (OpenClaw docs + private beta) was locked from the GTM plan*

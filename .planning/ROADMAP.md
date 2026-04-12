@@ -2,8 +2,8 @@
 
 **Project:** Modular Knowledge Graph (Code + Web Research + Conversation Memory)
 **Created:** 2026-03-20
-**Last Updated:** 2026-04-11
-**Status:** Active — OpenClaw testing + dashboard is now the active delivery track; Phase 10 and Phase 11 remain paused but preserved
+**Last Updated:** 2026-04-12
+**Status:** Active milestone — OpenClaw docs + private beta is now the active delivery track. Phase 10 and Phase 11 remain paused but preserved
 
 ---
 
@@ -457,6 +457,8 @@ Plans:
 
 **Goal:** Replace the placeholder desktop shell with a real dashboard surface and deepen OpenClaw verification with CI-backed dashboard, E2E, load, and chaos coverage while keeping packaging and GTM work out of scope.
 
+**Status:** Complete
+
 **Plans:** 1 execution plan + wave registry
 
 Plans:
@@ -488,5 +490,77 @@ Plans:
 - replacing `desktop_shell/static/**` with a built SPA can break the local shell bootstrap path if asset mounting is not kept explicit and test-covered
 - load and chaos harnesses can become flaky if they are introduced before the local test environment is deterministic enough to support them
 
+### Phase 14: OpenClaw Scaling + Packaging
+
+**Goal:** Advance the OpenClaw effort from verified dashboard/testing readiness into the GTM plan's next implementation tier: backend scale-path hardening, package/release preparation, and deployable production artifacts, while still deferring marketplace submission, private beta operations, and GA launch work.
+
+**Status:** Complete
+
+**Plans:** 1 execution plan + wave registry
+
+Plans:
+- [x] 14-01-PLAN.md — OpenClaw scaling + packaging wave: registry alignment, backend throughput/observability hardening, plugin packaging, deployment/release artifacts, and CI gate updates
+
+**Deliverables:**
+- `.planning` truth updated so Phase 14 was the active OpenClaw delivery track during execution and the completed `w13-openclaw-dashboard-and-testing` registry is archived
+- backend scale-path hardening for the GTM plan's 10-agent target, including explicit decisions around queueing/backpressure, pool acquisition behavior, and production-facing observability
+- distribution-ready `packages/am-openclaw` metadata and install artifacts instead of private-only package settings
+- production deployment and release artifacts for `am-server`, including Docker and release workflow scaffolding grounded in the GTM plan
+- CI gates that keep backend, plugin, and dashboard packaging/build verification visible while this wave is active
+
+**Success Criteria:**
+- Phase 14 planning state is truthful in `PROJECT.md`, `ROADMAP.md`, `STATE.md`, and `.planning/execution/*`
+- OpenClaw backend scale-path changes are verified against the existing dashboard/contract/harness suite plus any new scale-specific coverage introduced in this wave
+- `packages/am-openclaw` is no longer blocked by private-only package metadata and can produce a distribution artifact cleanly
+- production deployment/release artifacts exist in-repo and validate syntactically
+- merge gates pass:
+  - `python -m pytest tests/test_am_server.py tests/test_openclaw_contract.py desktop_shell/tests/test_app.py -q`
+  - `python -m pytest tests/e2e/test_openclaw_e2e.py tests/load/test_openclaw_load.py tests/chaos/test_openclaw_chaos.py -q`
+  - `npm run build`
+  - `npm run typecheck`
+  - `npm run build:openclaw`
+  - `npm run test:openclaw`
+  - `npm run typecheck:openclaw`
+  - `npm run build --workspace am-dashboard`
+  - `npm run test --workspace am-dashboard`
+  - `npm run typecheck --workspace am-dashboard`
+  - `npm run pack:openclaw`
+  - `npm run validate:release-artifacts`
+
+**Key Risks:**
+- the backend files most likely to absorb scale-path work currently have local, uncommitted MCP-surface/auth refactor changes and must be merged carefully rather than overwritten
+- packaging and release metadata can drift from actual OpenClaw marketplace/install requirements if the artifact contract is guessed instead of validated
+- production Docker/release artifacts can create false confidence if they are generated without being syntax-checked as part of the merge gate
+
+### Phase 15: OpenClaw Docs + Private Beta
+
+**Goal:** Convert the now-deployable OpenClaw stack into a partner-onboardable private beta by finalizing the public install story, committing the OpenAPI contract, preparing marketplace/publish surfaces, and writing the user, operator, and support docs needed to onboard the first five design partners.
+
+**Status:** In Progress
+
+**Plans:** 1 execution plan locked
+
+Plans:
+- [x] 15-01-PLAN.md — OpenClaw docs + private beta wave: Phase 14 closeout, OpenAPI + docs finalization, package identity/marketplace prep, beta onboarding/support artifacts, and integration gates
+
+**Deliverables:**
+- committed OpenAPI output for the OpenClaw-facing backend surface
+- user-facing install/setup/troubleshooting docs aligned to the actual OpenClaw plugin install command
+- marketplace/listing preparation artifacts and a locked package identity decision
+- private beta onboarding, rollback, and support runbooks for the first partner cohort
+- execution truth updated so the completed `w14-openclaw-scaling-and-packaging` registry is archived and the docs/private-beta wave is active
+
+**Success Criteria:**
+- 7 docs or doc sections covering install, setup, troubleshooting, rollback, beta operations, support, and rollout guidance are written or updated
+- a committed OpenAPI artifact exists for the OpenClaw backend surface and stays aligned with the running app contract
+- the npm package identity and publish/install command are finalized strongly enough for marketplace/private-beta use
+- marketplace submission artifacts are prepared, even if external submission itself remains a manual business step
+- the first 5 private beta partners can be onboarded from the runbooks without inventing missing operator steps
+
+**Key Risks:**
+- the unresolved package identity can keep install docs and marketplace copy in limbo if it is not decided early in the phase
+- marketplace-specific package or listing requirements may differ from the assumptions in the GTM plan
+- private beta readiness includes non-code operational work, so repository completion and partner readiness can drift if not tracked together
+
 ---
-*Last updated: 2026-04-11 after Phase 13 was added as the active OpenClaw testing + dashboard wave (total phases: 13)*
+*Last updated: 2026-04-12 after Phase 14 closed and Phase 15 (OpenClaw docs + private beta) was seeded as the active delivery track (total phases: 15)*

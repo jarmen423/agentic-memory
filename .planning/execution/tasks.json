@@ -53,7 +53,7 @@
     {
       "id": "W16-OC-02",
       "title": "Add plugin-side doctor and setup UX that validates the real backend path before declaring success",
-      "status": "pending",
+      "status": "completed",
       "owner": "plugin-ux",
       "depends_on": [
         "W16-OC-01"

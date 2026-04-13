@@ -62,6 +62,55 @@ export type ResolvedPluginConfig = Required<OpenClawIdentity> & {
   mode: "capture_only" | "augment_context";
 };
 
+/**
+ * Backend-reported onboarding service status row from `/health/onboarding`.
+ *
+ * The OpenClaw plugin does not guess whether parts of the stack are required.
+ * Instead, it consumes the server's explicit contract so setup and doctor can
+ * stay aligned with the backend's current truth.
+ */
+export interface OnboardingServiceStatus {
+  service_id: string;
+  label: string;
+  required: boolean;
+  status: string;
+  summary: string;
+  component?: string | null;
+  depends_on?: string[];
+  details?: Record<string, unknown>;
+}
+
+/**
+ * Roll-up readiness booleans returned by the backend onboarding contract.
+ */
+export interface OnboardingReadinessStatus {
+  setup_ready: boolean;
+  capture_only_ready: boolean;
+  augment_context_ready: boolean;
+  required_healthy: number;
+  required_total: number;
+  optional_healthy: number;
+  optional_total: number;
+  blocking_services: string[];
+  degraded_optional_services: string[];
+}
+
+/**
+ * Machine-readable backend contract for OpenClaw onboarding.
+ */
+export interface BackendOnboardingContract {
+  status: string;
+  plugin_package_name: string;
+  plugin_id: string;
+  install_command: string;
+  setup_command: string;
+  doctor_command: string;
+  required_services: OnboardingServiceStatus[];
+  optional_services: OnboardingServiceStatus[];
+  readiness: OnboardingReadinessStatus;
+  notes: string[];
+}
+
 export const PLUGIN_CONFIG_SCHEMA_VERSION = 1;
 export const DEFAULT_BACKEND_URL = "http://127.0.0.1:8765";
 export const DEFAULT_CONTEXT_ENGINE_ID = "agentic-memory";

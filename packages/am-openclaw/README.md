@@ -91,8 +91,21 @@ After installing the plugin into OpenClaw, configure it from the OpenClaw CLI:
 
 ```bash
 openclaw plugin install agentic-memory-openclaw
+openclaw agentic-memory doctor
 openclaw agentic-memory setup
 ```
+
+The recommended path is now:
+
+1. `openclaw plugin install agentic-memory-openclaw`
+2. `openclaw agentic-memory doctor`
+3. `openclaw agentic-memory setup`
+
+`doctor` asks the backend for the whole-stack onboarding contract at
+`/health/onboarding` and tells you whether the requested mode is honestly
+ready. `setup` now uses that same contract before it writes config, so it no
+longer reports success when the backend is reachable but the required memory
+path is not actually usable yet.
 
 The setup command can run as:
 
@@ -108,6 +121,7 @@ The setup command can run as:
 Example:
 
 ```bash
+openclaw agentic-memory doctor
 openclaw agentic-memory setup
 ```
 
@@ -162,6 +176,30 @@ the latest registered session for the current workspace/agent identity.
 The active project is resolved server-side for that specific
 `workspace_id + agent_id + session_id` tuple, so one agent can work on a
 project temporarily without tagging every future memory forever.
+
+## Doctor and setup truthfulness
+
+The plugin now distinguishes between:
+
+- backend is merely reachable
+- backend is honestly ready for OpenClaw capture-only
+- backend is honestly ready for OpenClaw augment-context mode
+
+The backend's onboarding contract marks these separately. That matters because
+the stack can be partially up while still missing one of the things setup
+actually needs:
+
+- backend API auth configured
+- OpenClaw memory pipeline healthy
+- OpenClaw context engine healthy for `augment_context`
+
+By default, `openclaw agentic-memory setup` refuses to persist config when the
+requested mode is not ready. If you intentionally want to save config early,
+you can override that with:
+
+```bash
+openclaw agentic-memory setup --allow-degraded
+```
 
 ## What this package does today
 

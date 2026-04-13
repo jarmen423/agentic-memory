@@ -11,6 +11,11 @@ import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
 import { AgenticMemoryBackendClient } from "./backend-client.js";
 import {
+  formatDoctorText,
+  runAgenticMemoryDoctor,
+  validateSetupAgainstContract,
+} from "./doctor.js";
+import {
   asRecord,
   asString,
   createDefaultAgentId,
@@ -36,6 +41,8 @@ export type SetupCommandOptions = {
   disableContextAugmentation?: boolean;
   enableContextEngine?: boolean;
   disableContextEngine?: boolean;
+  allowDegraded?: boolean;
+  skipDoctor?: boolean;
   json?: boolean;
 };
 
@@ -48,6 +55,21 @@ export type ResolvedSetupValues = {
   agentId: string;
   projectId: string | null;
   mode: "capture_only" | "augment_context";
+};
+
+export type DoctorCommandOptions = {
+  backendUrl?: string;
+  apiKey?: string;
+  workspace?: string;
+  workspaceId?: string;
+  deviceId?: string;
+  agentId?: string;
+  mode?: "capture_only" | "augment_context";
+  enableContextAugmentation?: boolean;
+  disableContextAugmentation?: boolean;
+  enableContextEngine?: boolean;
+  disableContextEngine?: boolean;
+  json?: boolean;
 };
 
 export type AgenticMemoryCliContext = {
@@ -244,6 +266,11 @@ function printSetupResult(
   ctx: AgenticMemoryCliContext,
   values: ResolvedSetupValues,
   options: SetupCommandOptions,
+  doctorSummary?: {
+    setupReady: boolean;
+    captureOnlyReady: boolean;
+    augmentContextReady: boolean;
+  },
 ): void {
   const payload = {
     ok: true,
@@ -256,6 +283,7 @@ function printSetupResult(
     projectId: values.projectId,
     mode: values.mode,
     contextAugmentationEnabled: values.mode === "augment_context",
+    doctor: doctorSummary ?? null,
   };
 
   if (options.json) {
@@ -273,6 +301,11 @@ function printSetupResult(
   output.write(
     `Context augmentation: ${values.mode === "augment_context" ? "enabled" : "disabled"}\n`,
   );
+  if (doctorSummary) {
+    output.write(`Backend setup ready: ${doctorSummary.setupReady ? "yes" : "no"}\n`);
+    output.write(`Capture-only ready: ${doctorSummary.captureOnlyReady ? "yes" : "no"}\n`);
+    output.write(`Augment-context ready: ${doctorSummary.augmentContextReady ? "yes" : "no"}\n`);
+  }
   ctx.logger.info?.("Agentic Memory plugin setup complete.");
 }
 
@@ -315,6 +348,64 @@ function resolveProjectCommandConfig(
     deviceId: options.deviceId?.trim() || asString(existing.deviceId) || createDefaultDeviceId(),
     agentId,
   };
+}
+
+function resolveDoctorConfig(
+  currentConfig: OpenClawConfig,
+  options: DoctorCommandOptions,
+) {
+  const existing = resolveExistingPluginConfig(currentConfig);
+  const agentId =
+    options.agentId?.trim() || asString(existing.agentId) || createDefaultAgentId();
+  return {
+    schemaVersion: PLUGIN_CONFIG_SCHEMA_VERSION,
+    backendUrl: options.backendUrl?.trim() || asString(existing.backendUrl) || DEFAULT_BACKEND_URL,
+    apiKey: options.apiKey?.trim() || asString(existing.apiKey) || null,
+    workspaceId: resolveWorkspaceIdDefault(existing, options, agentId),
+    deviceId: options.deviceId?.trim() || asString(existing.deviceId) || createDefaultDeviceId(),
+    agentId,
+    projectId: asString(existing.projectId) ?? null,
+    contextEngineId: DEFAULT_CONTEXT_ENGINE_ID,
+    mode:
+      options.mode ??
+      (options.enableContextAugmentation || options.enableContextEngine
+        ? "augment_context"
+        : options.disableContextAugmentation || options.disableContextEngine
+          ? "capture_only"
+          : resolveExistingMode(currentConfig)),
+  };
+}
+
+async function printDoctorResult(
+  ctx: AgenticMemoryCliContext,
+  options: DoctorCommandOptions,
+): Promise<void> {
+  const config = resolveDoctorConfig(ctx.config, options);
+  const report = await runAgenticMemoryDoctor(
+    new AgenticMemoryBackendClient(config, ctx.logger),
+    config,
+  );
+
+  if (options.json) {
+    output.write(
+      `${JSON.stringify(
+        {
+          ok: report.ok,
+          backendUrl: report.backendUrl,
+          mode: report.mode,
+          readiness: report.contract.readiness,
+          blockingReasons: report.blockingReasons,
+          localWarnings: report.localWarnings,
+          contract: report.contract,
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    return;
+  }
+
+  output.write(formatDoctorText(report));
 }
 
 function printProjectPayload(payload: Record<string, unknown>, json = false): void {
@@ -436,11 +527,80 @@ export function registerAgenticMemoryCli(ctx: AgenticMemoryCliContext): void {
     .option("--disable-context-augmentation", "Leave Agentic Memory in capture-only mode", false)
     .option("--enable-context-engine", "Legacy alias for --enable-context-augmentation", false)
     .option("--disable-context-engine", "Legacy alias for --disable-context-augmentation", false)
+    .option(
+      "--allow-degraded",
+      "Persist config even if doctor says the requested mode is not ready yet",
+      false,
+    )
+    .option("--skip-doctor", "Skip backend readiness validation before writing config", false)
     .option("--json", "Print machine-readable JSON", false)
     .action(async (options: SetupCommandOptions) => {
       const values = await resolveSetupValues(ctx.config, options);
+      let doctorSummary: {
+        setupReady: boolean;
+        captureOnlyReady: boolean;
+        augmentContextReady: boolean;
+      } | undefined;
+
+      if (!options.skipDoctor) {
+        const doctorConfig = {
+          schemaVersion: values.schemaVersion,
+          backendUrl: values.backendUrl,
+          apiKey: values.apiKey,
+          workspaceId: values.workspaceId,
+          deviceId: values.deviceId,
+          agentId: values.agentId,
+          projectId: values.projectId,
+          contextEngineId: DEFAULT_CONTEXT_ENGINE_ID,
+          mode: values.mode,
+        };
+        const report = await runAgenticMemoryDoctor(
+          new AgenticMemoryBackendClient(doctorConfig, ctx.logger),
+          doctorConfig,
+        );
+        const validation = validateSetupAgainstContract(doctorConfig, report.contract);
+        doctorSummary = {
+          setupReady: report.contract.readiness.setup_ready,
+          captureOnlyReady: report.contract.readiness.capture_only_ready,
+          augmentContextReady: report.contract.readiness.augment_context_ready,
+        };
+
+        if (!validation.ok && !options.allowDegraded) {
+          const failureMessage = [
+            "Agentic Memory setup refused to save config because the backend is not ready for the requested mode.",
+            "",
+            formatDoctorText(report).trimEnd(),
+            "",
+            "Run the doctor command again after fixing the blocking services, or use --allow-degraded if you intentionally want to save config early.",
+          ].join("\n");
+          throw new Error(failureMessage);
+        }
+      }
+
       await persistOpenClawConfig((config) => mergeAgenticMemoryPluginConfigIntoOpenClawConfig(config, values));
-      printSetupResult(ctx, values, options);
+      printSetupResult(ctx, values, options, doctorSummary);
+    });
+
+  root
+    .command("doctor")
+    .description("Check whether the configured backend is honestly ready for OpenClaw setup")
+    .option("--backend-url <url>", "Agentic Memory backend URL")
+    .option(
+      "--api-key <value>",
+      "Backend API key or interpolation template such as ${AGENTIC_MEMORY_API_KEY}",
+    )
+    .option("--workspace <id>", "Optional workspace override")
+    .option("--workspace-id <id>", "Legacy alias for --workspace")
+    .option("--device-id <id>", "Device identifier")
+    .option("--agent-id <id>", "Agent identifier")
+    .option("--mode <mode>", "Requested plugin mode: capture_only or augment_context")
+    .option("--enable-context-augmentation", "Check readiness for augment_context mode", false)
+    .option("--disable-context-augmentation", "Check readiness for capture_only mode", false)
+    .option("--enable-context-engine", "Legacy alias for --enable-context-augmentation", false)
+    .option("--disable-context-engine", "Legacy alias for --disable-context-augmentation", false)
+    .option("--json", "Print machine-readable JSON", false)
+    .action(async (options: DoctorCommandOptions) => {
+      await printDoctorResult(ctx, options);
     });
 
   const project = root.command("project").description("Manage the active Agentic Memory project");

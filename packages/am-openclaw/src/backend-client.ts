@@ -151,18 +151,25 @@ export class AgenticMemoryBackendClient {
   }
 
   /**
-   * Send a typed POST request to the Agentic Memory backend.
+   * Send one JSON request to the Agentic Memory backend with retry logic.
+   *
+   * We keep one internal request helper so setup/doctor and runtime code share
+   * the same transport guarantees and error shape.
    */
-  async post<T>(path: string, payload: Record<string, unknown>): Promise<T> {
+  private async requestJson<T>(
+    method: "GET" | "POST",
+    path: string,
+    payload?: Record<string, unknown>,
+  ): Promise<T> {
     const url = new URL(path, this.config.backendUrl).toString();
     let lastError: AgenticMemoryBackendError | null = null;
 
     for (let attempt = 0; attempt < MAX_RETRY_ATTEMPTS; attempt += 1) {
       try {
         const response = await fetch(url, {
-          method: "POST",
+          method,
           headers: this.buildHeaders(),
-          body: JSON.stringify(payload),
+          ...(payload ? { body: JSON.stringify(payload) } : {}),
         });
 
         if (!response.ok) {
@@ -219,5 +226,19 @@ export class AgenticMemoryBackendClient {
       retryable: false,
       path,
     });
+  }
+
+  /**
+   * Send a typed GET request to the Agentic Memory backend.
+   */
+  async get<T>(path: string): Promise<T> {
+    return this.requestJson<T>("GET", path);
+  }
+
+  /**
+   * Send a typed POST request to the Agentic Memory backend.
+   */
+  async post<T>(path: string, payload: Record<string, unknown>): Promise<T> {
+    return this.requestJson<T>("POST", path, payload);
   }
 }

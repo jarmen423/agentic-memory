@@ -129,3 +129,24 @@ test("backend client retries transient network failures", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test("backend client supports doctor-style GET requests", async () => {
+  const client = createClient();
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async (input, init) => {
+    assert.equal(String(input), "http://127.0.0.1:8765/health/onboarding");
+    assert.equal(init?.method, "GET");
+    return new Response(JSON.stringify({ status: "ok" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  try {
+    const response = await client.get<{ status: string }>("/health/onboarding");
+    assert.equal(response.status, "ok");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

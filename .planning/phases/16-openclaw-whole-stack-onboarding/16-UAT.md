@@ -1,10 +1,10 @@
 ---
 phase: 16-openclaw-whole-stack-onboarding
-status: active
-updated: 2026-04-13T14:23:18Z
+status: complete
+updated: 2026-04-13T15:20:00Z
 summary:
-  passed: 0
-  pending: 5
+  passed: 5
+  pending: 0
   blocked: 0
 ---
 
@@ -15,7 +15,7 @@ summary:
 ### Test 1
 
 - name: the onboarding flow explicitly distinguishes required services, optional temporal services, and unsupported/missing dependencies before setup claims success
-- status: pending
+- status: complete
 - method: automated + manual
 - evidence:
   - `packages/am-openclaw/src/setup.ts`
@@ -25,7 +25,7 @@ summary:
 ### Test 2
 
 - name: plugin-side doctor or preflight validation surfaces actionable failures for wrong backend targets, auth problems, and missing stack services
-- status: pending
+- status: complete
 - method: automated
 - evidence:
   - `packages/am-openclaw/**`
@@ -34,7 +34,7 @@ summary:
 ### Test 3
 
 - name: the local bootstrap path and temporal tooling no longer depend on saved `local` aliases or stale `STDB_URI` defaults that conflict with other services
-- status: pending
+- status: complete
 - method: automated + manual
 - evidence:
   - `packages/am-temporal-kg/**`
@@ -45,7 +45,7 @@ summary:
 ### Test 4
 
 - name: installation, setup, troubleshooting, and whole-stack onboarding docs describe one supported path that matches the actual validated implementation
-- status: pending
+- status: complete
 - method: manual
 - evidence:
   - `docs/openclaw/**`
@@ -56,7 +56,7 @@ summary:
 ### Test 5
 
 - name: onboarding changes do not regress the backend, plugin, dashboard, temporal package, or release validation gates
-- status: pending
+- status: complete
 - method: automated
 - evidence:
   - `python -m pytest tests/test_am_server.py tests/test_openclaw_contract.py desktop_shell/tests/test_app.py -q`

@@ -80,12 +80,12 @@ AI agents get seamless, persistent memory that works regardless of content type 
 - [x] Write the user, operator, and support docs needed to onboard the first 5 private beta partners
 - [x] Keep public beta, hosted multi-tenant auth, SSO, and GA launch collateral deferred until the next follow-on phase
 
-**OpenClaw Whole-Stack Onboarding Wave (`w16-openclaw-whole-stack-onboarding`) — Active in Phase 16:**
-- [ ] Replace implicit local-service assumptions with an explicit, validated whole-stack bootstrap path
-- [ ] Add whole-stack doctor/preflight surfaces for the plugin, backend, Neo4j, and optional temporal services
-- [ ] Remove hardcoded SpacetimeDB port/alias assumptions from scripts and docs so Grafana, SpacetimeDB, and other local services can coexist cleanly
-- [ ] Collapse the current install/docs/runbook story into one supported onboarding path that matches what the code actually validates
-- [ ] Keep public beta, hosted multi-tenant auth, SSO, and GA launch collateral deferred until the onboarding path is credible in practice
+**OpenClaw Whole-Stack Onboarding Wave (`w16-openclaw-whole-stack-onboarding`) — Completed in Phase 16:**
+- [x] Replace implicit local-service assumptions with an explicit, validated whole-stack bootstrap path
+- [x] Add whole-stack doctor/preflight surfaces for the plugin, backend, Neo4j, and optional temporal services
+- [x] Remove hardcoded SpacetimeDB port/alias assumptions from scripts and docs so Grafana, SpacetimeDB, and other local services can coexist cleanly
+- [x] Collapse the current install/docs/runbook story into one supported onboarding path that matches what the code actually validates
+- [x] Keep public beta, hosted multi-tenant auth, SSO, and GA launch collateral deferred until the onboarding path is credible in practice
 
 ### Out of Scope
 
@@ -143,4 +143,4 @@ AI agents get seamless, persistent memory that works regardless of content type 
 | Modular architecture | Each module independently usable, scales to future content types | ✓ Confirmed |
 
 ---
-*Last updated: 2026-04-13 after Phase 16 (OpenClaw whole-stack onboarding) was locked as the active follow-on wave*
+*Last updated: 2026-04-13 after Phase 16 (OpenClaw whole-stack onboarding) completed and the execution snapshot was archived*

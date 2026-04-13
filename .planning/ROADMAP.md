@@ -3,7 +3,7 @@
 **Project:** Modular Knowledge Graph (Code + Web Research + Conversation Memory)
 **Created:** 2026-03-20
 **Last Updated:** 2026-04-13
-**Status:** Active milestone — Phase 16 OpenClaw whole-stack onboarding is now the active delivery track. Phase 10 and Phase 11 remain paused but preserved
+**Status:** Active milestone — Phase 16 OpenClaw whole-stack onboarding is complete. No next OpenClaw follow-on track is locked yet; Phase 10 and Phase 11 remain paused but preserved
 
 ---
 
@@ -566,7 +566,7 @@ Plans:
 
 **Goal:** Convert the current private-beta-prepped OpenClaw stack into a setup experience that real operators can complete without reverse-engineering local ports, saved CLI aliases, optional temporal wiring, or hidden service dependencies.
 
-**Status:** Active
+**Status:** Complete
 
 **Plans:** 1 execution plan locked
 
@@ -608,4 +608,4 @@ Plans:
 - changing default local-stack behavior can break existing internal setups if migration/override behavior is not explicit
 
 ---
-*Last updated: 2026-04-13 after Phase 16 (OpenClaw whole-stack onboarding) was inserted and locked as the active track (total phases: 16)*
+*Last updated: 2026-04-13 after Phase 16 (OpenClaw whole-stack onboarding) completed and was archived as the latest onboarding snapshot (total phases: 16)*

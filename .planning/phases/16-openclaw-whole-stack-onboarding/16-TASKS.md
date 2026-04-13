@@ -8,15 +8,15 @@
 
 ## Wave 1
 
-- [ ] Lock the onboarding contract for plugin setup, backend health, shell bootstrap, and required versus optional local services.
+- [x] Lock the onboarding contract for plugin setup, backend health, shell bootstrap, and required versus optional local services.
 
 ## Wave 2
 
-- [ ] Add plugin-side doctor and setup UX that validates the real backend path before declaring success.
-- [ ] Clean up whole-stack bootstrap and temporal-service targeting so local aliases and silent port defaults are no longer required.
-- [ ] Rewrite install, troubleshooting, and whole-stack onboarding docs so the supported path matches the validated flow.
+- [x] Add plugin-side doctor and setup UX that validates the real backend path before declaring success.
+- [x] Clean up whole-stack bootstrap and temporal-service targeting so local aliases and silent port defaults are no longer required.
+- [x] Rewrite install, troubleshooting, and whole-stack onboarding docs so the supported path matches the validated flow.
 
 ## Wave 3
 
-- [ ] Close the onboarding integration gate with regression coverage across backend, plugin, dashboard, temporal packages, and release validation.
-- [ ] Write handoffs and keep the registry truthful for the next follow-on track.
+- [x] Close the onboarding integration gate with regression coverage across backend, plugin, dashboard, temporal packages, and release validation.
+- [x] Write handoffs and keep the registry truthful for the next follow-on track.

@@ -3,29 +3,29 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: — Full Multi-Module Memory System with Temporal GraphRAG
 current_phase: 16
-status: active
-last_updated: "2026-04-13T14:23:18Z"
+status: completed
+last_updated: "2026-04-13T15:20:00Z"
 progress:
   total_phases: 16
-  completed_phases: 13
+  completed_phases: 14
   total_plans: 23
-  completed_plans: 22
+  completed_plans: 23
 ---
 
 # Agentic Memory — Project State
 
 **Last Updated:** 2026-04-13
 **Current Phase:** 16
-**Phase Status:** Phase 15 complete; Phase 16 locked and active
-**Last Session Stopped At:** Phase 15 is complete and archived under `.planning/execution/archive/w15-openclaw-docs-and-private-beta/`. Dogfooding exposed that private-beta documentation did not yet equal a usable whole-stack onboarding flow, so the next active OpenClaw tranche is now Whole-Stack Onboarding. Phase 10 still needs live manual verification from the runbooks, and Phase 11 remains resumable from `.planning/execution/archive/w11-calls/`.
+**Phase Status:** Phase 16 complete; no next follow-on track locked yet
+**Last Session Stopped At:** Phase 16 is complete and archived under `.planning/execution/archive/w16-openclaw-whole-stack-onboarding/`. The OpenClaw stack now has a doctor-first onboarding contract, explicit temporal targeting, and CI/release gates for the supported path. Phase 10 still needs live manual verification from the runbooks, and Phase 11 remains resumable from `.planning/execution/archive/w11-calls/`.
 
 ---
 
-## Active Phase
+## Latest Completed Phase
 
 **Phase 16: OpenClaw Whole-Stack Onboarding**
 
-**Next Action:** Execute `w16-openclaw-whole-stack-onboarding` by locking the onboarding contract first, then splitting implementation across plugin UX, local stack/bootstrap cleanup, and docs/troubleshooting consolidation before closing the integration gate.
+**Next Action:** Choose the next delivery track. The most recent OpenClaw execution wave is complete; remaining choices are to define a new follow-on phase or resume paused Phase 10 / Phase 11 work.
 
 ---
 
@@ -57,7 +57,7 @@ progress:
 | 13 | OpenClaw Testing + Dashboard | Complete |
 | 14 | OpenClaw Scaling + Packaging | Complete |
 | 15 | OpenClaw Docs + Private Beta | Complete |
-| 16 | OpenClaw Whole-Stack Onboarding | In Progress |
+| 16 | OpenClaw Whole-Stack Onboarding | Complete |
 
 ---
 

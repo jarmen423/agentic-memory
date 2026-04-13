@@ -38,4 +38,7 @@ npm-debug.log*
 
 # Local agent/editor artifacts
 .claude/worktrees/
+
+# Agentic Memory per-repo CLI config (often contains credentials; never commit)
+.agentic-memory/config.json
 ~/.config/cursor/

@@ -194,6 +194,13 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          npm publish "release-artifacts/${{ needs.build-openclaw-package.outputs.tarball_name }}" \
+          TARBALL_PATH="$(find release-artifacts -type f -name "${{ needs.build-openclaw-package.outputs.tarball_name }}" -print -quit)"
+          if [ -z "$TARBALL_PATH" ]; then
+            echo "::error::Could not find downloaded tarball ${{ needs.build-openclaw-package.outputs.tarball_name }} under release-artifacts."
+            echo "::error::Inspect the downloaded artifact layout before retrying npm publish."
+            exit 1
+          fi
+
+          npm publish "$TARBALL_PATH" \
             --access public \
             --tag "${{ inputs.npm_tag }}"

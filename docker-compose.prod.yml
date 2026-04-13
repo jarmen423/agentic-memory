@@ -70,6 +70,8 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       # Temporal bridge wiring stays optional for this beta scaffold.
+      # When enabled, set STDB_URI explicitly. Do not rely on ambient defaults
+      # such as localhost:3000 because that port may belong to another service.
       STDB_URI: ${STDB_URI:-}
       STDB_MODULE_NAME: ${STDB_MODULE_NAME:-agentic-memory-temporal}
       STDB_BINDINGS_MODULE: ${STDB_BINDINGS_MODULE:-}
@@ -79,6 +81,8 @@ services:
       - am_server.server
     ports:
       - "${AM_SERVER_BIND_ADDRESS:-0.0.0.0}:${AM_SERVER_EXTERNAL_PORT:-8765}:8765"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - agentic_memory_state:/var/lib/agentic-memory
     healthcheck:

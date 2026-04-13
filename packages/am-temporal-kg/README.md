@@ -14,34 +14,34 @@ SpacetimeDB TypeScript module for Phase 8 temporal maintenance in Agentic Memory
 
 ```bash
 npm install
+STDB_URI=http://127.0.0.1:3001
 npm run publish:local --workspace am-temporal-kg
 ```
 
-This script explicitly targets the saved `local` SpacetimeDB server and publishes the
-database as `agentic-memory-temporal`.
+`publish:local` no longer relies on a saved `local` alias. It requires
+`STDB_URI` and publishes directly to that explicit SpacetimeDB target.
 
-For local development it also accepts the 1.x -> 2.x upgrade prompt and replaces any
-stale local data from older test publishes so the module can be republished cleanly.
+That matters because other local services, such as Grafana, often own port
+`3000`, and a stale saved alias can silently point at the wrong host.
 
 ## Generate Client Bindings
 
 Generate bindings after publishing and point the sync worker at the emitted module entry:
 
 ```bash
+STDB_URI=http://127.0.0.1:3001
 npm run generate:bindings --workspace am-temporal-kg
 ```
 
-Equivalent direct CLI invocation:
-
-```bash
-spacetime generate agentic-memory-temporal --lang typescript --out-dir ./generated-bindings --module-path .
-```
+The wrapper script temporarily points the SpacetimeDB CLI at the explicit
+`STDB_URI` target before it runs `spacetime generate`, then restores the
+previous default server afterward.
 
 Recommended environment for the sync worker:
 
 ```bash
 STDB_BINDINGS_MODULE=D:\code\agentic-memory\packages\am-temporal-kg\generated-bindings\index.ts
-STDB_URI=http://127.0.0.1:3000
+STDB_URI=http://127.0.0.1:3001
 STDB_MODULE_NAME=agentic-memory-temporal
 ```
 

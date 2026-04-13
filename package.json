@@ -15,6 +15,8 @@
     "build:openclaw": "npm run build --workspace packages/am-openclaw",
     "typecheck:openclaw": "npm run typecheck --workspace packages/am-openclaw",
     "pack:openclaw": "npm pack --workspace packages/am-openclaw --dry-run",
+    "publish:temporal-local": "npm run publish:local --workspace am-temporal-kg",
+    "generate:temporal-bindings": "npm run generate:bindings --workspace am-temporal-kg",
     "validate:release-artifacts": "docker compose -f docker-compose.prod.yml config",
     "bench:build-temporal": "tsx bench/build_temporal_kg.ts",
     "bench:run-queries": "tsx bench/run_queries.ts",

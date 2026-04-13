@@ -11,7 +11,7 @@ const requireEnv = (name: string): string => {
 };
 
 export const loadConfig = (): SyncConfig => ({
-  stdbUri: process.env.STDB_URI ?? "http://127.0.0.1:3000",
+  stdbUri: requireEnv("STDB_URI"),
   stdbModuleName: process.env.STDB_MODULE_NAME ?? "agentic-memory-temporal",
   stdbBindingsModule: requireEnv("STDB_BINDINGS_MODULE"),
   stdbConfirmedReads: process.env.STDB_CONFIRMED_READS !== "false",

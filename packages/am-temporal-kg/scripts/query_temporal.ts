@@ -562,9 +562,16 @@ export const createHelperFromEnv = (): TemporalQueryHelper => {
   if (!stdbBindingsModule) {
     throw new Error("Missing required environment variable: STDB_BINDINGS_MODULE");
   }
+  const stdbUri = process.env.STDB_URI;
+  if (!stdbUri) {
+    throw new Error(
+      "Missing required environment variable: STDB_URI. " +
+      "Set it to the real SpacetimeDB host instead of relying on a silent default port.",
+    );
+  }
 
   return new TemporalQueryHelper({
-    stdbUri: process.env.STDB_URI ?? "http://127.0.0.1:3000",
+    stdbUri,
     stdbModuleName: process.env.STDB_MODULE_NAME ?? "agentic-memory-temporal",
     stdbBindingsModule,
     stdbConfirmedReads: process.env.STDB_CONFIRMED_READS !== "false",

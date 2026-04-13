@@ -12,7 +12,7 @@ Shadow-mode worker that mirrors the Phase 8 SpacetimeDB temporal graph into Neo4
 ## Environment
 
 ```bash
-STDB_URI=http://127.0.0.1:3000
+STDB_URI=http://127.0.0.1:3001
 STDB_MODULE_NAME=agentic-memory-temporal
 STDB_BINDINGS_MODULE=/mnt/d/code/agentic-memory/packages/am-temporal-kg/generated-bindings/index.ts
 NEO4J_URI=bolt://127.0.0.1:7687
@@ -27,6 +27,10 @@ Optional:
 STDB_TOKEN=<owner-or-service-token>
 STDB_CONFIRMED_READS=true
 ```
+
+`STDB_URI` is now required. The sync worker no longer silently assumes
+`http://127.0.0.1:3000`, because that port may belong to a different local
+service in a real development stack.
 
 ## Run
 

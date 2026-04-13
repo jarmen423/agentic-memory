@@ -2,30 +2,30 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: — Full Multi-Module Memory System with Temporal GraphRAG
-current_phase: 15
-status: completed
-last_updated: "2026-04-12T21:09:13Z"
+current_phase: 16
+status: active
+last_updated: "2026-04-13T14:23:18Z"
 progress:
-  total_phases: 15
+  total_phases: 16
   completed_phases: 13
-  total_plans: 22
+  total_plans: 23
   completed_plans: 22
 ---
 
 # Agentic Memory — Project State
 
-**Last Updated:** 2026-04-12
-**Current Phase:** 15
-**Phase Status:** Phase 15 complete; no next delivery track is locked yet
-**Last Session Stopped At:** Phase 15 is complete. The latest OpenClaw docs + private beta registry remains in `.planning/execution/` as the most recent completed snapshot until the next wave is seeded. Phase 10 still needs live manual verification from the runbooks, and Phase 11 remains resumable from `.planning/execution/archive/w11-calls/`.
+**Last Updated:** 2026-04-13
+**Current Phase:** 16
+**Phase Status:** Phase 15 complete; Phase 16 locked and active
+**Last Session Stopped At:** Phase 15 is complete and archived under `.planning/execution/archive/w15-openclaw-docs-and-private-beta/`. Dogfooding exposed that private-beta documentation did not yet equal a usable whole-stack onboarding flow, so the next active OpenClaw tranche is now Whole-Stack Onboarding. Phase 10 still needs live manual verification from the runbooks, and Phase 11 remains resumable from `.planning/execution/archive/w11-calls/`.
 
 ---
 
-## Next Track
+## Active Phase
 
-**No active phase is locked**
+**Phase 16: OpenClaw Whole-Stack Onboarding**
 
-**Next Action:** Choose the follow-on delivery track. OpenClaw now has completed foundation, dashboard/testing, scaling/packaging, and docs/private-beta waves. Phase 10 manual verification and Phase 11 code-graph work remain resumable if they become higher priority than the next OpenClaw GTM tranche.
+**Next Action:** Execute `w16-openclaw-whole-stack-onboarding` by locking the onboarding contract first, then splitting implementation across plugin UX, local stack/bootstrap cleanup, and docs/troubleshooting consolidation before closing the integration gate.
 
 ---
 
@@ -33,7 +33,7 @@ progress:
 
 | Branch | Description |
 |--------|-------------|
-| `main` | Full v1 with temporal GraphRAG plus the completed OpenClaw private beta docs wave |
+| `main` | Full v1 with temporal GraphRAG plus the active OpenClaw whole-stack onboarding wave |
 | `v1-baseline` | Frozen at Phase 5 completion — finish original Phase 6 + 7 here for A/B comparison |
 
 ---
@@ -57,6 +57,7 @@ progress:
 | 13 | OpenClaw Testing + Dashboard | Complete |
 | 14 | OpenClaw Scaling + Packaging | Complete |
 | 15 | OpenClaw Docs + Private Beta | Complete |
+| 16 | OpenClaw Whole-Stack Onboarding | In Progress |
 
 ---
 

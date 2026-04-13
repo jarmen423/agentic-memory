@@ -1,30 +1,36 @@
 # Wave Roadmap
 
-## Latest Completed Track: `w15-openclaw-docs-and-private-beta`
+## Active Track: `w16-openclaw-whole-stack-onboarding`
 
 ### Wave 0: Orchestrator lock
 
-- `W15-OC-00`: close Phase 14, seed the Phase 15 registry, and freeze write
-  ownership for docs, marketplace, beta-ops, and integration work.
+- `W16-OC-00`: archive the completed `w15-openclaw-docs-and-private-beta`
+  registry, update `.planning` truth, and freeze write ownership plus merge
+  gates for the onboarding wave.
 
-### Wave 1: Parallel docs + beta-prep threads
+### Wave 1: Contract lock
 
-- `W15-OC-01`: finalize install/troubleshooting docs and commit the OpenClaw
-  OpenAPI artifact.
-- `W15-OC-02`: lock package identity, install/publish surfaces, and marketplace
-  artifacts.
-- `W15-OC-03`: write private-beta onboarding, support, and partner-operations
-  runbooks.
+- `W16-OC-01`: define the onboarding contract for what the plugin, backend,
+  shell, and local services must validate, report, or treat as optional before
+  the user sees a "setup complete" result.
 
-### Wave 2: Integration gate
+### Wave 2: Parallel implementation threads
 
-- `W15-OC-04`: reconcile the docs root, CI, release workflow, and private-beta
-  operator surfaces so the release artifact cannot drift from the committed docs
-  and OpenAPI contract.
+- `W16-OC-02`: add plugin-side doctor/setup UX so OpenClaw validates the real
+  backend path instead of only persisting config.
+- `W16-OC-03`: clean up whole-stack bootstrap and temporal-target assumptions so
+  local services do not rely on saved aliases or silent port defaults.
+- `W16-OC-04`: rewrite install, troubleshooting, and whole-stack onboarding
+  docs so the supported path matches the actual validated flow.
 
-### Wave 3: Verification
+### Wave 3: Integration gate
 
-- run the backend, contract, dashboard, E2E, load, and chaos regression gates
-- run the OpenClaw package build/test/typecheck/pack gates
-- run release/deployment validation plus the OpenAPI contract assertion
-- write handoffs and leave the completed registry ready for the next phase lock
+- `W16-OC-05`: reconcile CI, release validation, and onboarding regression
+  coverage so the stack cannot drift back into hidden local assumptions.
+
+### Wave 4: Verification
+
+- run the backend, contract, dashboard, package, and whole-stack regression gates
+- verify the temporal packages still build/typecheck with the new bootstrap path
+- write handoffs and update the registry so the next follow-on track can start
+  from a truthful onboarding snapshot

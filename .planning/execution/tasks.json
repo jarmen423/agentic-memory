@@ -1,10 +1,10 @@
 {
-  "active_wave_id": "w15-openclaw-docs-and-private-beta",
-  "phase": "15-openclaw-docs-and-private-beta",
+  "active_wave_id": "w16-openclaw-whole-stack-onboarding",
+  "phase": "16-openclaw-whole-stack-onboarding",
   "tasks": [
     {
-      "id": "W15-OC-00",
-      "title": "Lock execution contract for the OpenClaw docs + private beta wave",
+      "id": "W16-OC-00",
+      "title": "Lock execution contract for the OpenClaw whole-stack onboarding wave",
       "status": "completed",
       "owner": "orchestrator",
       "depends_on": [],
@@ -15,121 +15,148 @@
         ".planning/execution/README.md",
         ".planning/execution/ROADMAP.md",
         ".planning/execution/tasks.json",
-        ".planning/phases/14-openclaw-scaling-and-packaging/14-TASKS.md",
-        ".planning/phases/14-openclaw-scaling-and-packaging/14-UAT.md",
-        ".planning/phases/15-openclaw-docs-and-private-beta/15-CONTEXT.md",
-        ".planning/phases/15-openclaw-docs-and-private-beta/15-UAT.md",
-        ".planning/phases/15-openclaw-docs-and-private-beta/15-TASKS.md",
-        ".planning/phases/15-openclaw-docs-and-private-beta/15-01-PLAN.md"
+        ".planning/phases/16-openclaw-whole-stack-onboarding/16-CONTEXT.md",
+        ".planning/phases/16-openclaw-whole-stack-onboarding/16-UAT.md",
+        ".planning/phases/16-openclaw-whole-stack-onboarding/16-TASKS.md",
+        ".planning/phases/16-openclaw-whole-stack-onboarding/16-01-PLAN.md"
       ],
       "verify": [],
-      "handoff_path": ".planning/execution/handoffs/w15-openclaw-docs-and-private-beta/W15-OC-00.md"
+      "handoff_path": ".planning/execution/handoffs/w16-openclaw-whole-stack-onboarding/W16-OC-00.md"
     },
     {
-      "id": "W15-OC-01",
-      "title": "Finalize user/operator docs, troubleshooting/install guidance, and committed OpenAPI output",
-      "status": "completed",
-      "owner": "docs-contract",
+      "id": "W16-OC-01",
+      "title": "Lock the onboarding contract for plugin setup, backend health, shell bootstrap, and required versus optional local services",
+      "status": "in_progress",
+      "owner": "contract",
       "depends_on": [
-        "W15-OC-00"
+        "W16-OC-00"
       ],
       "write_scope": [
-        "docs/openclaw/guides/**",
-        "docs/openclaw/openapi/**",
-        "docs/INSTALLATION.md",
-        "docs/TROUBLESHOOTING.md",
-        "docs/API.md"
+        "src/am_server/app.py",
+        "src/am_server/models.py",
+        "src/am_server/routes/health.py",
+        "desktop_shell/app.py",
+        "desktop_shell/tests/test_app.py"
       ],
       "do_not_touch": [
         "packages/am-openclaw/**",
-        "package.json",
-        "package-lock.json",
-        ".github/workflows/**",
-        "desktop_shell/**",
-        "src/**"
+        "packages/am-temporal-kg/**",
+        "packages/am-sync-neo4j/**",
+        "docs/**",
+        ".github/workflows/**"
       ],
       "verify": [
-        "python -c \"from am_server.app import create_app; spec = create_app().openapi(); assert '/openclaw/memory/search' in spec['paths']; print('openapi ok')\""
+        "python -m pytest desktop_shell/tests/test_app.py -q"
       ],
-      "handoff_path": ".planning/execution/handoffs/w15-openclaw-docs-and-private-beta/W15-OC-01.md"
+      "handoff_path": ".planning/execution/handoffs/w16-openclaw-whole-stack-onboarding/W16-OC-01.md"
     },
     {
-      "id": "W15-OC-02",
-      "title": "Lock package identity, publish/install surfaces, and marketplace preparation artifacts",
-      "status": "completed",
-      "owner": "distribution",
+      "id": "W16-OC-02",
+      "title": "Add plugin-side doctor and setup UX that validates the real backend path before declaring success",
+      "status": "pending",
+      "owner": "plugin-ux",
       "depends_on": [
-        "W15-OC-00"
+        "W16-OC-01"
       ],
       "write_scope": [
-        "packages/am-openclaw/**",
-        "package.json",
-        "package-lock.json",
-        ".github/workflows/ci.yml",
-        ".github/workflows/release.yml",
-        "docs/openclaw/marketplace/**"
+        "packages/am-openclaw/**"
       ],
       "do_not_touch": [
-        "docs/openclaw/guides/**",
-        "docs/openclaw/openapi/**",
-        "docs/openclaw/beta/**",
-        "docs/openclaw/support/**",
+        "src/am_server/**",
         "desktop_shell/**",
-        "src/am_server/**"
+        "packages/am-temporal-kg/**",
+        "packages/am-sync-neo4j/**",
+        "docs/**",
+        ".github/workflows/**"
       ],
       "verify": [
-        "npm run build",
-        "npm run typecheck",
         "npm run build:openclaw",
         "npm run test:openclaw",
-        "npm run typecheck:openclaw",
-        "npm run pack:openclaw"
+        "npm run typecheck:openclaw"
       ],
-      "handoff_path": ".planning/execution/handoffs/w15-openclaw-docs-and-private-beta/W15-OC-02.md"
+      "handoff_path": ".planning/execution/handoffs/w16-openclaw-whole-stack-onboarding/W16-OC-02.md"
     },
     {
-      "id": "W15-OC-03",
-      "title": "Prepare private-beta onboarding, support, and partner-operations runbooks",
-      "status": "completed",
-      "owner": "beta-ops",
+      "id": "W16-OC-03",
+      "title": "Clean up whole-stack bootstrap and temporal-service targeting so local aliases and silent port defaults are no longer required",
+      "status": "pending",
+      "owner": "stack-bootstrap",
       "depends_on": [
-        "W15-OC-00"
+        "W16-OC-01"
       ],
       "write_scope": [
-        "docs/openclaw/beta/**",
-        "docs/openclaw/support/**"
+        "docker-compose.prod.yml",
+        "package.json",
+        "packages/am-temporal-kg/**",
+        "packages/am-sync-neo4j/**",
+        "scripts/**"
       ],
       "do_not_touch": [
         "packages/am-openclaw/**",
-        "package.json",
-        "package-lock.json",
-        ".github/workflows/**",
-        "src/**",
-        "desktop_shell/**"
+        "src/am_server/**",
+        "desktop_shell/**",
+        "docs/**",
+        ".github/workflows/**"
       ],
       "verify": [
-        "Get-ChildItem docs/openclaw/beta, docs/openclaw/support"
+        "npm run build --workspace am-temporal-kg",
+        "npm run typecheck --workspace am-temporal-kg",
+        "npm run build --workspace am-sync-neo4j",
+        "npm run typecheck --workspace am-sync-neo4j",
+        "npm run validate:release-artifacts"
       ],
-      "handoff_path": ".planning/execution/handoffs/w15-openclaw-docs-and-private-beta/W15-OC-03.md"
+      "handoff_path": ".planning/execution/handoffs/w16-openclaw-whole-stack-onboarding/W16-OC-03.md"
     },
     {
-      "id": "W15-OC-04",
-      "title": "Close the docs + private beta integration gate and validate release-ready operator surfaces",
-      "status": "completed",
+      "id": "W16-OC-04",
+      "title": "Rewrite install, troubleshooting, and whole-stack onboarding docs so the supported path matches the validated flow",
+      "status": "pending",
+      "owner": "docs-onboarding",
+      "depends_on": [
+        "W16-OC-01",
+        "W16-OC-02",
+        "W16-OC-03"
+      ],
+      "write_scope": [
+        "docs/openclaw/**",
+        "docs/INSTALLATION.md",
+        "docs/TROUBLESHOOTING.md",
+        "docs/SETUP_FULL_STACK.md",
+        "docs/SPACETIMEDB_OPERATIONS.md"
+      ],
+      "do_not_touch": [
+        "packages/am-openclaw/**",
+        "packages/am-temporal-kg/**",
+        "packages/am-sync-neo4j/**",
+        "src/**",
+        "desktop_shell/**",
+        ".github/workflows/**"
+      ],
+      "verify": [
+        "Get-ChildItem docs/openclaw",
+        "Get-ChildItem docs | Select-String -Pattern 'agentic-memory-openclaw|STDB_URI|doctor'"
+      ],
+      "handoff_path": ".planning/execution/handoffs/w16-openclaw-whole-stack-onboarding/W16-OC-04.md"
+    },
+    {
+      "id": "W16-OC-05",
+      "title": "Close the onboarding integration gate with regression coverage across backend, plugin, dashboard, temporal packages, and release validation",
+      "status": "pending",
       "owner": "orchestrator",
       "depends_on": [
-        "W15-OC-01",
-        "W15-OC-02",
-        "W15-OC-03"
+        "W16-OC-01",
+        "W16-OC-02",
+        "W16-OC-03",
+        "W16-OC-04"
       ],
       "write_scope": [
         ".github/workflows/ci.yml",
         ".github/workflows/release.yml",
-        "docs/openclaw/README.md"
+        "tests/test_am_server.py",
+        "tests/test_openclaw_contract.py"
       ],
       "verify": [
         "python -m pytest tests/test_am_server.py tests/test_openclaw_contract.py desktop_shell/tests/test_app.py -q",
-        "python -m pytest tests/e2e/test_openclaw_e2e.py tests/load/test_openclaw_load.py tests/chaos/test_openclaw_chaos.py -q",
         "npm run build",
         "npm run typecheck",
         "npm run build:openclaw",
@@ -138,16 +165,18 @@
         "npm run build --workspace am-dashboard",
         "npm run test --workspace am-dashboard",
         "npm run typecheck --workspace am-dashboard",
+        "npm run build --workspace am-temporal-kg",
+        "npm run typecheck --workspace am-temporal-kg",
+        "npm run build --workspace am-sync-neo4j",
+        "npm run typecheck --workspace am-sync-neo4j",
         "npm run pack:openclaw",
-        "npm run validate:release-artifacts",
-        "python -c \"from am_server.app import create_app; spec = create_app().openapi(); assert '/openclaw/memory/search' in spec['paths']; print('openapi ok')\""
+        "npm run validate:release-artifacts"
       ],
-      "handoff_path": ".planning/execution/handoffs/w15-openclaw-docs-and-private-beta/W15-OC-04.md"
+      "handoff_path": ".planning/execution/handoffs/w16-openclaw-whole-stack-onboarding/W16-OC-05.md"
     }
   ],
   "merge_gates": [
     "python -m pytest tests/test_am_server.py tests/test_openclaw_contract.py desktop_shell/tests/test_app.py -q",
-    "python -m pytest tests/e2e/test_openclaw_e2e.py tests/load/test_openclaw_load.py tests/chaos/test_openclaw_chaos.py -q",
     "npm run build",
     "npm run typecheck",
     "npm run build:openclaw",
@@ -156,8 +185,11 @@
     "npm run build --workspace am-dashboard",
     "npm run test --workspace am-dashboard",
     "npm run typecheck --workspace am-dashboard",
+    "npm run build --workspace am-temporal-kg",
+    "npm run typecheck --workspace am-temporal-kg",
+    "npm run build --workspace am-sync-neo4j",
+    "npm run typecheck --workspace am-sync-neo4j",
     "npm run pack:openclaw",
-    "npm run validate:release-artifacts",
-    "python -c \"from am_server.app import create_app; spec = create_app().openapi(); assert '/openclaw/memory/search' in spec['paths']; print('openapi ok')\""
+    "npm run validate:release-artifacts"
   ]
 }

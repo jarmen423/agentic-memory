@@ -80,6 +80,13 @@ AI agents get seamless, persistent memory that works regardless of content type 
 - [x] Write the user, operator, and support docs needed to onboard the first 5 private beta partners
 - [x] Keep public beta, hosted multi-tenant auth, SSO, and GA launch collateral deferred until the next follow-on phase
 
+**OpenClaw Whole-Stack Onboarding Wave (`w16-openclaw-whole-stack-onboarding`) — Active in Phase 16:**
+- [ ] Replace implicit local-service assumptions with an explicit, validated whole-stack bootstrap path
+- [ ] Add whole-stack doctor/preflight surfaces for the plugin, backend, Neo4j, and optional temporal services
+- [ ] Remove hardcoded SpacetimeDB port/alias assumptions from scripts and docs so Grafana, SpacetimeDB, and other local services can coexist cleanly
+- [ ] Collapse the current install/docs/runbook story into one supported onboarding path that matches what the code actually validates
+- [ ] Keep public beta, hosted multi-tenant auth, SSO, and GA launch collateral deferred until the onboarding path is credible in practice
+
 ### Out of Scope
 
 - Web UI dashboard — Nice-to-have, not v1 priority
@@ -136,4 +143,4 @@ AI agents get seamless, persistent memory that works regardless of content type 
 | Modular architecture | Each module independently usable, scales to future content types | ✓ Confirmed |
 
 ---
-*Last updated: 2026-04-12 after Phase 15 (OpenClaw docs + private beta) completed and the registry was left as the latest completed snapshot*
+*Last updated: 2026-04-13 after Phase 16 (OpenClaw whole-stack onboarding) was locked as the active follow-on wave*

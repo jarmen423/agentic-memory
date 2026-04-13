@@ -2,8 +2,8 @@
 
 **Project:** Modular Knowledge Graph (Code + Web Research + Conversation Memory)
 **Created:** 2026-03-20
-**Last Updated:** 2026-04-12
-**Status:** Active milestone — Phase 15 OpenClaw docs + private beta is complete. No next delivery track is locked yet. Phase 10 and Phase 11 remain paused but preserved
+**Last Updated:** 2026-04-13
+**Status:** Active milestone — Phase 16 OpenClaw whole-stack onboarding is now the active delivery track. Phase 10 and Phase 11 remain paused but preserved
 
 ---
 
@@ -562,5 +562,50 @@ Plans:
 - marketplace-specific package or listing requirements may differ from the assumptions in the GTM plan
 - private beta readiness includes non-code operational work, so repository completion and partner readiness can drift if not tracked together
 
+### Phase 16: OpenClaw Whole-Stack Onboarding
+
+**Goal:** Convert the current private-beta-prepped OpenClaw stack into a setup experience that real operators can complete without reverse-engineering local ports, saved CLI aliases, optional temporal wiring, or hidden service dependencies.
+
+**Status:** Active
+
+**Plans:** 1 execution plan locked
+
+Plans:
+- [x] 16-01-PLAN.md — OpenClaw whole-stack onboarding wave: archive the completed private-beta registry, lock the onboarding contract, simplify the bootstrap path across plugin/backend/temporal services, consolidate docs, and close with an onboarding-specific integration gate
+
+**Deliverables:**
+- a repo-grounded onboarding contract that explicitly defines which services are required, optional, auto-detected, or unsupported during the default OpenClaw setup path
+- plugin-side doctor/preflight behavior that validates backend reachability and reports actionable failures instead of only writing config
+- local stack/bootstrap cleanup that removes reliance on saved SpacetimeDB aliases and hardcoded port assumptions across temporal scripts and docs
+- consolidated install, troubleshooting, and whole-stack onboarding docs that match the actual validated path
+- planning and execution truth updated so the completed `w15-openclaw-docs-and-private-beta` registry is archived and the onboarding wave becomes the active track
+
+**Success Criteria:**
+- the default onboarding path no longer assumes that local services happen to live on undocumented ports or saved CLI aliases
+- the repo exposes one clear doctor/preflight surface for the OpenClaw plugin and one clear bootstrap story for the backend/local stack
+- SpacetimeDB, Neo4j, Grafana, and related local services can coexist without the current docs/scripts silently pointing at the wrong target
+- install and troubleshooting docs describe one supported path instead of mixing internal/operator-only steps into the user flow
+- merge gates pass:
+  - `python -m pytest tests/test_am_server.py tests/test_openclaw_contract.py desktop_shell/tests/test_app.py -q`
+  - `npm run build`
+  - `npm run typecheck`
+  - `npm run build:openclaw`
+  - `npm run test:openclaw`
+  - `npm run typecheck:openclaw`
+  - `npm run build --workspace am-dashboard`
+  - `npm run test --workspace am-dashboard`
+  - `npm run typecheck --workspace am-dashboard`
+  - `npm run build --workspace am-temporal-kg`
+  - `npm run typecheck --workspace am-temporal-kg`
+  - `npm run build --workspace am-sync-neo4j`
+  - `npm run typecheck --workspace am-sync-neo4j`
+  - `npm run pack:openclaw`
+  - `npm run validate:release-artifacts`
+
+**Key Risks:**
+- onboarding work touches the seam between plugin UX, backend health reporting, temporal scripts, docs, and local stack assumptions, so contract lock must happen before parallel implementation
+- simplifying the happy path can accidentally hide advanced operator controls if required vs optional services are not documented precisely
+- changing default local-stack behavior can break existing internal setups if migration/override behavior is not explicit
+
 ---
-*Last updated: 2026-04-12 after Phase 15 (OpenClaw docs + private beta) completed (total phases: 15)*
+*Last updated: 2026-04-13 after Phase 16 (OpenClaw whole-stack onboarding) was inserted and locked as the active track (total phases: 16)*

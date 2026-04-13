@@ -130,12 +130,23 @@ curl \
   http://127.0.0.1:8765/metrics
 ```
 
+Whole-stack onboarding contract:
+
+```bash
+curl http://127.0.0.1:8765/health/onboarding
+```
+
 What to look for:
 
 - `server`, `mcp`, `openclaw_memory`, and `openclaw_context_engine` components
   should report sane statuses
 - request-id-bearing errors should come back in the shared error envelope if a
   dependency is missing
+- `/health/onboarding` should truthfully distinguish:
+  - backend merely reachable
+  - setup-ready
+  - capture-only-ready
+  - augment-context-ready
 
 ## 5. Install The OpenClaw Plugin
 
@@ -148,10 +159,14 @@ openclaw plugin install agentic-memory-openclaw
 Then configure it against the deployed backend:
 
 ```bash
+openclaw agentic-memory doctor --backend-url http://127.0.0.1:8765
 openclaw agentic-memory setup --backend-url http://127.0.0.1:8765
 ```
 
-The setup command should record:
+`doctor` should pass before `setup` is considered the supported path. `setup`
+now validates the backend onboarding contract before it writes config.
+
+The setup command should then record:
 
 - backend URL
 - API key template or literal value

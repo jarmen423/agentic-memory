@@ -27,8 +27,22 @@ Important identity split:
 ## Configure The Plugin
 
 ```bash
+openclaw agentic-memory doctor --backend-url http://127.0.0.1:8765
 openclaw agentic-memory setup --backend-url http://127.0.0.1:8765
 ```
+
+Recommended order:
+
+1. `openclaw plugin install agentic-memory-openclaw`
+2. `openclaw agentic-memory doctor --backend-url http://127.0.0.1:8765`
+3. `openclaw agentic-memory setup --backend-url http://127.0.0.1:8765`
+
+Why `doctor` comes first:
+
+- it reads the backend onboarding contract from `/health/onboarding`
+- it tells you whether the backend is merely reachable or actually ready
+- `setup` now uses that same contract and can refuse to save config if the
+  requested mode is not honestly ready yet
 
 The setup flow records:
 
@@ -38,6 +52,12 @@ The setup flow records:
 - device id
 - agent id
 - mode: `capture_only` or `augment_context`
+
+If you intentionally want to save config before the backend is ready, use:
+
+```bash
+openclaw agentic-memory setup --backend-url http://127.0.0.1:8765 --allow-degraded
+```
 
 ## Verify The Connection
 

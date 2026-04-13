@@ -17,6 +17,7 @@
 ## Install Surface
 
 - [x] install command locked: `openclaw plugin install agentic-memory-openclaw`
+- [x] doctor command locked: `openclaw agentic-memory doctor`
 - [x] setup command locked: `openclaw agentic-memory setup`
 - [ ] operator docs reconciled so no placeholder package-name text remains
 
@@ -35,5 +36,6 @@
 State clearly in the listing and release notes that:
 
 - the npm artifact is the OpenClaw plugin package
+- the supported first-run path is `install -> doctor -> setup`
 - the backend is configured separately
 - the runtime plugin id inside OpenClaw remains `agentic-memory`

@@ -13,7 +13,8 @@ Ship a repeatable OpenClaw install and backend deployment story that lets a
 small set of operators:
 
 - install the plugin
-- point it at a real backend
+- run a preflight doctor against a real backend
+- save config only after the backend clears that readiness check
 - verify memory search and turn capture
 - recover from the most likely operational failures
 
@@ -66,7 +67,9 @@ docker compose -f docker-compose.prod.yml config
    and `/metrics`.
 4. Publish the npm package only after the repo revision and release gates are green.
 5. Install the plugin into one internal OpenClaw environment first.
-6. Expand to a very small external beta set after smoke testing succeeds.
+6. Run `openclaw agentic-memory doctor --backend-url ...` before the first
+   `setup` on that environment.
+7. Expand to a very small external beta set after smoke testing succeeds.
 
 ## Manual Release Workflow
 
@@ -86,6 +89,7 @@ Why it is manual:
 The package identity is locked:
 
 - install command: `openclaw plugin install agentic-memory-openclaw`
+- doctor command: `openclaw agentic-memory doctor`
 - runtime plugin id: `agentic-memory`
 
 Do block the final npm publish step if the manifest drifts away from that

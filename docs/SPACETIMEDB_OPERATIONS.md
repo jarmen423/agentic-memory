@@ -21,63 +21,55 @@ Required:
 Common values:
 
 ```text
-STDB_URI=http://127.0.0.1:3000
+STDB_URI=http://127.0.0.1:3001
 STDB_MODULE_NAME=agentic-memory-temporal
 STDB_BINDINGS_MODULE=D:\code\agentic-memory\packages\am-temporal-kg\generated-bindings\index.ts
 ```
 
-If you start SpacetimeDB on `3333`, set `STDB_URI=http://127.0.0.1:3333` everywhere.
+Pick the real SpacetimeDB port in your environment and set `STDB_URI`
+explicitly everywhere. Do not rely on a saved `local` alias and do not assume
+`3000` is available.
 
 ## Start the server
 
-Default:
+Example:
 
 ```bash
-spacetime start
+spacetime start --listen-addr 127.0.0.1:3001
 ```
 
-Custom port:
+Then export:
 
-```bash
-spacetime start --listen-addr 127.0.0.1:3333
+```powershell
+$env:STDB_URI="http://127.0.0.1:3001"
 ```
 
 ## Publish the module
 
-Default local server:
-
 ```bash
+$env:STDB_URI="http://127.0.0.1:3001"
 npm run publish:local --workspace am-temporal-kg
 ```
 
-Custom server:
-
-```bash
-cd packages/am-temporal-kg
-spacetime publish --server http://127.0.0.1:3333 --yes --delete-data --module-path . agentic-memory-temporal
-```
+This command now publishes directly to `STDB_URI`; it no longer relies on a
+saved `local` server alias.
 
 ## Generate bindings
 
-Default:
-
 ```bash
+$env:STDB_URI="http://127.0.0.1:3001"
 npm run generate:bindings --workspace am-temporal-kg
 ```
 
-Custom server:
-
-```bash
-cd packages/am-temporal-kg
-spacetime generate agentic-memory-temporal --server http://127.0.0.1:3333 --lang typescript --out-dir ./generated-bindings --module-path .
-```
+The wrapper temporarily points the SpacetimeDB CLI at `STDB_URI` before it
+runs `spacetime generate`, then restores the previous default server.
 
 ## Run the sync worker
 
 From the repo root:
 
 ```powershell
-$env:STDB_URI="http://127.0.0.1:3000"
+$env:STDB_URI="http://127.0.0.1:3001"
 $env:STDB_MODULE_NAME="agentic-memory-temporal"
 $env:STDB_BINDINGS_MODULE="D:\code\agentic-memory\packages\am-temporal-kg\generated-bindings\index.ts"
 npm run start --workspace am-sync-neo4j

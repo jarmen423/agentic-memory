@@ -22,10 +22,12 @@ instead of a hard cutover.
 3. Verify both old and new keys still work during the transition window:
    - `curl -H "Authorization: Bearer <old>" http://127.0.0.1:8765/metrics`
    - `curl -H "Authorization: Bearer <new>" http://127.0.0.1:8765/metrics`
-4. Re-run plugin setup for operators that should move to the new key:
+4. Re-run plugin doctor first for operators that should move to the new key:
+   - `openclaw agentic-memory doctor --backend-url http://127.0.0.1:8765`
+5. Re-run plugin setup after doctor passes:
    - `openclaw agentic-memory setup --backend-url http://127.0.0.1:8765`
-5. After the rollout window, remove the old key from `AM_SERVER_API_KEYS`.
-6. Restart the backend again and verify only the new key works.
+6. After the rollout window, remove the old key from `AM_SERVER_API_KEYS`.
+7. Restart the backend again and verify only the new key works.
 
 ## Validate
 

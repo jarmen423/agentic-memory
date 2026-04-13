@@ -5,6 +5,7 @@
 - npm package: `agentic-memory-openclaw`
 - install command: `openclaw plugin install agentic-memory-openclaw`
 - OpenClaw plugin id after install: `agentic-memory`
+- doctor command after install: `openclaw agentic-memory doctor`
 - setup command after install: `openclaw agentic-memory setup`
 
 ## Short Description
@@ -29,8 +30,9 @@ Minimum operator story:
 
 1. deploy or reach an Agentic Memory backend
 2. install the OpenClaw plugin package
-3. run `openclaw agentic-memory setup`
-4. validate search, ingest, and project commands from OpenClaw
+3. run `openclaw agentic-memory doctor`
+4. run `openclaw agentic-memory setup`
+5. validate search, ingest, and project commands from OpenClaw
 
 ## Supported Modes
 
@@ -47,5 +49,7 @@ Minimum operator story:
   the npm package with the Python backend
 - keep "Agentic Memory" language in the title/summary so the broader product
   brand remains visible
+- call out that the supported operator path is `install -> doctor -> setup`,
+  not install straight into saved config
 - call out that the plugin id stays `agentic-memory` after install because
   OpenClaw config and slot wiring use that stable id

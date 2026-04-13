@@ -84,6 +84,9 @@ errors.
 # Backend liveness
 curl http://127.0.0.1:8765/health
 
+# Whole-stack onboarding contract
+curl http://127.0.0.1:8765/health/onboarding
+
 # OpenClaw-facing detailed health
 curl -H "Authorization: Bearer replace-with-real-rest-key" \
   http://127.0.0.1:8765/openclaw/health/detailed
@@ -95,6 +98,43 @@ Then confirm:
 - `am-server` is running
 - the OpenClaw operator can reach that host/port
 - the backend was started with a real `AM_SERVER_API_KEYS` value
+
+Then run:
+
+```bash
+openclaw agentic-memory doctor --backend-url http://127.0.0.1:8765
+```
+
+If `doctor` fails, fix the reported blocking services before re-running setup.
+
+### `openclaw agentic-memory setup` refuses to save config
+
+**Symptom:** Setup reaches the backend but exits because the requested mode is
+not ready yet.
+
+**Cause:** The backend onboarding contract now distinguishes between:
+
+- backend merely reachable
+- setup ready
+- capture-only ready
+- augment-context ready
+
+**Solution:**
+```bash
+openclaw agentic-memory doctor --backend-url http://127.0.0.1:8765
+```
+
+Typical blocking causes:
+
+- no `AM_SERVER_API_KEYS` configured
+- `openclaw_memory` pipeline is degraded
+- `augment_context` requested while `openclaw_context_engine` is degraded
+
+If you intentionally need to save config before the backend is fully ready:
+
+```bash
+openclaw agentic-memory setup --backend-url http://127.0.0.1:8765 --allow-degraded
+```
 
 ### OpenClaw plugin auth fails with `401` or `403`
 

@@ -15,6 +15,7 @@ Use this index when you need to answer one of these questions quickly:
 - npm package name: `agentic-memory-openclaw`
 - install command: `openclaw plugin install agentic-memory-openclaw`
 - runtime OpenClaw plugin id: `agentic-memory`
+- doctor command: `openclaw agentic-memory doctor`
 - setup command: `openclaw agentic-memory setup`
 
 The npm artifact is the OpenClaw plugin package. Operators still provision or
@@ -23,7 +24,7 @@ connect to a separate Agentic Memory backend.
 ## Recommended Reading Order
 
 1. `docs/openclaw/guides/PRIVATE_BETA_QUICKSTART.md`
-   - shortest supported path from install to first validation
+   - shortest supported path from install to doctor, setup, and first validation
 2. `docs/openclaw/DEPLOYMENT_RUNBOOK.md`
    - backend deployment, health checks, and rollback steps
 3. `docs/openclaw/openapi/README.md`
@@ -86,6 +87,7 @@ This doc set assumes:
 - authenticated `/metrics` and `/openclaw/*` routes already exist
 - the plugin package is ready for controlled beta distribution
 - the runtime plugin id remains stable as `agentic-memory`
+- setup should validate `/health/onboarding` before it claims success
 
 This doc set does not claim:
 

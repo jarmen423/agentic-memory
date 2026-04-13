@@ -24,6 +24,7 @@ The operator path is:
 
 ```bash
 openclaw plugin install agentic-memory-openclaw
+openclaw agentic-memory doctor --backend-url http://127.0.0.1:8765
 openclaw agentic-memory setup --backend-url http://127.0.0.1:8765
 openclaw agentic-memory project status
 ```
@@ -36,6 +37,13 @@ Important distinctions:
   - runtime plugin id used by OpenClaw after install
 - Agentic Memory backend
   - separate service that must already be reachable by the plugin
+
+Important setup behavior:
+
+- `doctor` checks `/health/onboarding` first
+- `setup` now uses that same contract before it writes config
+- the plugin can refuse to save config if the backend is reachable but the
+  required OpenClaw memory path is not honestly ready yet
 
 Use these docs for the beta flow:
 

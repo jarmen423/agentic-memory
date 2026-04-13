@@ -37,19 +37,20 @@ Expected endpoints:
 
 ## 2. Start SpacetimeDB
 
-Default repo examples assume port `3000`:
+Choose an explicit host/port and keep `STDB_URI` aligned with it for every
+later command. Do not rely on a saved `local` alias or assume `3000` is free.
+
+Example using `3001`:
 
 ```bash
-spacetime start
+spacetime start --listen-addr 127.0.0.1:3001
 ```
 
-If you prefer a custom port such as `3333`, start it explicitly:
+Then export the same URI before the publish/generate/sync steps:
 
-```bash
-spacetime start --listen-addr 127.0.0.1:3333
+```powershell
+$env:STDB_URI="http://127.0.0.1:3001"
 ```
-
-If you use a custom port, keep `STDB_URI` aligned with it for every later command.
 
 ## 3. Publish `am-temporal-kg` when needed
 
@@ -62,17 +63,15 @@ Republish when:
 From the repo root:
 
 ```bash
+$env:STDB_URI="http://127.0.0.1:3001"
 npm run publish:local --workspace am-temporal-kg
 npm run generate:bindings --workspace am-temporal-kg
 ```
 
-If you are using a non-default SpacetimeDB server, use the direct CLI form instead:
-
-```bash
-cd packages/am-temporal-kg
-spacetime publish --server http://127.0.0.1:3333 --yes --delete-data --module-path . agentic-memory-temporal
-spacetime generate agentic-memory-temporal --server http://127.0.0.1:3333 --lang typescript --out-dir ./generated-bindings --module-path .
-```
+Those workspace scripts now require `STDB_URI` and handle the SpacetimeDB CLI
+server targeting for you. `spacetime generate` does not support `--server`, so
+do not copy older docs that show `spacetime generate --server ...`; that form
+is not valid.
 
 ## 4. Start `am-sync-neo4j` when the scenario needs shadow sync
 
@@ -88,7 +87,7 @@ Set:
 Example:
 
 ```powershell
-$env:STDB_URI="http://127.0.0.1:3000"
+$env:STDB_URI="http://127.0.0.1:3001"
 $env:STDB_MODULE_NAME="agentic-memory-temporal"
 $env:STDB_BINDINGS_MODULE="D:\code\agentic-memory\packages\am-temporal-kg\generated-bindings\index.ts"
 npm run start --workspace am-sync-neo4j
@@ -165,13 +164,10 @@ Use this order:
 ## Common failures
 
 - `Couldn't connect to 127.0.0.1:7687`
-  Neo4j is not up yet, or Bolt is not bound.
-
+Neo4j is not up yet, or Bolt is not bound.
 - `{"results":[]}` on a conversation query
-  Check `project_id`, `as_of`, and whether the turn was ingested under a valid conversation `source_key`.
-
+Check `project_id`, `as_of`, and whether the turn was ingested under a valid conversation `source_key`.
 - provider auth failures on ingest
-  Check the embedding provider key for the module and the extraction provider key separately.
-
+Check the embedding provider key for the module and the extraction provider key separately.
 - temporal data not appearing
-  Check `STDB_URI`, module publish state, generated bindings, and whether `am-sync-neo4j` is running for the scenario you are testing.
+Check `STDB_URI`, module publish state, generated bindings, and whether `am-sync-neo4j` is running for the scenario you are testing.

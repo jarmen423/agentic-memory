@@ -9,9 +9,10 @@ One partner is considered onboarded when all of the following are true:
 
 1. their backend is reachable and healthy
 2. the OpenClaw plugin installs successfully
-3. `openclaw agentic-memory setup` completes
-4. `openclaw agentic-memory project status` succeeds
-5. the backend records at least:
+3. `openclaw agentic-memory doctor` reports the requested mode ready
+4. `openclaw agentic-memory setup` completes
+5. `openclaw agentic-memory project status` succeeds
+6. the backend records at least:
    - one `/openclaw/session/register`
    - one `/openclaw/memory/search`
    - one `/openclaw/memory/ingest-turn`
@@ -62,8 +63,13 @@ openclaw plugin install agentic-memory-openclaw
 Configure it:
 
 ```bash
+openclaw agentic-memory doctor --backend-url http://127.0.0.1:8765
 openclaw agentic-memory setup --backend-url http://127.0.0.1:8765
 ```
+
+If `doctor` says the backend is not ready, stop there and fix the blocking
+services before proceeding. Do not count a partner as onboarded merely because
+the backend answered `/health`.
 
 Important identity split:
 

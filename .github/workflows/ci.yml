@@ -115,6 +115,34 @@ jobs:
           OPENAI_API_KEY: sk-test-key
         run: pytest -m integration tests/
 
+  openclaw-docs-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Verify private beta documentation bundle exists
+        run: |
+          test -f docs/openclaw/README.md
+          test -f docs/openclaw/guides/PRIVATE_BETA_QUICKSTART.md
+          test -f docs/openclaw/openapi/README.md
+          test -f docs/openclaw/openapi/agentic-memory-openclaw.openapi.json
+          test -f docs/openclaw/beta/README.md
+          test -f docs/openclaw/support/README.md
+          test -f docs/openclaw/marketplace/PUBLISHING_CHECKLIST.md
+
+      - name: Validate OpenClaw OpenAPI contract against the live app
+        run: python -c "from am_server.app import create_app; spec = create_app().openapi(); assert '/openclaw/memory/search' in spec['paths']; print('openapi ok')"
+
   openclaw-typescript:
     runs-on: ubuntu-latest
     env:

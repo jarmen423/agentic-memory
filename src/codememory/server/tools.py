@@ -1,45 +1,24 @@
-"""
-MCP tool definitions and code-graph query logic for the codememory server.
+"""MCP tool registration and graph-backed helpers for the CodeMemory server.
 
-Extended:
-    This module defines the public API surface that AI agents see when they
-    connect to the codememory MCP server. It contains two distinct layers:
+Defines two layers:
 
-    1. Toolkit class — A pure-Python helper that wraps KnowledgeGraphBuilder
-       queries and formats results as human/LLM-readable Markdown strings.
-       Used by app.py MCP tool registrations for code and git queries.
+* **Toolkit** — Synchronous helpers around ``KnowledgeGraphBuilder`` that return
+  Markdown strings (usable from tests or ``app.py`` without starting MCP).
+* **Registration helpers** — ``register_conversation_tools`` and
+  ``register_schedule_tools`` attach async MCP tools: conversation
+  search/context/add-message, plus recurring research schedules (Brave + Groq +
+  Neo4j) when credentials exist.
 
-    2. register_* functions — Functions that register MCP tool handlers onto a
-       FastMCP instance at server startup. Each decorated inner function becomes
-       a callable tool visible to agents over the MCP protocol.
+Conversation search uses Neo4j ``chat_embeddings`` first, optionally enriches via
+``TemporalBridge`` when project-scoped seeds exist, and falls back to
+``CONTAINS`` text matching if embedding fails.
 
-    Search strategy for conversation tools:
-      - Primary path: vector search via Neo4j ``chat_embeddings`` index.
-      - Temporal path: if a ``TemporalBridge`` is available and seed entities
-        can be extracted, results are enriched via the temporal knowledge graph.
-      - Fallback: deterministic ``toLower CONTAINS`` text search when embedding
-        or the temporal layer is unavailable.
+Note:
+    Tool schemas and names are defined alongside decorators here and in
+    ``codememory.server.app``; this module is part of the agent-facing contract.
 
-Role:
-    This file IS the MCP tool contract. Any tool an agent can call is
-    registered here or in app.py using the same pattern. Changes here directly
-    affect what agents can do with memory.
-
-Dependencies:
-    - codememory.ingestion.graph.KnowledgeGraphBuilder (code/git graph ops)
-    - codememory.chat.pipeline.ConversationIngestionPipeline (conversation R/W)
-    - codememory.web.pipeline.ResearchIngestionPipeline (web research R/W)
-    - codememory.core.scheduler.ResearchScheduler (APScheduler-backed cron jobs)
-    - codememory.temporal.bridge.TemporalBridge (temporal knowledge graph)
-    - Neo4j vector index ``chat_embeddings`` (conversation semantic search)
-    - Environment variables: NEO4J_URI, NEO4J_USER/NEO4J_USERNAME,
-      NEO4J_PASSWORD, BRAVE_SEARCH_API_KEY
-
-Key Technologies:
-    - Model Context Protocol (MCP) via FastMCP ``@mcp.tool`` decorator
-    - Neo4j CALL db.index.vector.queryNodes for ANN vector search
-    - lru_cache singletons for pipeline and scheduler instances (one per process)
-    - asyncio + run_in_executor to make synchronous Neo4j calls non-blocking
+See Also:
+    ``codememory.server.app`` for code, git, research ingestion, and unified search tools.
 """
 
 from typing import Any, Dict, List, Optional
@@ -73,7 +52,7 @@ logger = logging.getLogger(__name__)
 
 
 def _filter_rows_as_of(rows: list[dict[str, Any]], as_of: str | None) -> list[dict[str, Any]]:
-    """Apply the Phase 7 ingested_at cutoff when provided."""
+    """Return rows whose ``ingested_at`` is on or before ``as_of`` (string compare)."""
     if as_of is None:
         return rows
     return [row for row in rows if (row.get("ingested_at") or "") <= as_of]
@@ -88,7 +67,7 @@ def _vector_conversation_search(
     role: str | None,
     limit: int,
 ) -> list[dict[str, Any]]:
-    """Baseline conversation vector search with seed metadata."""
+    """Run ``chat_embeddings`` vector query with optional project and role filters."""
     query_embedding = embedder.embed(query)
     with conn.session() as session:
         cypher = (
@@ -128,7 +107,7 @@ def _text_conversation_search(
     role: str | None,
     limit: int,
 ) -> list[dict[str, Any]]:
-    """Existing deterministic text fallback for conversation search."""
+    """Substring search on conversation turn content when vector search is unavailable."""
     with conn.session() as session:
         text_cypher = (
             "MATCH (n:Memory:Conversation:Turn) "
@@ -163,7 +142,7 @@ def _fetch_conversation_turn(
     session_id: str,
     turn_index: int,
 ) -> dict[str, Any] | None:
-    """Hydrate one conversation turn by stable session/turn identity."""
+    """Load a single ``Memory:Conversation:Turn`` by ``session_id`` and ``turn_index``."""
     with conn.session() as session:
         result = session.run(
             (
@@ -191,7 +170,7 @@ def _fetch_conversation_context_window(
     turn_index: int,
     as_of: str | None,
 ) -> list[dict[str, Any]]:
-    """Fetch the immediate surrounding turns for one matched turn."""
+    """Return previous and next turns in the same session (excluding the anchor turn)."""
     with conn.session() as session:
         ctx_result = session.run(
             (
@@ -222,7 +201,7 @@ def _hydrate_temporal_conversation_results(
     role: str | None,
     as_of: str | None,
 ) -> list[dict[str, Any]]:
-    """Resolve temporal evidence back to conversation turns."""
+    """Map temporal ``conversation_turn`` evidence rows to hydrated Neo4j turns."""
     hydrated: list[dict[str, Any]] = []
     seen: set[tuple[str, int]] = set()
 

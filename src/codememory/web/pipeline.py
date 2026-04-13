@@ -1,9 +1,16 @@
-"""Research ingestion pipeline — report and finding paths.
+"""Research ingestion pipeline: reports, chunks, findings, and citations.
 
-ResearchIngestionPipeline subclasses BaseIngestionPipeline to implement
-two-branch ingest routing:
-- type="report": Report parent (no embed) + Chunk children (embedded)
-- type="finding": Single Finding node (embedded) + Source MERGE + CITES
+``ResearchIngestionPipeline`` subclasses ``BaseIngestionPipeline`` and routes on
+``source["type"]``:
+
+* ``report``: Extract entities on the full body → write ``Report`` parent
+  (no embedding) → markdown chunk → embed each ``Chunk`` → temporal edges and
+  optional claims.
+* ``finding``: Embed atomic text → ``Finding`` node → ``Source`` rows and
+  ``CITES`` for each citation.
+
+Source keys ``deep_research_agent`` and ``web_crawl4ai`` are registered at
+import time for label resolution via the global registry.
 """
 
 import hashlib
@@ -58,6 +65,8 @@ class ResearchIngestionPipeline(BaseIngestionPipeline):
             entity_extractor: Configured EntityExtractionService (Groq).
             claim_extractor: Optional ClaimExtractionService. If omitted,
                 mirrors the configured entity extraction provider/model.
+            temporal_bridge: Optional ``TemporalBridge`` for best-effort shadow
+                relation/claim writes during report ingestion.
         """
         super().__init__(connection_manager)
         self._embedder = embedding_service
@@ -159,6 +168,7 @@ class ResearchIngestionPipeline(BaseIngestionPipeline):
         project_id = source["project_id"]
         session_id = source["session_id"]
 
+        # Report pipeline — stage 1: one LLM pass for entities over the entire document.
         # 1. Entity extraction on full content (one call)
         entities = self._extractor.extract(content)
         entity_names = [e["name"] for e in entities]
@@ -181,11 +191,13 @@ class ResearchIngestionPipeline(BaseIngestionPipeline):
         }
         self._writer.write_report_node(report_props)
 
+        # Report pipeline — stage 2: normalize → fixed-policy chunk list for per-chunk embeds.
         # 3. Normalize to markdown and chunk
         raw = RawContent(text=content, format=source.get("format", "markdown"))
         markdown = _to_markdown(raw)
         chunks = chunk_markdown(markdown)
 
+        # Report pipeline — stage 3: persist vectors + structural edges (HAS_CHUNK / PART_OF).
         # 4-6. Embed and write each chunk; wire HAS_CHUNK and PART_OF
         chunk_source_key = "web_crawl4ai"
         chunk_shadow_sources: list[tuple[str, str, str]] = []
@@ -339,6 +351,7 @@ class ResearchIngestionPipeline(BaseIngestionPipeline):
         """
         now = self._now()
         text = source["content"]
+        # Finding pipeline: deterministic MERGE key is hash of text (session-agnostic).
         # Finding dedup is global on content alone (not session-scoped per CONTEXT.md)
         content_hash = self._content_hash(text)
         source_key = "deep_research_agent"

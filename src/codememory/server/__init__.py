@@ -1,31 +1,21 @@
-"""
-MCP server package for the codememory memory system.
+"""FastMCP server subpackage for CodeMemory.
 
-Extended:
-    This subpackage contains everything needed to run the MCP server that
-    exposes memory tools to AI agents and IDE plugins. The server is built on
-    FastMCP and registers tools for code search, conversation retrieval, web
-    research scheduling, and telemetry-annotated tool tracing.
+Hosts the Model Context Protocol (MCP) surface that agents use to query and
+update the Neo4j-backed memory graph. Implementation is split between:
 
-    The two primary entry points within this package are:
-      - ``app.py``   — FastMCP server instance, tool registrations, and
-                       graph/telemetry initialization logic.
-      - ``tools.py`` — MCP tool implementations and the Toolkit helper class
-                       that backs code-graph queries.
+* ``codememory.server.app`` — FastMCP instance, graph lifecycle, code/git/research
+  tools, rate limiting, and telemetry hooks.
+* ``codememory.server.tools`` — Conversation MCP tools, research scheduler
+  registration, and the ``Toolkit`` helper for graph-backed string formatting.
 
-Role:
-    Acts as the protocol boundary between the Neo4j-backed memory graph and
-    AI agents. All agent-facing reads and writes flow through the tools defined
-    here; direct Neo4j access is never exposed to agents.
+Agents never receive raw Cypher or Bolt access; tools enforce the supported
+operations and response shapes.
 
-Dependencies:
-    - FastMCP (MCP server framework)
-    - codememory.ingestion (graph and pipeline objects)
-    - codememory.core (connection, embedding, entity extraction)
-    - codememory.telemetry (SQLite tool-call telemetry)
+Note:
+    Import ``app`` for the running server (``mcp`` instance and ``run_server``)
+    or ``tools`` for registration helpers and shared search utilities.
 
-Key Technologies:
-    - Model Context Protocol (MCP)
-    - Neo4j (graph + vector store)
-    - APScheduler (recurring research schedules, via ResearchScheduler)
+See Also:
+    ``codememory.server.unified_search`` for cross-module ranked search used by
+    ``search_all_memory``.
 """

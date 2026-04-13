@@ -1,7 +1,14 @@
-"""
-File Watcher for Agentic Memory.
+"""Filesystem watcher: incremental code-graph ingestion after initial pipeline.
 
-Monitors a codebase for file changes and incrementally updates the knowledge graph.
+Uses Watchdog to mirror edits into Neo4j between full ``run_pipeline`` runs.
+Each supported file event triggers a **narrow replay** of Pass-2-style work:
+refresh the ``File`` node hash, replace ``DEFINES``/``Chunk`` data for that path,
+and rebuild ``IMPORTS`` edges from that file. Call-graph edges are not updated
+per file (full Pass 4 still requires a repo-wide scan).
+
+Typical CLI flow:
+    ``start_continuous_watch`` runs Pass 0 + optional ``run_pipeline``, then
+    blocks while ``CodeChangeHandler`` applies debounced incremental updates.
 """
 
 import os
@@ -63,6 +70,7 @@ class CodeChangeHandler(FileSystemEventHandler):
 
         path = Path(event.src_path)
 
+        # Incremental ingestion path: extension filter → ignore rules → debounce → re-ingest one file.
         # Check file extension
         if path.suffix not in self.supported_extensions:
             return
@@ -348,7 +356,7 @@ def start_continuous_watch(
         supported_extensions: File extensions to process
         initial_scan: Whether to run full pipeline before watching (default: True)
     """
-    # Init Builder
+    # Watcher bootstrap: shared KnowledgeGraphBuilder drives both full pipeline and per-file replay.
     builder = KnowledgeGraphBuilder(
         uri=neo4j_uri,
         user=neo4j_user,
@@ -360,7 +368,7 @@ def start_continuous_watch(
         ignore_patterns=ignore_patterns,
     )
 
-    # Run initial setup
+    # Pass 0 always (constraints/indexes); optional full 4-pass baseline before incremental mode.
     logger.info("🛠️  Setting up Database Indexes...")
     builder.setup_database()
 

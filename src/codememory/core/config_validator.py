@@ -1,7 +1,9 @@
-"""Config validator for Agentic Memory embedding configuration.
+"""Startup guardrails: embedding provider names and vector widths vs Neo4j.
 
-Catches embedding dimension mismatches between module config and the expected
-vector index dimensions at startup, before any costly ingestion runs.
+`validate_embedding_config` walks ``config["modules"]`` and compares each module's
+``embedding_provider`` / ``embedding_dimensions`` to `EmbeddingService.PROVIDERS` and
+documented index widths. Catching mistakes here avoids failed writes or query errors
+after large embedding batches (see `ConnectionManager.setup_database`).
 """
 
 import logging
@@ -11,8 +13,7 @@ from codememory.core.embedding import EmbeddingService
 
 logger = logging.getLogger(__name__)
 
-# Maps module name to its expected vector index dimensions.
-# These match the Neo4j vector index definitions in ConnectionManager.setup_database().
+# Expected vector dimensions per first-class module; keep in sync with Neo4j DDL in ConnectionManager.
 LABEL_DIMENSION_MAP: dict[str, int] = {
     "code": 3072,   # OpenAI text-embedding-3-large — :Memory:Code vector index
     "web": 3072,    # Gemini gemini-embedding-2-preview default — :Memory:Research vector index

@@ -1,7 +1,8 @@
-"""Provider-dispatching embedding service.
+"""Multi-provider text embeddings (OpenAI, Gemini, Nemotron).
 
-Wraps OpenAI, Gemini, and Nemotron behind a single .embed() interface.
-Each ingestion module instantiates its own EmbeddingService with the right provider.
+`EmbeddingService` normalizes single/batch embedding calls and dimension parameters
+so ingestion code matches Neo4j vector index widths from `ConnectionManager.setup_database`.
+Gemini calls use an internal rate limiter to reduce 429s during bulk embeds.
 """
 
 import logging
@@ -42,19 +43,10 @@ class _GeminiRateLimiter:
 
 
 class EmbeddingService:
-    """Provider-dispatching embedding service.
+    """Dispatch ``embed`` / ``embed_batch`` to the configured provider SDK.
 
-    Wraps OpenAI, Gemini, and Nemotron behind a single .embed() interface.
-    Each ingestion module instantiates its own EmbeddingService with the right provider.
-
-    Args:
-        provider: One of 'openai', 'gemini', 'nemotron'.
-        api_key: API key for the selected provider.
-        base_url: Optional base URL override (used for Nemotron custom endpoints).
-        output_dimensions: Optional dimension override. Defaults to provider's standard.
-
-    Raises:
-        ValueError: If provider is not one of the supported providers.
+    Provider defaults (model + vector width) live in ``PROVIDERS`` and must stay
+    aligned with Neo4j vector index definitions and :mod:`codememory.core.config_validator`.
     """
 
     PROVIDERS: dict[str, dict[str, Any]] = {

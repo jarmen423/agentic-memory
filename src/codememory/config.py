@@ -1,7 +1,23 @@
-"""
-Configuration management for Agentic Memory.
+"""Per-repository configuration for CodeMemory (``.codememory/``).
 
-Handles per-repository configuration stored in .codememory/ directory.
+Reads and writes ``.codememory/config.json``, merges user values with
+``DEFAULT_CONFIG`` so new keys get safe defaults, and resolves secrets and
+connection strings from environment variables when files omit them. Also
+manages ``.codememory/.graphignore`` for indexing exclusions.
+
+Typical on-disk layout::
+
+    <repo_root>/.codememory/
+        config.json      # Neo4j, embeddings, indexing, git, modules, etc.
+        .graphignore     # Optional path patterns excluded from the graph
+
+The ``Config`` class is constructed with a repository root and exposes load/save
+plus typed accessors (Neo4j, OpenAI, per-module embedding settings, extraction
+LLM, git).
+
+Attributes:
+    DEFAULT_CONFIG: Deep dict of factory defaults merged on load; not mutated
+        by callers—use ``Config.load`` / ``Config.save`` for I/O.
 """
 
 import os
@@ -98,14 +114,25 @@ DEFAULT_CONFIG = {
 
 
 class Config:
-    """Manages Agentic Memory configuration for a repository."""
+    """Load, merge, and persist CodeMemory settings for one repository.
 
-    def __init__(self, repo_root: Path):
-        """
-        Initialize config for a repository.
+    All paths are anchored at ``repo_root``; ``config_file`` is
+    ``<repo_root>/.codememory/config.json`` and ``graphignore_file`` is
+    ``<repo_root>/.codememory/.graphignore``.
+
+    Attributes:
+        repo_root: Absolute or resolved repository root directory.
+        config_dir: ``.codememory`` directory under the repo root.
+        config_file: JSON configuration path.
+        graphignore_file: Ignore patterns file for the indexer.
+    """
+
+    def __init__(self, repo_root: Path) -> None:
+        """Create a config handle for ``repo_root``.
 
         Args:
-            repo_root: Path to the repository root
+            repo_root: Root of the Git working tree (or project root) that
+                contains or will contain ``.codememory/``.
         """
         self.repo_root = repo_root
         self.config_dir = repo_root / ".codememory"
@@ -113,11 +140,20 @@ class Config:
         self.graphignore_file = self.config_dir / ".graphignore"
 
     def exists(self) -> bool:
-        """Check if config exists for this repo."""
+        """Return True if ``config_file`` is present on disk."""
         return self.config_file.exists()
 
     def load(self) -> Dict[str, Any]:
-        """Load config from file, or return defaults if not exists."""
+        """Load JSON config merged with defaults, or return a deep copy of defaults.
+
+        Returns:
+            Merged configuration dict (Neo4j, providers, indexing, git, modules,
+            etc.).
+
+        Raises:
+            RuntimeError: If the file exists but is not valid JSON or cannot be
+                read.
+        """
         if not self.exists():
             return copy.deepcopy(DEFAULT_CONFIG)
 
@@ -130,7 +166,15 @@ class Config:
             raise RuntimeError(f"Failed to load config from {self.config_file}: {e}")
 
     def save(self, config: Dict[str, Any]) -> None:
-        """Save config to file."""
+        """Persist ``config`` to ``config_file`` with normalized empty API keys.
+
+        Empty string API key fields are written as JSON null so the next load
+        falls back to environment variables.
+
+        Args:
+            config: Full configuration dict to serialize (typically from
+                ``load`` after edits).
+        """
         self.config_dir.mkdir(exist_ok=True)
         payload = copy.deepcopy(config)
 
@@ -146,7 +190,15 @@ class Config:
             json.dump(payload, f, indent=2)
 
     def ensure_graphignore(self, ignore_dirs: Optional[list[str]] = None) -> None:
-        """Create .graphignore with sensible defaults if it does not exist."""
+        """Create ``.graphignore`` with defaults if the file is missing.
+
+        Uses ``ignore_dirs`` if provided; otherwise reads ``indexing.ignore_dirs``
+        from the loaded config. Idempotent when the file already exists.
+
+        Args:
+            ignore_dirs: Optional directory names to write as ignore patterns;
+                trailing slashes are added per line.
+        """
         if self.graphignore_file.exists():
             return
 
@@ -174,7 +226,11 @@ class Config:
             f.write("\n".join(lines).rstrip() + "\n")
 
     def get_graphignore_patterns(self) -> list[str]:
-        """Load non-empty, non-comment patterns from .graphignore."""
+        """Return active patterns from ``graphignore_file``, skipping blanks and ``#`` comments.
+
+        Returns:
+            List of pattern strings, or an empty list if the file is missing.
+        """
         if not self.graphignore_file.exists():
             return []
         patterns: list[str] = []
@@ -187,11 +243,26 @@ class Config:
         return patterns
 
     def _merge_defaults(self, config: Dict[str, Any]) -> Dict[str, Any]:
-        """Merge user config with defaults."""
+        """Deep-merge ``config`` onto a copy of ``DEFAULT_CONFIG``.
+
+        Args:
+            config: User-supplied dict from JSON.
+
+        Returns:
+            Merged dict with all default keys present.
+        """
         return self._deep_merge_dicts(copy.deepcopy(DEFAULT_CONFIG), config)
 
     def _deep_merge_dicts(self, base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
-        """Recursively merge nested dictionaries."""
+        """Recursively merge ``overrides`` into ``base`` (dict values merge, scalars replace).
+
+        Args:
+            base: Dict to mutate and return.
+            overrides: Shallow or nested overrides from the user file.
+
+        Returns:
+            The same ``base`` object after merge.
+        """
         for key, value in overrides.items():
             if key in base and isinstance(base[key], dict) and isinstance(value, dict):
                 base[key] = self._deep_merge_dicts(base[key], value)
@@ -200,7 +271,14 @@ class Config:
         return base
 
     def get_neo4j_config(self) -> Dict[str, str]:
-        """Get Neo4j connection config, with env var fallbacks."""
+        """Resolve Neo4j Bolt settings from config and environment.
+
+        Environment variables override file values: ``NEO4J_URI``,
+        ``NEO4J_USER`` or ``NEO4J_USERNAME``, ``NEO4J_PASSWORD``.
+
+        Returns:
+            Dict with keys ``uri``, ``user``, ``password``.
+        """
         config = self.load()
         neo4j = config["neo4j"]
         neo4j_user = os.getenv("NEO4J_USER") or os.getenv("NEO4J_USERNAME")
@@ -211,7 +289,11 @@ class Config:
         }
 
     def get_openai_key(self) -> Optional[str]:
-        """Get OpenAI API key, with env var fallback."""
+        """Return OpenAI API key from config, else ``OPENAI_API_KEY`` env.
+
+        Returns:
+            Non-empty key string, or None if unset.
+        """
         config = self.load()
         # Priority: config file > env var
         key = config["openai"].get("api_key")
@@ -231,7 +313,15 @@ class Config:
         return self.load()["modules"][module_name]
 
     def get_embedding_provider_config(self, provider_name: str) -> Dict[str, Any]:
-        """Get provider-level embedding config such as API keys and base URLs."""
+        """Return provider-scoped settings (keys, base URLs) for embedding calls.
+
+        Args:
+            provider_name: One of ``openai``, ``gemini``, ``nemotron`` (case
+                insensitive); unknown names yield ``{}``.
+
+        Returns:
+            A shallow copy of the matching subsection of the loaded config.
+        """
         provider = provider_name.strip().lower()
         config = self.load()
         if provider == "openai":
@@ -304,15 +394,20 @@ class Config:
         return list(self.load()["entity_types"])
 
     def get_indexing_config(self) -> Dict[str, Any]:
-        """Get indexing configuration."""
+        """Return the ``indexing`` subsection (ignore lists, extensions, etc.)."""
         return self.load()["indexing"]
 
     def get_git_config(self) -> Dict[str, Any]:
-        """Get git graph configuration."""
+        """Return the ``git`` subsection (ingestion flags, checkpoint, GitHub)."""
         return self.load()["git"]
 
     def save_git_config(self, git_config: Dict[str, Any]) -> None:
-        """Merge and persist git graph configuration."""
+        """Deep-merge ``git_config`` into stored git settings and save.
+
+        Args:
+            git_config: Partial or full git dict to merge over existing config
+                and defaults.
+        """
         config = self.load()
         merged_git = self._deep_merge_dicts(
             copy.deepcopy(DEFAULT_CONFIG["git"]),
@@ -323,14 +418,16 @@ class Config:
 
 
 def find_repo_root(start_path: Path = None) -> Optional[Path]:
-    """
-    Find the repository root by looking for .codememory directory.
+    """Walk parents from ``start_path`` for ``.codememory``, then ``.git``, else cwd.
 
     Args:
-        start_path: Path to start searching from (defaults to cwd)
+        start_path: Directory to begin the upward walk; defaults to
+            ``Path.cwd()``.
 
     Returns:
-        Path to repo root, or None if not found
+        The nearest ancestor of ``start_path`` that contains ``.codememory``;
+        if none, the nearest ancestor that contains ``.git``; if still none,
+        ``start_path.resolve()`` as a deterministic fallback.
     """
     start_path = start_path or Path.cwd()
     current = start_path.resolve()
@@ -354,11 +451,13 @@ def find_repo_root(start_path: Path = None) -> Optional[Path]:
 
 
 def load_config_for_current_dir() -> Optional[Config]:
-    """
-    Load config for the current directory.
+    """Build a ``Config`` for the current working directory when initialized.
+
+    Uses ``find_repo_root`` and requires ``<repo>/.codememory`` to exist.
 
     Returns:
-        Config object, or None if not in a codememory-initialized repo
+        ``Config`` instance when ``.codememory`` is present under the discovered
+        root; otherwise ``None``.
     """
     repo_root = find_repo_root()
     codememory_dir = repo_root / ".codememory"

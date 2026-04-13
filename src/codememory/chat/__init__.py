@@ -1,8 +1,10 @@
-"""Agent Conversation Memory module.
+"""Conversation memory: turn-by-turn chat ingestion into Neo4j.
 
-Exposes ConversationIngestionPipeline and triggers source registry
-registration for all four chat ingest paths (chat_mcp, chat_proxy,
-chat_ext, chat_cli).
+Importing this package loads ``codememory.chat.pipeline``, which registers
+conversation sources (``chat_mcp``, ``chat_proxy``, ``chat_ext``, ``chat_cli``,
+and extensions) with the global source registry. The primary entry point is
+``ConversationIngestionPipeline`` — one ``ingest()`` call per turn, with
+session grouping and optional temporal shadow writes.
 """
 
 from codememory.chat.pipeline import ConversationIngestionPipeline

@@ -1,4 +1,9 @@
-"""Shared retry helpers for transient provider and network failures."""
+"""Small retry loop for embedding/LLM HTTP clients and similar call sites.
+
+`openai` and `httpx` errors that represent timeouts, connection loss, or rate limits
+are classified via `is_transient_provider_error` so `retry_transient` can re-run a
+zero-argument callable without wrapping business logic in nested try/except.
+"""
 
 from __future__ import annotations
 
@@ -13,7 +18,7 @@ T = TypeVar("T")
 
 
 def is_transient_provider_error(exc: Exception) -> bool:
-    """Return whether an exception is likely transient and safe to retry."""
+    """True if ``exc`` looks like a network blip or provider throttle (safe to retry once or twice)."""
     if isinstance(
         exc,
         (
@@ -37,7 +42,20 @@ def retry_transient(
     attempts: int = 2,
     delay_seconds: float = 0.0,
 ) -> T:
-    """Retry one callable only when the thrown exception is transient."""
+    """Run ``operation``; on failure, retry if :func:`is_transient_provider_error` agrees.
+
+    Args:
+        operation: Nullary callable (e.g. lambda embedding a single chunk).
+        attempts: Total tries including the first; must be >= 1.
+        delay_seconds: Optional sleep between attempts (only after a transient failure).
+
+    Returns:
+        The value returned by ``operation``.
+
+    Raises:
+        ValueError: If ``attempts`` < 1.
+        Exception: The last exception if non-transient or retries exhausted.
+    """
     if attempts < 1:
         raise ValueError("attempts must be >= 1")
 

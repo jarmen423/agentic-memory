@@ -1,18 +1,20 @@
-"""Tree-sitter-backed code extraction for the code-memory graph.
+"""Tree-sitter structural extraction for code graph ingestion.
 
-This module is the canonical structural extraction layer for code ingestion.
-`KnowledgeGraphBuilder` should ask this parser for definitions, imports, and
-per-function calls instead of re-implementing language-specific heuristics in
-multiple places.
+This module is the canonical place to turn source text into a single normalized
+dict per file. :class:`~agentic_memory.ingestion.graph.KnowledgeGraphBuilder`
+should consume these results for class/function definitions, import module
+names, and per-function call names instead of duplicating language-specific
+logic.
 
-Why this exists:
-- The old graph builder parsed each file in several different ways.
-- Import extraction and call extraction used different logic paths.
-- The call graph was especially noisy because file-level calls were copied onto
-  every function in the file.
+Consolidating extraction here keeps import lists and call lists aligned and
+avoids attributing nested or inner-scope calls to outer functions (walk helpers
+skip nested definitions when collecting calls).
 
-The parser now returns a single structured view of one source file so graph
-ingestion can decide which relationships are safe to write.
+Typical consumer workflow:
+    1. Instantiate :class:`CodeParser` once (parsers are cached per extension).
+    2. Call :meth:`CodeParser.parse_file` with UTF-8 source and a file suffix.
+    3. Read ``classes``, ``functions`` (each with ``calls``), ``imports``,
+       file-level ``calls``, optional Python ``env_vars``, and ``diagnostics``.
 """
 
 from __future__ import annotations
@@ -28,20 +30,24 @@ import tree_sitter_python
 logger = logging.getLogger(__name__)
 
 class CodeParser:
-    """Parse Python and JS-like source files into a normalized structure.
+    """Parse Python and JavaScript-family sources into graph-ingestion records.
+
+    Responsibilities:
+        - Walk the Tree-sitter AST for one file and emit class bodies, function
+          bodies (with qualified names when inside a class), import specifiers,
+          and callee names scoped to each function.
+        - For ``.ts`` / ``.tsx``, apply a small regex rescue pass for typed
+          variable arrow functions that the JS grammar often misparses as JSX,
+          so downstream call analysis still sees stable function identities.
 
     Supported extensions:
-    - `.py`
-    - `.js`
-    - `.jsx`
-    - `.ts`
-    - `.tsx`
+        ``.py``, ``.js``, ``.jsx``, ``.ts``, ``.tsx``. TypeScript uses the
+        JavaScript grammar in this repository; extraction is best-effort for
+        TS-only syntax beyond the supported declaration shapes.
 
-    TypeScript and TSX currently use the JavaScript grammar available in this
-    repo. That means extraction is "best effort" for TS-only syntax, but the
-    parser still covers the common declaration shapes we need for graph quality:
-    class methods, function declarations, arrow functions assigned to names, and
-    function expressions assigned to names.
+    Attributes:
+        parsers: Mapping of file suffix to a configured Tree-sitter ``Parser``.
+        languages: Mapping of suffix to ``Language`` instance.
     """
 
     SUPPORTED_JS_EXTENSIONS = frozenset({".js", ".jsx", ".ts", ".tsx"})
@@ -79,14 +85,27 @@ class CodeParser:
     def parse_file(self, code: str, extension: str) -> Dict[str, Any]:
         """Parse one source file into normalized graph-ingestion data.
 
+        Args:
+            code: Full file contents (decoded text). Encoded to UTF-8 for the
+                Tree-sitter parser.
+            extension: File suffix including the dot, for example ``".py"``.
+
         Returns:
-            Dict with:
-            - `classes`: `[{name, code, start_line}]`
-            - `functions`: `[{name, qualified_name, parent_class, code, start_line, name_line, name_column, calls}]`
-            - `imports`: `[module_specifier, ...]`
-            - `calls`: flattened call-name list across the file
-            - `env_vars`: Python env-var reads / dotenv loads
-            - `diagnostics`: non-fatal extraction notes for unsupported syntax
+            Dict with keys:
+                ``classes``: List of ``{name, code, start_line}``.
+                ``functions``: List of rows with ``name``, ``qualified_name``,
+                ``parent_class``, ``code``, line/column hints, and per-function
+                ``calls`` (simple callee names).
+                ``imports``: Deduped module specifier strings.
+                ``calls``: All per-function call names flattened into one list.
+                ``env_vars``: Python-only events for ``os.getenv`` /
+                ``os.environ.get`` / ``load_dotenv`` when detected.
+                ``diagnostics``: Non-fatal notes (unsupported extension, parse
+                errors, ambiguous imports).
+
+            If the extension is unknown or parsing fails before the AST walk,
+            the same key shape is returned with empty lists and a diagnostic
+            entry describing the failure.
         """
         default_result = {
             "classes": [],

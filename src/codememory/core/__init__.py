@@ -1,7 +1,11 @@
-"""Shared infrastructure for all memory modules.
+"""Core infrastructure for Agentic Memory (codememory).
 
-Exports the complete public API of the codememory.core package.
-Import from here instead of individual modules:
+Wires Neo4j access (`ConnectionManager`), graph writes (`GraphWriter`), embeddings
+(`EmbeddingService`), source label registration (`register_source`), ingestion
+contracts (`BaseIngestionPipeline`), and startup validation (`validate_embedding_config`)
+so feature modules stay thin.
+
+Prefer importing the stable surface from here rather than deep module paths:
 
     from codememory.core import BaseIngestionPipeline, GraphWriter, ConnectionManager
 """

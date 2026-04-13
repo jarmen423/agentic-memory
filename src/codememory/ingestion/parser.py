@@ -1,34 +1,22 @@
-"""
-AST-based source code parser for the codememory ingestion pipeline.
+"""Tree-sitter parsing for code ingestion: structured metadata from source text.
 
-Extended:
-    This module provides ``CodeParser``, the first stage of the code ingestion
-    pipeline. It uses tree-sitter to parse source files into concrete syntax
-    trees and then extracts structured metadata — classes, functions, imports,
-    function call sites, and environment variable reads — which are later
-    written to Neo4j by ``KnowledgeGraphBuilder``.
+``CodeParser`` is the **parse-only** front half of the code ingestion story: it
+turns file contents into a stable dict of classes, functions, imports, call
+sites, and (Python-only) environment reads. Downstream, ``KnowledgeGraphBuilder``
+in ``codememory.ingestion.graph`` may embed overlapping logic for historical
+reasons; this class is the reusable, query-centric extraction surface.
 
-    tree-sitter is chosen because it is language-agnostic, fault-tolerant
-    (produces partial trees on syntax errors), and fast enough to process an
-    entire repo in seconds. Language grammars are loaded from the
-    ``tree_sitter_python`` and ``tree_sitter_javascript`` packages.
+Why tree-sitter:
+    Fault-tolerant CST parsing, multi-language grammars, fast enough for full
+    repository scans.
 
-Role:
-    Called by ``KnowledgeGraphBuilder._process_file`` during repo ingestion
-    (``am index`` CLI command). The parser output dict is the contract between
-    parsing and graph construction — each key maps to a Neo4j node type or
-    relationship.
+Supported extensions:
+    ``.py``, ``.js``, ``.jsx``, ``.ts``, ``.tsx``. Import and env-var extraction
+    are implemented for Python; JS/TS import lists remain empty in the current
+    implementation.
 
 Dependencies:
-    - tree-sitter (``pip install tree-sitter``)
-    - tree-sitter-python (Python grammar bindings)
-    - tree-sitter-javascript (JS/TS grammar bindings)
-
-Key Technologies:
-    - tree-sitter CST queries (S-expression pattern language)
-    - Supported extensions: .py, .js, .jsx, .ts, .tsx
-    - Import extraction: Python only (JS/TS imports not yet wired)
-    - Env var extraction: Python only (os.getenv / os.environ.get)
+    ``tree-sitter``, ``tree-sitter-python``, ``tree-sitter-javascript``.
 """
 
 import logging
@@ -63,6 +51,11 @@ class CodeParser:
         self._init_parsers()
 
     def _init_parsers(self):
+        """Load Python and JavaScript grammars and populate ``parsers`` / ``languages``.
+
+        Logs and swallows initialization errors so ``parse_file`` can still
+        return empty structures when grammars fail to load.
+        """
         try:
             # Python
             py_lang = Language(tree_sitter_python.language())
@@ -136,6 +129,7 @@ class CodeParser:
             return default_result
 
     def _extract_classes(self, tree: Tree, code: str, lang: Language, extension: str) -> List[Dict[str, Any]]:
+        """Run class-definition queries and return name, span text, and start line."""
         classes = []
         if extension == '.py':
             query_scm = """
@@ -173,6 +167,7 @@ class CodeParser:
         return classes
 
     def _extract_functions(self, tree: Tree, code: str, lang: Language, extension: str) -> List[Dict[str, Any]]:
+        """Run function-declaration queries; attach optional parent class name for methods."""
         functions = []
         if extension == '.py':
             query_scm = """
@@ -213,6 +208,7 @@ class CodeParser:
         return functions
 
     def _extract_imports(self, tree: Tree, code: str, lang: Language, extension: str) -> List[str]:
+        """Return dotted module names from Python import/from-import statements only."""
         imports = []
         if extension != '.py': return imports # Only Python supported for now
 
@@ -234,6 +230,7 @@ class CodeParser:
         return imports
 
     def _extract_calls(self, tree: Tree, code: str, lang: Language, extension: str) -> List[str]:
+        """Collect callee identifiers from simple call nodes (no dotted methods)."""
         calls = []
         if extension == ".py":
             query_scm = """(call function: (identifier) @name)"""
@@ -254,6 +251,7 @@ class CodeParser:
         return calls
 
     def _extract_env_vars(self, tree: Tree, code: str, lang: Language, extension: str) -> List[Dict[str, Any]]:
+        """Detect Python env reads (getenv/get) and ``load_dotenv`` calls for graph hints."""
         env_vars = []
         if extension != '.py': return env_vars
 
@@ -318,6 +316,7 @@ class CodeParser:
         return env_vars
 
     def _get_name_from_node(self, node: Node, code: str) -> str:
+        """Return the first child ``identifier`` text slice, or empty string."""
         # Try to find 'identifier' child
         for child in node.children:
             if child.type == 'identifier':
@@ -325,6 +324,7 @@ class CodeParser:
         return ""
 
     def _get_parent_class(self, node: Node, code: str) -> str:
+        """Walk ancestors for a class_definition/class_declaration and read its name."""
         current = node.parent
         while current:
             if current.type == 'class_definition' or current.type == 'class_declaration':

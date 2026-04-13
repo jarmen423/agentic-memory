@@ -1,47 +1,27 @@
-"""
-MCP server entry point for the codememory memory system.
+"""FastMCP application for the CodeMemory MCP server.
 
-Extended:
-    This module is the main FastMCP server for codememory. It creates the
-    ``mcp`` FastMCP instance, registers all MCP tools (code search, git
-    queries, unified memory search, and conversation/research tools via
-    ``tools.py``), and manages the global ``KnowledgeGraphBuilder`` singleton
-    that backs all code and git queries.
+Creates the module-level ``mcp`` FastMCP instance, registers MCP tools for code
+search, git history, web research ingestion, unified memory search, and (via
+``tools.py``) conversations plus scheduled research. Manages a process-wide
+``KnowledgeGraphBuilder`` for code/git queries and optional SQLite telemetry.
 
-    At startup the server:
-      1. Calls ``init_graph()`` to connect to Neo4j (config file or env vars).
-      2. Calls ``_init_telemetry()`` to open (or skip) the SQLite telemetry DB.
-      3. Registers code/git tools directly on ``mcp`` using ``@mcp.tool``.
-      4. Delegates conversation and research tool registration to
-         ``register_conversation_tools`` and ``register_schedule_tools``
-         from ``tools.py``.
+Startup flow (typical):
 
-    Tool decorators applied in this file:
-      - ``@rate_limit`` — per-tool sliding-window request counter (in-memory).
-      - ``@log_tool_call`` — structured timing log + SQLite telemetry write.
+#. ``run_server`` sets ``_repo_override`` and calls ``_init_telemetry``.
+#. ``init_graph`` (or lazy ``get_graph``) reads ``.codememory/config.json`` or
+   environment variables and opens Neo4j.
+#. Tools in this module use ``@rate_limit`` and ``@log_tool_call``; conversation
+   and schedule tools are registered at import time via
+   ``register_conversation_tools`` and ``register_schedule_tools`` from
+   ``codememory.server.tools``.
 
-    The server process is launched by ``am server`` CLI (``codememory/cli.py``)
-    or directly via ``python -m codememory.server.app``.
+Note:
+    This module is the trust boundary between LLM clients and the graph: agents
+    only see tool outputs, not ad-hoc Cypher.
 
-Role:
-    This is the single process boundary between AI agents and the Neo4j memory
-    graph. All agent reads and writes flow through the ``@mcp.tool`` functions
-    defined here and in ``tools.py``.
-
-Dependencies:
-    - FastMCP (``mcp.server.fastmcp``)
-    - codememory.ingestion.graph.KnowledgeGraphBuilder
-    - codememory.telemetry.TelemetryStore
-    - codememory.server.tools (conversation + research + schedule tools)
-    - codememory.server.unified_search (cross-domain search)
-    - Neo4j (bolt connection via KnowledgeGraphBuilder)
-    - OpenAI API (embedding service inside KnowledgeGraphBuilder)
-
-Key Technologies:
-    - Model Context Protocol (MCP) via FastMCP
-    - Neo4j vector index ``code_embeddings`` for semantic code search
-    - SQLite telemetry store at ``.codememory/telemetry.sqlite3``
-    - Sliding-window in-memory rate limiter (per tool, per process)
+See Also:
+    ``codememory.cli`` / ``agentic_memory.cli`` for the CLI that starts this server.
+    ``codememory.server.unified_search.search_all_memory_sync`` for unified ranking.
 """
 
 import os
@@ -72,7 +52,7 @@ from codememory.telemetry import TelemetryStore, resolve_telemetry_db_path
 
 logger = logging.getLogger(__name__)
 
-# Initialize the MCP Server
+# FastMCP application: tool registrations attach to this instance at import time.
 mcp = FastMCP("Agentic Memory")
 
 # Global Graph Connection (initialized when server starts)
@@ -217,11 +197,28 @@ def log_tool_call(func):
 
 
 def _is_telemetry_enabled() -> bool:
+    """Return False when ``CODEMEMORY_TELEMETRY_ENABLED`` disables SQLite telemetry.
+
+    Treats ``0``, ``false``, ``no``, and ``off`` (case-insensitive) as disabled;
+    any other value (including unset) enables telemetry.
+
+    Returns:
+        True if tool-call telemetry may be written; False to skip the store.
+    """
     raw = os.getenv("CODEMEMORY_TELEMETRY_ENABLED", "1").strip().lower()
     return raw not in {"0", "false", "no", "off"}
 
 
 def _init_telemetry(repo_root: Optional[Path]) -> None:
+    """Open the telemetry SQLite store or set ``telemetry_store`` to None.
+
+    When disabled via ``_is_telemetry_enabled``, logs and leaves
+    ``telemetry_store`` unset so ``log_tool_call`` skips persistence writes.
+
+    Args:
+        repo_root: Repository root used to resolve the default DB path, or
+            None when no override is in effect.
+    """
     global telemetry_store
     if not _is_telemetry_enabled():
         telemetry_store = None
@@ -234,7 +231,20 @@ def _init_telemetry(repo_root: Optional[Path]) -> None:
 
 
 def init_graph():
-    """Initialize the global graph connection."""
+    """Connect module-global ``graph`` to Neo4j using repo config or environment.
+
+    Resolution order for repo root: module override ``_repo_override``, then
+    ``CODEMEMORY_REPO``, then ``codememory.config.find_repo_root``. When a
+    ``Config`` exists at that root, Neo4j and OpenAI keys come from the file;
+    otherwise standard env vars apply.
+
+    Returns:
+        The initialized ``KnowledgeGraphBuilder`` instance.
+
+    Note:
+        Assigns the module-global ``graph``; safe to call once per process
+        before serving tools.
+    """
     global graph
 
     # Try to load from local config first
@@ -279,7 +289,12 @@ def init_graph():
 
 
 def get_graph() -> Optional[KnowledgeGraphBuilder]:
-    """Lazily initialize and return the graph connection."""
+    """Return module-global ``graph``, calling ``init_graph`` on first use.
+
+    Returns:
+        Connected builder on success, or None if initialization raises (error
+        is logged).
+    """
     global graph
     if graph is not None:
         return graph
@@ -292,7 +307,7 @@ def get_graph() -> Optional[KnowledgeGraphBuilder]:
 
 
 def _close_graph_on_exit():
-    """Close graph connection on process exit if initialized."""
+    """Registered with :mod:`atexit` to close the Neo4j driver if ``graph`` is set."""
     if graph:
         graph.close()
 
@@ -302,15 +317,15 @@ atexit.register(_close_graph_on_exit)
 
 
 def validate_tool_output(output: str, max_length: int = 8000) -> str:
-    """
-    Validate and truncate tool output to ensure LLM-readable format.
-    
+    """Ensure tool output is a non-empty string and cap length for LLM context.
+
     Args:
-        output: The raw output string
-        max_length: Maximum length for LLM consumption
-        
+        output: Raw tool return value expected to be textual.
+        max_length: Maximum character count before truncation (default 8000).
+
     Returns:
-        Validated and potentially truncated output
+        Original string, a truncation with an omission footer, or a fixed error
+        message when ``output`` is missing or not a ``str``.
     """
     if not output or not isinstance(output, str):
         return "❌ Tool returned invalid output"
@@ -324,7 +339,15 @@ def validate_tool_output(output: str, max_length: int = 8000) -> str:
 
 
 def _normalize_domain(domain: str) -> Optional[str]:
-    """Normalize and validate search routing domain."""
+    """Return a lowercase domain in :data:`VALID_DOMAINS` or None if invalid.
+
+    Args:
+        domain: User-supplied route label (e.g. ``code``, ``git``, ``hybrid``).
+
+    Returns:
+        Normalized token, or None when the value is not a non-empty string or
+        not a member of :data:`VALID_DOMAINS`.
+    """
     if not isinstance(domain, str):
         return None
     normalized = domain.strip().lower()
@@ -334,7 +357,15 @@ def _normalize_domain(domain: str) -> Optional[str]:
 
 
 def _validate_git_graph_data(current_graph: KnowledgeGraphBuilder) -> Optional[str]:
-    """Ensure git graph data is available before running git-domain tools."""
+    """Return an error message if git ingestion data is missing, else None.
+
+    Args:
+        current_graph: Connected graph builder exposing ``has_git_graph_data``.
+
+    Returns:
+        User-facing error string when git data is absent or the check fails;
+        None when git tools may proceed.
+    """
     has_git_data_fn = getattr(current_graph, "has_git_graph_data", None)
     if not callable(has_git_data_fn):
         return GIT_GRAPH_MISSING_MESSAGE
@@ -350,7 +381,14 @@ def _validate_git_graph_data(current_graph: KnowledgeGraphBuilder) -> Optional[s
 
 
 def _format_code_results(results: List[Dict[str, Any]]) -> str:
-    """Format code semantic search results."""
+    """Render code vector search rows as Markdown for MCP clients.
+
+    Args:
+        results: Rows from :meth:`~codememory.ingestion.graph.KnowledgeGraphBuilder.semantic_search`.
+
+    Returns:
+        Numbered list with names, scores, signatures, and short code excerpts.
+    """
     output = f"Found {len(results)} relevant code result(s):\n\n"
     for i, r in enumerate(results, 1):
         name = r.get("name", "Unknown")
@@ -368,7 +406,7 @@ def _format_code_results(results: List[Dict[str, Any]]) -> str:
 
 
 def _format_git_file_history(file_path: str, history: List[Dict[str, Any]]) -> str:
-    """Format git file history records for LLM output."""
+    """Format git file history rows as Markdown (subject, author, stats)."""
     output = f"## Git History for `{file_path}`\n\n"
     output += f"Found {len(history)} commit(s):\n\n"
 
@@ -391,7 +429,7 @@ def _format_git_file_history(file_path: str, history: List[Dict[str, Any]]) -> s
 
 
 def _format_commit_context_output(context: Dict[str, Any], include_diff_stats: bool) -> str:
-    """Format detailed commit context for LLM output."""
+    """Format a commit metadata dict (and optional per-file diff stats) as Markdown."""
     sha = context.get("sha", "unknown")
     subject = context.get("message_subject", "(no subject)")
     body = context.get("message_body", "")
@@ -839,7 +877,14 @@ _research_pipeline = None
 
 
 def _get_research_pipeline():
-    """Lazily initialize the research ingestion pipeline."""
+    """Return a cached ``ResearchIngestionPipeline`` or None.
+
+    Builds the pipeline on first use when extraction LLM credentials and the web
+    embedding runtime are available; logs and returns None otherwise.
+
+    Returns:
+        Shared pipeline instance, or None when research tools cannot run.
+    """
     global _research_pipeline
     if _research_pipeline is not None:
         return _research_pipeline
@@ -952,7 +997,7 @@ def memory_ingest_research(
 
 
 def _format_baseline_research_results(results: list[dict[str, Any]]) -> str:
-    """Format baseline vector-search research rows for MCP output."""
+    """Format Neo4j research vector hits (chunks/findings) for MCP string output."""
     output = f"Found {len(results)} relevant research result(s):\n\n"
     for i, row in enumerate(results, 1):
         text = (row.get("text") or "")[:300]
@@ -974,7 +1019,7 @@ def _format_baseline_research_results(results: list[dict[str, Any]]) -> str:
 
 
 def _format_unified_search_results(payload: dict[str, Any]) -> str:
-    """Format normalized unified search hits for MCP output."""
+    """Turn a ``UnifiedSearchResponse``-shaped dict (``to_dict`` output) into Markdown."""
     results = payload.get("results") or []
     errors = payload.get("errors") or []
     if not results:
@@ -1009,7 +1054,7 @@ def _format_unified_search_results(payload: dict[str, Any]) -> str:
 
 
 def _format_temporal_research_results(results: list[dict[str, Any]]) -> str:
-    """Format temporal retrieval rows while preserving the string-style MCP contract."""
+    """Format temporal bridge research rows as the same string contract as baseline search."""
     output = f"Found {len(results)} relevant research result(s):\n\n"
     for i, row in enumerate(results, 1):
         subject = (row.get("subject") or {}).get("name", "unknown")
@@ -1034,14 +1079,14 @@ def _format_temporal_research_results(results: list[dict[str, Any]]) -> str:
 
 
 def _filter_rows_as_of(rows: list[dict[str, Any]], as_of: str | None) -> list[dict[str, Any]]:
-    """Apply the current ingested_at cutoff heuristic when provided."""
+    """Drop rows whose ``ingested_at`` is lexicographically after ``as_of``."""
     if as_of is None:
         return rows
     return [row for row in rows if (row.get("ingested_at") or "") <= as_of]
 
 
 def _dominant_project_id(rows: list[dict[str, Any]]) -> str | None:
-    """Choose the best project id for temporal replay from baseline results."""
+    """Pick the ``project_id`` with the largest summed baseline scores for temporal calls."""
     project_scores: dict[str, float] = {}
     for row in rows:
         project_id = row.get("project_id")
@@ -1190,7 +1235,25 @@ def search_all_memory(
     as_of: str | None = None,
     modules: str | None = None,
 ) -> str:
-    """Search code, research, and conversation memory in one unified ranked response."""
+    """Search code, web research, and conversation memory in one ranked Markdown response.
+
+    Delegates to ``codememory.server.unified_search.search_all_memory_sync``
+    with the live graph, research pipeline, and MCP conversation pipeline, then
+    formats hits via ``_format_unified_search_results`` and
+    ``validate_tool_output``.
+
+    Args:
+        query: Natural language query shared across enabled modules.
+        limit: Maximum number of hits after cross-module merge and sort.
+        project_id: Optional project scope (conversation and temporal paths).
+        as_of: Optional ISO-8601 upper bound for ``ingested_at`` style filtering
+            where supported.
+        modules: Comma-separated subset of ``code``, ``web``, ``conversation``;
+            None means all three.
+
+    Returns:
+        Markdown string of unified hits, or a no-results / warnings message.
+    """
     current_graph = get_graph()
     research_pipeline = _get_research_pipeline()
     requested_modules = None
@@ -1290,12 +1353,20 @@ register_schedule_tools(
 
 
 def run_server(port: int, repo_root: Optional[Path] = None):
-    """
-    Start the MCP server.
+    """Start the FastMCP server: telemetry, graph warmup, then ``mcp.run()``.
+
+    Sets the module-level ``_repo_override`` so tools resolve config relative to
+    the chosen repository, initializes telemetry, and attempts a graph
+    connection (warns if unavailable).
 
     Args:
-        port: Port number to listen on
-        repo_root: Optional explicit repository root for config resolution
+        port: TCP port FastMCP listens on (framework-specific; see FastMCP docs).
+        repo_root: Optional explicit repository root; resolved with
+            :meth:`pathlib.Path.resolve` when provided.
+
+    Note:
+        Blocks for the lifetime of the MCP process; intended for CLI / process
+        supervisor invocation.
     """
     global _repo_override
     _repo_override = repo_root.resolve() if repo_root else None

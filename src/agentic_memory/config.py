@@ -1,9 +1,23 @@
-"""Configuration management for Agentic Memory.
+"""Repository-scoped configuration and environment resolution for Agentic Memory.
 
-New Agentic Memory repos store their local control files under
-``.agentic-memory/`` so they do not collide with older ``.codememory/``-based
-setups. The config layer still understands the legacy folder as a read fallback
-so existing repos can be upgraded in place instead of breaking immediately.
+Loads and merges ``config.json`` from the per-repo control directory, deep-merges
+with :data:`DEFAULT_CONFIG` so new settings keys do not break older files, and
+exposes helpers that resolve secrets and connection parameters with explicit
+precedence (on-disk config vs process environment).
+
+Directory conventions:
+    * **Primary:** ``.agentic-memory/`` — current layout; new writes target this
+      tree.
+    * **Legacy:** ``.codememory/`` — read fallback so in-place upgrades do not
+      strand existing repositories.
+
+Typical usage is via :class:`Config` after discovering ``repo_root`` with
+:func:`find_repo_root` or :func:`load_config_for_current_dir` for the current
+working directory.
+
+See Also:
+    ``agentic_memory.cli`` for how commands choose ``--repo``, load namespaced
+    ``.env`` files, and pass resolved paths into graph and embedding code.
 """
 
 import os
@@ -15,6 +29,8 @@ from typing import Optional, Dict, Any
 CONFIG_DIR_NAME = ".agentic-memory"
 LEGACY_CONFIG_DIR_NAME = ".codememory"
 
+# Baseline merged into every loaded file so missing keys get stable defaults
+# without requiring operators to edit config.json after upgrades.
 DEFAULT_CONFIG = {
     "neo4j": {
         "uri": "bolt://localhost:7687",
@@ -113,24 +129,29 @@ DEFAULT_CONFIG = {
 
 
 class Config:
-    """Manages Agentic Memory configuration for a repository.
+    """Per-repository view of ``config.json``, graphignore, and env fallbacks.
 
-    The config layer has to bridge two local folder conventions:
+    Bridges two on-disk layouts (``.agentic-memory`` primary, ``.codememory``
+    legacy): reads prefer the primary file when present, otherwise the legacy
+    file; :meth:`save` always writes under the primary directory so migrations
+    happen naturally when settings are persisted.
 
-    - ``.codememory``: legacy CodeMemory repos
-    - ``.agentic-memory``: current Agentic Memory repos
-
-    New writes should go to ``.agentic-memory``. Reads can still fall back to the
-    legacy folder so older repos remain usable until the operator decides to
-    migrate them.
+    Attributes:
+        repo_root: Absolute repository root used for relative paths in config.
+        config_dir: Primary control directory (``.agentic-memory``).
+        legacy_config_dir: Legacy control directory (``.codememory``).
+        config_file: Primary ``config.json`` path.
+        legacy_config_file: Legacy ``config.json`` path.
+        graphignore_file: Primary ``.graphignore`` path.
+        legacy_graphignore_file: Legacy ``.graphignore`` path.
     """
 
     def __init__(self, repo_root: Path):
-        """
-        Initialize config for a repository.
+        """Attach paths for the given repository root (no I/O until load/save).
 
         Args:
-            repo_root: Path to the repository root
+            repo_root: Filesystem root of the Git working tree (or project root)
+                that contains ``.agentic-memory`` or ``.codememory``.
         """
         self.repo_root = repo_root
         self.config_dir = repo_root / CONFIG_DIR_NAME
@@ -164,7 +185,14 @@ class Config:
         return self.legacy_config_file
 
     def load(self) -> Dict[str, Any]:
-        """Load config from file, or return defaults if not exists."""
+        """Load merged configuration from disk, or a deep copy of defaults.
+
+        Returns:
+            Merged dict including all keys from :data:`DEFAULT_CONFIG`.
+
+        Raises:
+            RuntimeError: If JSON is invalid or the file cannot be read.
+        """
         if not self.exists():
             return copy.deepcopy(DEFAULT_CONFIG)
 
@@ -178,7 +206,15 @@ class Config:
             raise RuntimeError(f"Failed to load config from {source}: {e}")
 
     def save(self, config: Dict[str, Any]) -> None:
-        """Save config to file."""
+        """Persist configuration to the primary ``config.json`` only.
+
+        Empty API key strings are normalized to ``null`` on write so the next
+        resolution pass can fall back to environment variables cleanly.
+
+        Args:
+            config: Full configuration dict to serialize (usually from :meth:`load`
+                after mutation).
+        """
         self.config_dir.mkdir(exist_ok=True)
         payload = copy.deepcopy(config)
 
@@ -253,9 +289,17 @@ class Config:
         return base
 
     def get_neo4j_config(self) -> Dict[str, str]:
-        """Get Neo4j connection config, with env var fallbacks."""
+        """Resolve Neo4j Bolt settings: env overrides file for each field.
+
+        Precedence per key: ``NEO4J_URI`` / ``NEO4J_USER`` or ``NEO4J_USERNAME`` /
+        ``NEO4J_PASSWORD`` when set, else the value from ``config.json``.
+
+        Returns:
+            Dict with keys ``uri``, ``user``, and ``password``.
+        """
         config = self.load()
         neo4j = config["neo4j"]
+        # Env wins for CI/Docker; file values are the portable default.
         neo4j_user = os.getenv("NEO4J_USER") or os.getenv("NEO4J_USERNAME")
         return {
             "uri": os.getenv("NEO4J_URI", neo4j["uri"]),
@@ -264,9 +308,9 @@ class Config:
         }
 
     def get_openai_key(self) -> Optional[str]:
-        """Get OpenAI API key, with env var fallback."""
+        """Return OpenAI API key: non-empty file value first, else ``OPENAI_API_KEY``."""
         config = self.load()
-        # Priority: config file > env var
+        # File wins when set so a single repo can pin a key; env is the shared default.
         key = config["openai"].get("api_key")
         if key:
             return key
@@ -376,14 +420,20 @@ class Config:
 
 
 def find_repo_root(start_path: Path = None) -> Optional[Path]:
-    """
-    Find the repository root by looking for Agentic Memory config directories.
+    """Walk parents for Agentic Memory dirs, then Git metadata, then cwd.
+
+    Resolution order (first match wins):
+        #. Directory containing ``.agentic-memory``
+        #. Directory containing ``.codememory``
+        #. Directory containing ``.git`` (so uninitialized AM dirs still get a root)
+        #. ``start_path`` resolved (fallback)
 
     Args:
-        start_path: Path to start searching from (defaults to cwd)
+        start_path: Directory to begin walking upward; defaults to :func:`Path.cwd`.
 
     Returns:
-        Path to repo root, or None if not found
+        Resolved :class:`~pathlib.Path` to the chosen root. If no marker directory
+        is found, returns ``start_path.resolve()`` (always a concrete path).
     """
     start_path = start_path or Path.cwd()
     current = start_path.resolve()
@@ -409,11 +459,15 @@ def find_repo_root(start_path: Path = None) -> Optional[Path]:
 
 
 def load_config_for_current_dir() -> Optional[Config]:
-    """
-    Load config for the current directory.
+    """Return a :class:`Config` for cwd if either control directory exists.
+
+    Uses :func:`find_repo_root` then checks for ``.agentic-memory`` or
+    ``.codememory`` under that root. Commands use this to decide whether the
+    operator has run ``init`` in the tree.
 
     Returns:
-        Config object, or None if not in an Agentic Memory-initialized repo
+        Bound :class:`Config` instance, or ``None`` if no control directory is
+        present (repo not initialized for Agentic Memory).
     """
     repo_root = find_repo_root()
     config_dir = repo_root / CONFIG_DIR_NAME

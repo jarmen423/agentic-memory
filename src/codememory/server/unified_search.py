@@ -1,4 +1,18 @@
-"""Shared cross-module search service for MCP and REST surfaces."""
+"""Cross-module memory search shared by MCP tools and HTTP-style callers.
+
+Normalizes hits from code (``KnowledgeGraphBuilder``), web research
+(``ResearchIngestionPipeline`` + temporal bridge), and conversations
+(``search_conversation_turns_sync``) into ``UnifiedMemoryHit`` rows, merges
+them, sorts by score with stable tie-breaks, and returns ``UnifiedSearchResponse``.
+
+The MCP tool ``search_all_memory`` in ``codememory.server.app`` formats the
+``to_dict()`` payload for LLM consumption; REST layers can use the structured
+response directly.
+
+Attributes:
+    VALID_MODULES: Set of allowed module filters: ``code``, ``web``,
+        ``conversation``.
+"""
 
 from __future__ import annotations
 
@@ -22,12 +36,27 @@ VALID_MODULES = {"code", "web", "conversation"}
 
 
 def _clip_excerpt(text: str | None, *, length: int = 300) -> str:
-    """Return a compact excerpt for display."""
+    """Return up to ``length`` characters of ``text`` for UI or MCP excerpts.
+
+    Args:
+        text: Source string; None becomes empty.
+        length: Maximum characters (default 300).
+
+    Returns:
+        Prefix of ``text`` at most ``length`` chars.
+    """
     return (text or "")[:length]
 
 
 def _normalize_modules(modules: Iterable[str] | None) -> list[str]:
-    """Normalize requested module filters."""
+    """Expand None to all modules; dedupe and filter to ``VALID_MODULES`` order.
+
+    Args:
+        modules: Iterable of module names, or None for all three.
+
+    Returns:
+        Non-empty ordered list subset of code/web/conversation.
+    """
     if modules is None:
         return ["code", "web", "conversation"]
     normalized: list[str] = []
@@ -39,14 +68,14 @@ def _normalize_modules(modules: Iterable[str] | None) -> list[str]:
 
 
 def _filter_rows_as_of(rows: list[dict[str, Any]], as_of: str | None) -> list[dict[str, Any]]:
-    """Apply current string-based ingested_at cutoff when present."""
+    """Keep rows with ``ingested_at`` less than or equal to ``as_of`` (string compare)."""
     if as_of is None:
         return rows
     return [row for row in rows if (row.get("ingested_at") or "") <= as_of]
 
 
 def _dominant_project_id(rows: list[dict[str, Any]]) -> str | None:
-    """Pick the project_id with the strongest cumulative baseline score."""
+    """Choose ``project_id`` with the highest sum of row ``score`` for temporal routing."""
     project_scores: dict[str, float] = {}
     for row in rows:
         project_id = row.get("project_id")
@@ -66,7 +95,7 @@ def _normalize_code_results(
     query: str,
     limit: int,
 ) -> list[UnifiedMemoryHit]:
-    """Run code semantic search and normalize the result shape."""
+    """Vector-search the code graph and map rows to ``UnifiedMemoryHit``."""
     rows = graph.semantic_search(query, limit=limit)
     hits: list[UnifiedMemoryHit] = []
     for row in rows:
@@ -94,7 +123,7 @@ def _normalize_code_results(
 def _normalize_research_temporal_results(
     rows: list[dict[str, Any]],
 ) -> list[UnifiedMemoryHit]:
-    """Normalize temporal research hits into the unified shape."""
+    """Convert temporal bridge research rows into ``UnifiedMemoryHit`` (web module)."""
     hits: list[UnifiedMemoryHit] = []
     for row in rows:
         confidence = float(row.get("confidence", 0.0) or 0.0)
@@ -129,7 +158,7 @@ def _normalize_research_temporal_results(
 def _normalize_research_baseline_results(
     rows: list[dict[str, Any]],
 ) -> list[UnifiedMemoryHit]:
-    """Normalize baseline research rows into the unified shape."""
+    """Convert vector baseline research rows into ``UnifiedMemoryHit`` (web module)."""
     hits: list[UnifiedMemoryHit] = []
     for row in rows:
         labels = row.get("node_labels", []) or []
@@ -165,7 +194,7 @@ def _normalize_conversation_results(
     *,
     temporal_applied: bool,
 ) -> list[UnifiedMemoryHit]:
-    """Normalize conversation rows into the unified shape."""
+    """Map conversation turn dicts to ``UnifiedMemoryHit`` with temporal flags."""
     hits: list[UnifiedMemoryHit] = []
     for row in rows:
         score = float(row.get("score", 0.0) or 0.0)
@@ -204,7 +233,7 @@ def _search_research_structured(
     limit: int,
     as_of: str | None,
 ) -> list[UnifiedMemoryHit]:
-    """Run structured research search with temporal-first fallback behavior."""
+    """Research vector query plus optional temporal rerank; returns unified hits."""
     embedding = pipeline._embedder.embed(query)
     with pipeline._conn.session() as session:  # type: ignore[attr-defined]
         baseline_results = session.run(
@@ -269,7 +298,7 @@ def _search_conversation_structured(
     limit: int,
     as_of: str | None,
 ) -> list[UnifiedMemoryHit]:
-    """Run structured conversation search and infer whether temporal reranking applied."""
+    """Run ``search_conversation_turns_sync`` and normalize rows for unified ranking."""
     results = search_conversation_turns_sync(
         pipeline,
         query=query,
@@ -285,7 +314,7 @@ def _search_conversation_structured(
 
 
 def _sort_hits(hits: list[UnifiedMemoryHit], limit: int) -> list[UnifiedMemoryHit]:
-    """Sort normalized hits by score with stable module-aware tie-breaking."""
+    """Sort by descending score, then temporal preference, module, and ``source_id``."""
     ordered = sorted(
         hits,
         key=lambda hit: (
@@ -309,7 +338,26 @@ def search_all_memory_sync(
     research_pipeline: ResearchIngestionPipeline | None = None,
     conversation_pipeline: ConversationIngestionPipeline | None = None,
 ) -> UnifiedSearchResponse:
-    """Search code, web, and conversation memory and return one normalized response."""
+    """Query selected modules, merge hits, sort, and record non-fatal failures.
+
+    A module is skipped when its dependency (``graph``, ``research_pipeline``,
+    or ``conversation_pipeline``) is None. Exceptions inside a module's
+    ``try`` block are logged and appended to ``errors`` without aborting other
+    modules.
+
+    Args:
+        query: Shared natural language query for all modules.
+        limit: Cap on returned hits after global sort (minimum 1).
+        project_id: Conversation/temporal scope; may be None for code-only use.
+        as_of: Optional ISO timestamp string for ingested-at filtering.
+        modules: Iterable of module names or None for all ``VALID_MODULES``.
+        graph: Code graph builder; required for code hits.
+        research_pipeline: Web pipeline; required for web hits.
+        conversation_pipeline: Chat pipeline; required for conversation hits.
+
+    Returns:
+        ``UnifiedSearchResponse`` with sorted ``results`` and any ``errors``.
+    """
     safe_limit = max(1, int(limit))
     selected_modules = _normalize_modules(modules)
     hits: list[UnifiedMemoryHit] = []

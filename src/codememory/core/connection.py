@@ -1,8 +1,9 @@
-"""Neo4j connection manager for Agentic Memory.
+"""Neo4j driver lifecycle, sessions, and schema DDL for vector search.
 
-Provides a single ConnectionManager that wraps the Neo4j driver with
-pool settings, a session context manager, database setup (vector indexes
-and uniqueness constraints), and a config-dict factory method.
+`ConnectionManager` owns one `neo4j` driver (connection pool + timeouts), exposes
+short-lived `session` contexts for Cypher execution, and applies vector indexes plus
+constraints so embeddings stored on Memory nodes match Neo4j's expected dimensions
+(see also `codememory.core.config_validator`).
 """
 
 import logging
@@ -16,7 +17,11 @@ logger = logging.getLogger(__name__)
 
 
 class ConnectionManager:
-    """Manages a single Neo4j driver instance with pool configuration."""
+    """Wraps the Neo4j Bolt driver: pooling, sessions, and index/constraint setup.
+
+    Graph reads/writes should obtain a session via `session` rather than holding
+    long-lived sessions on the hot path.
+    """
 
     def __init__(self, uri: str, user: str, password: str) -> None:
         """Create a Neo4j driver with standard pool settings.
@@ -26,6 +31,8 @@ class ConnectionManager:
             user: Neo4j username.
             password: Neo4j password.
         """
+        # Driver-level pool and timeout tuning; transactional retries are handled here for
+        # Neo4j's built-in transient errors when using write transactions (not used in all paths).
         self.driver = neo4j.GraphDatabase.driver(
             uri,
             auth=(user, password),

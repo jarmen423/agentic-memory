@@ -1,4 +1,10 @@
-"""Runtime resolution helpers for module embedding providers."""
+"""Resolve per-module embedding settings from repo config and environment.
+
+Reads `codememory.config.Config` (or a given repo root), merges module-specific
+``{MODULE}_EMBEDDING_*`` overrides with global ``EMBEDDING_*`` env vars, then builds a
+ready-to-use `EmbeddingService`. Use this at process startup or test fixtures instead
+of duplicating provider wiring in each ingestion entrypoint.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +18,11 @@ from codememory.core.embedding import EmbeddingService
 
 @dataclass(frozen=True)
 class EmbeddingRuntimeConfig:
-    """Resolved runtime settings for a module embedding service."""
+    """Immutable snapshot of provider, model, dimensions, and credentials for one module.
+
+    Produced by `resolve_embedding_runtime` and consumed by `build_embedding_service`.
+    `api_key` may be None if unresolved; `build_embedding_service` enforces a key.
+    """
 
     module_name: str
     provider: str
@@ -22,6 +32,7 @@ class EmbeddingRuntimeConfig:
     base_url: str | None = None
 
 
+# Fallback model, dimensions, base_url, and env var names when YAML/env omit values.
 _PROVIDER_DEFAULTS: dict[str, dict[str, object]] = {
     "openai": {
         "model": "text-embedding-3-large",
@@ -45,7 +56,7 @@ _PROVIDER_DEFAULTS: dict[str, dict[str, object]] = {
 
 
 def _repo_config(config: Config | None = None, repo_root: Path | None = None) -> Config:
-    """Return a config object using the explicit or detected repository root."""
+    """Load or reuse `Config`, defaulting repo root via `codememory.config.find_repo_root`."""
     if config is not None:
         return config
     resolved_root = repo_root or find_repo_root() or Path.cwd()
@@ -53,7 +64,7 @@ def _repo_config(config: Config | None = None, repo_root: Path | None = None) ->
 
 
 def _env_override(module_name: str, suffix: str) -> str | None:
-    """Resolve module-specific env vars before global embedding env vars."""
+    """Read ``{MODULE}_EMBEDDING_{suffix}`` first, then ``EMBEDDING_{suffix}``."""
     module_prefix = module_name.strip().upper()
     return os.getenv(f"{module_prefix}_EMBEDDING_{suffix}") or os.getenv(
         f"EMBEDDING_{suffix}"
@@ -61,7 +72,7 @@ def _env_override(module_name: str, suffix: str) -> str | None:
 
 
 def _provider_api_key(provider: str, config: Config) -> str | None:
-    """Resolve provider API key from config or provider-specific env vars."""
+    """Return API key from YAML ``embedding`` section, else first set env listed in ``_PROVIDER_DEFAULTS``."""
     provider_cfg = config.get_embedding_provider_config(provider)
     configured_key = provider_cfg.get("api_key")
     if configured_key:
@@ -85,7 +96,24 @@ def resolve_embedding_runtime(
     base_url: str | None = None,
     output_dimensions: int | None = None,
 ) -> EmbeddingRuntimeConfig:
-    """Resolve embedding provider settings for one module from config and env."""
+    """Merge config, env overrides, and defaults into `EmbeddingRuntimeConfig`.
+
+    Args:
+        module_name: Config section key under ``modules`` (e.g. ``"code"``).
+        config: Optional pre-loaded `Config`; otherwise derived from ``repo_root``.
+        repo_root: Repository root for config discovery when ``config`` is omitted.
+        provider: Optional explicit provider name (overrides module config / env).
+        model: Optional model id override.
+        api_key: Optional API key override.
+        base_url: Optional HTTP base URL (Nemotron / compatible OpenAI APIs).
+        output_dimensions: Optional embedding width; must match Neo4j vector indexes.
+
+    Returns:
+        Frozen resolved settings for the module.
+
+    Raises:
+        ValueError: If ``provider`` is not supported.
+    """
     cfg = _repo_config(config=config, repo_root=repo_root)
     module_cfg = cfg.get_module_config(module_name)
     configured_provider = str(module_cfg.get("embedding_provider") or "").strip().lower()
@@ -155,7 +183,11 @@ def build_embedding_service(
     base_url: str | None = None,
     output_dimensions: int | None = None,
 ) -> EmbeddingService:
-    """Build an EmbeddingService using the shared runtime resolver."""
+    """Construct `EmbeddingService` from resolved runtime settings.
+
+    Raises:
+        ValueError: If no API key can be resolved for the chosen provider.
+    """
     runtime = resolve_embedding_runtime(
         module_name,
         config=config,

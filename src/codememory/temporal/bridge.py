@@ -29,6 +29,16 @@ class TemporalBridgeUnavailableError(TemporalBridgeError):
 
 @dataclass(frozen=True)
 class _BridgeConfig:
+    """Resolved subprocess invocation for the temporal helper (or disabled stub).
+
+    Attributes:
+        command: argv tuple passed to ``Popen``; empty when disabled.
+        cwd: Working directory for the child process (repo root).
+        env: Environment mapping (copy of process env, possibly augmented).
+        disabled_reason: When set, ``TemporalBridge`` is unavailable and calls
+            raise ``TemporalBridgeUnavailableError``.
+    """
+
     command: tuple[str, ...]
     cwd: str
     env: dict[str, str]
@@ -36,7 +46,20 @@ class _BridgeConfig:
 
 
 class TemporalBridge:
-    """JSON-lines RPC client for the long-lived Node temporal helper."""
+    """JSON-lines RPC client to the Node ``tsx`` temporal helper process.
+
+    Spawns (lazily) ``npx tsx packages/am-temporal-kg/scripts/query_temporal.ts``
+    when ``STDB_BINDINGS_MODULE`` and the script exist, then exchanges one JSON
+    object per line over stdin/stdout for ``retrieve``, ``ingest_claim``, and
+    ``ingest_relation`` operations. Ingestion pipelines use the ingest APIs as a
+    **best-effort shadow**; retrieval uses ``retrieve`` with seed entities from
+    ``codememory.temporal.seeds``.
+
+    Attributes:
+        _config: Frozen command/cwd/env tuple plus optional ``disabled_reason``.
+        _process: Subprocess handle when the helper is running.
+        _lock: Serializes requests so stdin/stdout lines stay paired.
+    """
 
     def __init__(self, config: _BridgeConfig | None = None) -> None:
         self._config = config or self._build_config()
@@ -250,6 +273,7 @@ class TemporalBridge:
             logger.debug("Temporal bridge stderr reader exited unexpectedly.", exc_info=True)
 
     def _build_config(self) -> _BridgeConfig:
+        """Locate the helper script and build a runnable ``npx tsx`` command."""
         repo_root = Path(__file__).resolve().parents[3]
         script_path = repo_root / "packages" / "am-temporal-kg" / "scripts" / "query_temporal.ts"
         if not script_path.exists():
@@ -286,7 +310,7 @@ class TemporalBridge:
 
 
 def get_temporal_bridge() -> TemporalBridge:
-    """Return a cached TemporalBridge singleton."""
+    """Return a process-wide cached ``TemporalBridge`` (lazy-created, thread-safe)."""
     global _BRIDGE_SINGLETON
     with _BRIDGE_SINGLETON_LOCK:
         if _BRIDGE_SINGLETON is None:

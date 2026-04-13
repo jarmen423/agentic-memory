@@ -1,14 +1,14 @@
-"""Knowledge Graph Builder for Agentic Memory code memory.
+"""Neo4j ingestion and hybrid retrieval for the code-memory domain.
 
-This module is the code-domain ingestion and retrieval engine. It is still the
-same multi-pass GraphRAG builder conceptually, but it now resolves its
-embedding provider through the shared runtime embedding configuration so code
-memory can participate in the same provider strategy as the rest of Agentic
-Memory.
+This module hosts :class:`KnowledgeGraphBuilder`, which runs the multi-pass
+GraphRAG pipeline (structure scan, entities/chunks, imports, optional call
+graph) and exposes semantic search and dependency queries for agents.
 
-That means the builder no longer assumes OpenAI for code embeddings. Instead it
-accepts the configured code-module provider (Gemini by default, or OpenAI /
-another supported provider when explicitly requested).
+Embeddings are resolved through the shared runtime embedding configuration
+(:mod:`agentic_memory.core.runtime_embedding`) so code chunks use the same
+provider strategy as the rest of Agentic Memory (Gemini by default; OpenAI or
+other supported providers when configured). The builder does not assume a
+single vendor for vectors.
 """
 
 import os
@@ -146,24 +146,39 @@ def retry_on_openai_error(max_retries=3, delay=1.0):
 
 
 class KnowledgeGraphBuilder(BaseIngestionPipeline):
-    """
-    Orchestrates the creation of the Hybrid GraphRAG system.
+    """Build and query a repo-scoped hybrid graph of code structure and embeddings.
+
+    Coordinates the end-to-end flow from disk to Neo4j: optional schema setup,
+    scanning the tree for supported sources, parsing through
+    :class:`~agentic_memory.ingestion.parser.CodeParser`, writing ``File`` /
+    ``Function`` / ``Class`` / ``Chunk`` nodes and ``IMPORTS`` / ``DEFINES`` /
+    ``DESCRIBES`` relationships, and (when invoked) import resolution and
+    semantic call analysis. Incremental paths such as :meth:`reindex_file` and
+    :meth:`delete_file` keep the graph aligned with filesystem watchers without
+    always replaying the full repo.
+
+    Retrieval helpers (for example :meth:`semantic_search`,
+    :meth:`get_file_dependencies`) read the same graph and vector indexes built
+    during ingestion.
 
     Attributes:
-        driver (neo4j.Driver): Database connection.
-        embedding_runtime (EmbeddingRuntimeConfig): Resolved provider/model settings
-            for code embeddings.
-        embedding_service (EmbeddingService | None): Provider-dispatching embedder.
-            When no API key is available, this remains None and semantic search
-            gracefully degrades to full-text fallback.
-        embedding_document_task_instruction (str | None): Optional Gemini
-            Embedding 2 task instruction for stored code/document vectors.
-        embedding_query_task_instruction (str | None): Optional Gemini
-            Embedding 2 task instruction for semantic search query vectors.
-        parsers (Dict): Tree-sitter parsers for supported languages.
-        repo_root (Path): Root path of the repository being indexed.
-        token_usage (Dict): Tracks embedding calls and any provider-specific usage
-            metadata we can observe at runtime.
+        driver: Active Neo4j driver (also available via the base pipeline
+            connection manager).
+        embedding_runtime: Resolved provider, model, and dimensionality for
+            code embeddings.
+        embedding_service: Dispatches embed requests to the configured provider;
+            ``None`` when no credentials or Vertex path is available, in which
+            case vector steps degrade where the code allows.
+        embedding_document_task_instruction: Optional Gemini Embedding 2 task
+            text for document (stored chunk) vectors.
+        embedding_query_task_instruction: Optional Gemini Embedding 2 task text
+            for query vectors used in semantic search.
+        parsers: Extension-to-Tree-sitter ``Parser`` map from the shared
+            :class:`~agentic_memory.ingestion.parser.CodeParser` cache.
+        repo_root: Current repository root used for relative paths and
+            ``repo_id`` derivation.
+        token_usage: Running counters for embedding calls and best-effort cost
+            estimates during pipeline runs.
     """
 
     # Class-level defaults remain for callers/tests that introspect these

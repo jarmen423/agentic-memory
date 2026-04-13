@@ -1,8 +1,9 @@
-"""Crawl4AI async web crawler wrapper for user-directed source ingestion.
+"""Crawl4AI wrapper: fetch a URL to markdown for the web research pipeline.
 
-Used by `codememory web-ingest <url>` CLI command. Fetches a URL and
-returns clean markdown. Raises RuntimeError on crawl failure — Vercel
-agent-browser fallback is deferred (hard error per CONTEXT.md).
+Primary consumer is the CLI path that feeds ``ResearchIngestionPipeline`` (or
+equivalent) with ``format="markdown"`` text. On failure, raises
+``RuntimeError`` with the crawler error message; alternate browser fallbacks are
+out of scope here per project CONTEXT.
 """
 
 import logging

@@ -1,4 +1,16 @@
-"""Git history ingestion into Neo4j for optional provenance graph support."""
+"""Git provenance ingestion: local history into dedicated ``Git*`` Neo4j labels.
+
+``GitGraphIngestor`` shells out to ``git`` for commit metadata, name-status, and
+numstat, merges rows into ``GitCommit``, ``GitAuthor``, and ``GitFileVersion``
+nodes, and optionally links file versions to existing code ``File`` nodes via
+``VERSION_OF``. Checkpoints in app config enable incremental sync
+(``checkpoint_sha .. HEAD``) with full-resync fallback when the checkpoint is
+invalid.
+
+This path is **orthogonal** to the Tree-sitter code graph: it enriches the
+database for MCP queries like file history and commit context without replacing
+``KnowledgeGraphBuilder`` passes.
+"""
 
 from __future__ import annotations
 
@@ -18,7 +30,14 @@ _FIELD_SEP = "\x1f"
 
 @dataclass(frozen=True)
 class GitFileChange:
-    """A file touched in a commit with basic diff stats."""
+    """One path's change record merged from name-status and numstat output.
+
+    Attributes:
+        path: Repository-relative path using forward slashes.
+        change_type: Single-letter status (e.g. ``A``, ``M``, ``D``, ``R``).
+        additions: Lines added per numstat (0 when unknown).
+        deletions: Lines deleted per numstat (0 when unknown).
+    """
 
     path: str
     change_type: str
@@ -28,7 +47,20 @@ class GitFileChange:
 
 @dataclass(frozen=True)
 class GitCommitRecord:
-    """Commit metadata and touched files parsed from local git history."""
+    """Normalized commit payload produced by ``GitGraphIngestor._read_commit``.
+
+    Attributes:
+        sha: Full hex object name of the commit.
+        parent_count: Number of parent commits (``> 1`` implies a merge).
+        authored_at: ISO-8601 author timestamp string from git.
+        committed_at: ISO-8601 committer timestamp string from git.
+        author_name: Raw author name from git.
+        author_email: Lowercased author email for stable author nodes.
+        message_subject: First line of the commit message.
+        message_body: Remaining message lines after the subject.
+        is_merge: Whether ``parent_count > 1``.
+        touched_files: Per-file change rows merged from show outputs.
+    """
 
     sha: str
     parent_count: int
@@ -43,7 +75,15 @@ class GitCommitRecord:
 
 
 def parse_numstat_output(output: str) -> dict[str, tuple[int, int]]:
-    """Parse `git show --numstat` output into path -> (additions, deletions)."""
+    """Parse ``git show --numstat`` lines into path → ``(additions, deletions)``.
+
+    Args:
+        output: Raw stdout from ``git show --numstat`` (or similar).
+
+    Returns:
+        Mapping of normalized paths to line add/delete counts. Binary or
+        non-numeric stat fields are treated as zero.
+    """
     stats: dict[str, tuple[int, int]] = {}
     for raw_line in output.splitlines():
         if not raw_line.strip():
@@ -62,7 +102,15 @@ def parse_numstat_output(output: str) -> dict[str, tuple[int, int]]:
 
 
 def parse_name_status_output(output: str) -> list[tuple[str, str]]:
-    """Parse `git show --name-status` output into (change_type, path)."""
+    """Parse ``git show --name-status`` lines into ``(change_type, path)``.
+
+    Args:
+        output: Raw stdout from ``git show --name-status``.
+
+    Returns:
+        List of tuples: first character of the status token (``R``/``C`` use
+        the renamed path column) and a normalized repo-relative path.
+    """
     rows: list[tuple[str, str]] = []
     for raw_line in output.splitlines():
         if not raw_line.strip():
@@ -83,7 +131,18 @@ def parse_name_status_output(output: str) -> list[tuple[str, str]]:
 
 
 class GitGraphIngestor:
-    """Sync local git history into dedicated Git* labels in Neo4j."""
+    """Sync local git history into Neo4j using ``GitRepo`` / ``GitCommit`` / etc.
+
+    The ingestor owns a Neo4j driver and a resolved ``repo_root``; ``sync``
+    walks commits (full or incremental), upserts graph rows, and persists a
+    checkpoint via ``Config.save_git_config``.
+
+    Attributes:
+        repo_root: Absolute path to the git work tree.
+        repo_id: Stable string key for graph rows (currently ``str(repo_root)``).
+        config: ``Config`` instance for git feature flags and checkpoints.
+        driver: ``neo4j`` driver used for all Cypher in this class.
+    """
 
     def __init__(
         self,
@@ -94,6 +153,15 @@ class GitGraphIngestor:
         repo_root: Path,
         config: Config,
     ):
+        """Create an ingestor bound to one repository and Neo4j credentials.
+
+        Args:
+            uri: Bolt URI for Neo4j.
+            user: Neo4j username.
+            password: Neo4j password.
+            repo_root: Root of the git work tree to read history from.
+            config: Application config (git enable flag, checkpoint, enrichment).
+        """
         self.repo_root = repo_root.resolve()
         self.repo_id = str(self.repo_root)
         self.config = config
@@ -104,7 +172,11 @@ class GitGraphIngestor:
         self.driver.close()
 
     def initialize(self) -> dict[str, Any]:
-        """Ensure schema and create/update GitRepo node for the current repository."""
+        """Ensure schema and create/update GitRepo node for the current repository.
+
+        Returns:
+            Repo metadata dict from ``_repo_metadata`` (paths, remote, branch).
+        """
         self._ensure_git_repo()
         self._ensure_constraints()
         repo_meta = self._repo_metadata()
@@ -112,7 +184,15 @@ class GitGraphIngestor:
         return repo_meta
 
     def sync(self, *, full: bool = False) -> dict[str, Any]:
-        """Run full or incremental commit sync and update checkpoint."""
+        """Run full or incremental commit sync and update checkpoint.
+
+        Args:
+            full: When True, replay all commits reachable from HEAD; otherwise
+                walk ``checkpoint_sha..HEAD`` when the checkpoint is valid.
+
+        Returns:
+            Summary dict with head/checkpoint fields, counts, and flags.
+        """
         self._ensure_git_repo()
         self._ensure_constraints()
         repo_meta = self._repo_metadata()
@@ -126,6 +206,7 @@ class GitGraphIngestor:
         )
 
         commits_synced = 0
+        # Ingestion loop: one GitCommitRecord per SHA, upsert graph, optional GitHub hook.
         for sha in commit_shas:
             commit = self._read_commit(sha)
             self._upsert_commit(repo_meta, commit)
@@ -155,7 +236,12 @@ class GitGraphIngestor:
         }
 
     def status(self) -> dict[str, Any]:
-        """Return sync checkpoint and graph presence status for this repository."""
+        """Return sync checkpoint, pending commit estimate, and graph counts.
+
+        Returns:
+            Dict including ``checkpoint_sha``, ``head_sha``, ``pending_commits``,
+            and nested ``graph`` counts for repo/commit/author/file-version nodes.
+        """
         self._ensure_git_repo()
         git_cfg = self.config.get_git_config()
         checkpoint_sha = git_cfg.get("checkpoint", {}).get("last_sha")
@@ -206,6 +292,7 @@ class GitGraphIngestor:
         }
 
     def _ensure_constraints(self) -> None:
+        """Create idempotency constraints for Git repo, commit, author, file version."""
         queries = [
             "CREATE CONSTRAINT git_repo_id_unique IF NOT EXISTS FOR (r:GitRepo) REQUIRE r.repo_id IS UNIQUE",
             (
@@ -226,6 +313,7 @@ class GitGraphIngestor:
                 session.run(query)
 
     def _repo_metadata(self) -> dict[str, Any]:
+        """Collect origin URL and current branch name for ``GitRepo`` properties."""
         remote_url = self._git("remote", "get-url", "origin", check=False).stdout.strip() or None
         default_branch = self._git("branch", "--show-current", check=False).stdout.strip() or None
         return {
@@ -236,6 +324,7 @@ class GitGraphIngestor:
         }
 
     def _ensure_repo_node(self, repo_meta: dict[str, Any]) -> None:
+        """MERGE the ``GitRepo`` row for ``repo_id`` with latest metadata."""
         with self.driver.session() as session:
             session.run(
                 """
@@ -253,6 +342,11 @@ class GitGraphIngestor:
         full: bool,
         checkpoint_sha: Optional[str],
     ) -> tuple[list[str], Optional[str], bool]:
+        """Compute ordered SHAs to ingest and whether the checkpoint was reset.
+
+        Returns:
+            Tuple of ``(shas_oldest_first, head_sha, checkpoint_reset)``.
+        """
         head_sha = self._head_sha()
         if not head_sha:
             return [], None, False
@@ -273,6 +367,7 @@ class GitGraphIngestor:
         return self._rev_list(f"{checkpoint_sha}..HEAD"), head_sha, False
 
     def _read_commit(self, sha: str) -> GitCommitRecord:
+        """Parse ``git show`` outputs for one commit into a ``GitCommitRecord``."""
         metadata = self._git(
             "show",
             "--quiet",
@@ -328,6 +423,7 @@ class GitGraphIngestor:
         name_status: list[tuple[str, str]],
         numstat: dict[str, tuple[int, int]],
     ) -> list[GitFileChange]:
+        """Join name-status rows with numstat line counts; fill gaps as modified."""
         merged: list[GitFileChange] = []
         seen_paths: set[str] = set()
 
@@ -361,6 +457,7 @@ class GitGraphIngestor:
 
     @staticmethod
     def _split_message(message: str) -> tuple[str, str]:
+        """Split git's combined subject/body block into first line + remainder."""
         stripped = message.strip("\n")
         if not stripped:
             return "", ""
@@ -370,6 +467,7 @@ class GitGraphIngestor:
         return subject, body
 
     def _upsert_commit(self, repo_meta: dict[str, Any], commit: GitCommitRecord) -> None:
+        """Write commit, author, and per-file version nodes and relationships."""
         with self.driver.session() as session:
             session.run(
                 """
@@ -445,6 +543,7 @@ class GitGraphIngestor:
         logger.debug("GitHub enrichment enabled but not implemented for commit %s.", commit.sha)
 
     def _rev_list(self, rev_range: Optional[str] = None) -> list[str]:
+        """Return commit SHAs oldest-first for ``HEAD`` or a rev range."""
         args = ["rev-list", "--reverse"]
         if rev_range:
             args.append(rev_range)
@@ -454,6 +553,7 @@ class GitGraphIngestor:
         return [line.strip() for line in output.splitlines() if line.strip()]
 
     def _head_sha(self) -> Optional[str]:
+        """Resolve ``HEAD`` to a full SHA, or None if not a valid repo state."""
         result = self._git("rev-parse", "HEAD", check=False)
         if result.returncode != 0:
             return None
@@ -461,19 +561,23 @@ class GitGraphIngestor:
         return sha or None
 
     def _commit_exists(self, sha: str) -> bool:
+        """Return True if ``sha`` resolves to a commit object."""
         result = self._git("cat-file", "-e", f"{sha}^{{commit}}", check=False)
         return result.returncode == 0
 
     def _is_ancestor(self, sha: str) -> bool:
+        """Return True if ``sha`` is an ancestor of current ``HEAD``."""
         result = self._git("merge-base", "--is-ancestor", sha, "HEAD", check=False)
         return result.returncode == 0
 
     def _ensure_git_repo(self) -> None:
+        """Raise if ``repo_root`` is not inside a git work tree."""
         result = self._git("rev-parse", "--is-inside-work-tree", check=False)
         if result.returncode != 0 or result.stdout.strip().lower() != "true":
             raise RuntimeError(f"Path is not a git repository: {self.repo_root}")
 
     def _git(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+        """Run ``git`` in ``repo_root`` with UTF-8 text mode and optional check."""
         result = subprocess.run(
             ["git", *args],
             cwd=self.repo_root,

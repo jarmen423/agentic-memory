@@ -1,10 +1,8 @@
-"""Base ingestion pipeline ABC for Agentic Memory.
+"""Abstract base for ingestion pipelines (code, web, chat, …).
 
-All memory ingestion modules (code, web, chat) subclass BaseIngestionPipeline.
-The base class provides:
-- Connection access via self._conn (ConnectionManager)
-- Label resolution via node_labels() from SOURCE_REGISTRY
-- Abstract contract via ingest() that subclasses must implement
+Subclasses share `ConnectionManager` for Neo4j sessions and resolve per-source Neo4j
+labels via `SOURCE_REGISTRY` through `node_labels`. Each domain implements `ingest`
+to turn a source into graph updates.
 """
 
 import abc

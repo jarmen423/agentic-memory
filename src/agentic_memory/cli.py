@@ -1,39 +1,32 @@
-"""
-CLI entry point for the agentic_memory package.
+"""Command-line interface for Agentic Memory (``agentic-memory`` / ``codememory``).
 
-Provides the ``agentic-memory`` (and legacy ``codememory``) command-line interface
-that operators, developers, and automation scripts use to configure, index, and
-serve the Agentic Memory system.
+This module is the primary **operator control plane**: repository initialization,
+indexing, watch mode, ad hoc search, git-graph sync, product state, web/chat
+memory workflows, and MCP server startup. It is packaged as console scripts in
+``pyproject.toml`` and is also reachable via ``python -m agentic_memory``.
 
-Extended:
-    All user-facing operations that don't require an AI agent are surfaced here:
-    initializing the system in a repository, running one-time or continuous code
-    indexing, querying the Neo4j knowledge graph, managing git-graph sync, ingesting
-    conversation turns, scheduling web research, and annotating MCP tool-call
-    telemetry for prompted/unprompted labeling.
+Entry points:
+    * **Setuptools / pip:** ``agentic_memory.cli:main`` registered as
+      ``agentic-memory`` and ``codememory``.
+    * **Module run:** ``python -m agentic_memory`` loads ``__main__``, which
+      calls :func:`main`.
+    * **Direct script:** ``python path/to/cli.py`` hits the ``__main__`` guard
+      at the bottom of this file.
 
-    The MCP server itself is started via ``cmd_serve``, which delegates to
-    ``agentic_memory.server.app``.
+Configuration and env:
+    Commands resolve the repo root (``--repo`` or :func:`find_repo_root`), then
+    load namespaced dotenv files through :func:`_load_repo_env` so generic
+    ``.env`` keys in the host app do not override ``config.json``. See
+    ``agentic_memory.config`` for JSON merge rules and env precedence on secrets.
 
-Role:
-    User-facing control plane — not imported by any server or library code.
-    All commands read configuration from ``.agentic-memory/config.json`` (falling
-    back to legacy ``.codememory/config.json`` when needed) and talk directly to
-    Neo4j plus the configured code embedding provider.
+Key dependencies:
+    Neo4j driver, configured embedding runtimes, ingestion (graph builder,
+    parsers, watcher), optional :class:`~agentic_memory.telemetry.TelemetryStore`
+    for MCP call annotation.
 
-Dependencies:
-    - Neo4j 5.18+ (graph + vector index storage)
-    - Configured code embedding provider (Gemini by default for code embeddings)
-    - agentic_memory.config (Config, find_repo_root)
-    - agentic_memory.ingestion.graph (KnowledgeGraphBuilder)
-    - agentic_memory.ingestion.git_graph (GitGraphIngestor)
-    - agentic_memory.ingestion.watcher (continuous file watch)
-    - agentic_memory.product.state (ProductStateStore)
-    - agentic_memory.telemetry (TelemetryStore)
-
-Key Technologies:
-    argparse (subcommand routing), python-dotenv (.env loading),
-    Neo4j Python driver, tree-sitter (via ingestion pipeline).
+Note:
+    Subcommand handlers follow the ``cmd_*`` naming convention and are selected
+    from :func:`main` after :meth:`argparse.ArgumentParser.parse_args`.
 """
 
 from dotenv import load_dotenv
@@ -72,6 +65,7 @@ from agentic_memory.core.runtime_embedding import resolve_embedding_runtime
 from agentic_memory.telemetry import TelemetryStore, resolve_telemetry_db_path
 from agentic_memory.trace.service import TraceExecutionService
 
+# Canonical name for help text, examples, and error messages (matches pyproject script).
 PRIMARY_CLI_NAME = "agentic-memory"
 
 
@@ -3407,6 +3401,7 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
         help="Emit machine-readable JSON output",
     )
 
+    # Parse argv once; annotation flags are handled before subcommand dispatch.
     args = parser.parse_args()
 
     if args.prompted and args.unprompted:
@@ -3416,6 +3411,7 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
             human_lines=["❌ Use either --prompted or --unprompted, not both."],
         )
 
+    # Top-level-only path: label the latest telemetry burst (no subcommand).
     if args.prompted or args.unprompted:
         if args.command:
             _exit_with_error(
@@ -3436,7 +3432,7 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
         )
         return
 
-    # Dispatch to command handlers
+    # Standard subcommand routing: each cmd_* receives the parsed Namespace.
     if args.command == "init":
         cmd_init(args)
     elif args.command == "status":
@@ -3505,5 +3501,6 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
         parser.print_help()
 
 
+# When executed as a script (not via console_scripts), run the same entry as -m.
 if __name__ == "__main__":
     main()

@@ -1,26 +1,19 @@
-"""
-Top-level package for the codememory codebase-memory system.
+"""Top-level package for CodeMemory (Agentic Memory).
 
-Extended:
-    codememory is an MCP (Model Context Protocol) server and ingestion pipeline
-    that stores code, git history, conversations, and web research as a hybrid
-    vector + graph database in Neo4j. Agents and IDE plugins talk to it via MCP
-    tools; humans or CI pipelines feed it via CLI ingestion commands.
+CodeMemory is an MCP (Model Context Protocol) server and ingestion pipeline that
+stores code, git history, conversations, and web research in Neo4j as a hybrid
+vector + property graph. IDE plugins and agents call MCP tools; operators and CI
+use CLI commands to ingest and maintain the graph.
 
-Role:
-    This __init__.py is the Python package entry point. Because codememory is
-    consumed as a library (imported by the MCP server and by CLI commands), this
-    file intentionally stays minimal — all public API surfaces live in their
-    respective submodules (server/, ingestion/, core/, etc.).
+This file is the package entry point. It stays minimal on purpose: concrete APIs
+live in subpackages such as ``codememory.server``, ``codememory.ingestion``, and
+``codememory.core`` rather than being re-exported here.
 
-Dependencies:
-    - Neo4j (graph + vector store)
-    - OpenAI / configurable embedding providers
-    - FastMCP (MCP server framework)
-    - tree-sitter (AST-based code parsing)
+Note:
+    Import submodules directly (e.g. ``from codememory.server import app``) when
+    extending the product; there is no barrel export from this module.
 
-Key Technologies:
-    - Model Context Protocol (MCP) for agent-facing tool exposure
-    - Neo4j vector indexes for semantic search
-    - tree-sitter for language-agnostic AST parsing
+See Also:
+    ``codememory.cli`` / ``agentic_memory.cli`` for the command-line interface.
+    ``codememory.server.app`` for the FastMCP server process.
 """

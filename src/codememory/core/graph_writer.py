@@ -1,8 +1,11 @@
-"""Shared Neo4j write patterns for Memory and Entity nodes.
+"""Cypher write helpers: Memory/Entity nodes and typed relationships.
 
-All writes use MERGE for idempotency — re-ingesting the same content produces
-the same node (composite key: source_key + content_hash for Memory nodes,
-name + type for Entity nodes).
+Each public method opens a short `ConnectionManager` session, runs parameterized
+Cypher, and logs at debug. Idempotency relies on MERGE keys (e.g. source_key +
+content_hash for memory rows, name + type for entities) so re-ingestion updates
+timestamps or counters instead of duplicating graph rows.
+
+Temporal edges attach validity, confidence, and support metadata for research/chat flows.
 """
 
 import logging
@@ -54,6 +57,7 @@ class GraphWriter:
         """
         labels_str = ":".join(labels)
 
+        # MERGE on composite identity; ON MATCH refreshes ingested_at for duplicate content.
         if namespace is not None:
             cypher = (
                 f"MERGE (m:{labels_str} {{source_key: $source_key, content_hash: $content_hash}})\n"

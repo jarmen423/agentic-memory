@@ -1,7 +1,13 @@
-"""
-File Watcher for Agentic Memory.
+"""Filesystem observer that keeps the code graph aligned with the working tree.
 
-Monitors a codebase for file changes and incrementally updates the knowledge graph.
+Uses ``watchdog`` to receive create/modify/delete events under a repository
+root, filters by extension and ignore rules shared with
+:class:`~agentic_memory.ingestion.graph.KnowledgeGraphBuilder`, and forwards
+each accepted event to incremental graph updates.
+
+The long-running entrypoint is :func:`start_continuous_watch`, which optionally
+runs a full ingestion pipeline once, then blocks in a sleep loop while the
+observer thread processes events until interrupted.
 """
 
 import time
@@ -22,14 +28,20 @@ logger = logging.getLogger("Observer")
 
 
 class CodeChangeHandler(FileSystemEventHandler):
-    """
-    Handles file system change events and updates the knowledge graph.
+    """Translate ``watchdog`` events into incremental Neo4j updates.
 
-    On file modification, performs incremental updates:
-    1. Updates file node with new hash
-    2. Re-parses entities (functions/classes)
-    3. Re-creates embeddings
-    4. Updates import relationships
+    For each supported, non-ignored path, dispatches to
+    :meth:`KnowledgeGraphBuilder.reindex_file` on create/modify and
+    :meth:`KnowledgeGraphBuilder.delete_file` on delete. Rapid duplicate
+    ``modified`` events for the same path are suppressed briefly so save bursts
+    from editors do not enqueue redundant full reindexes.
+
+    Attributes:
+        builder: Graph builder that owns Neo4j sessions and ignore rules.
+        repo_root: Absolute repository root; relative paths stored in the graph
+            are computed from this anchor.
+        supported_extensions: File suffixes eligible for indexing; defaults to
+            common Python and JS/TS extensions.
     """
 
     def __init__(
@@ -38,13 +50,30 @@ class CodeChangeHandler(FileSystemEventHandler):
         repo_root: Path,
         supported_extensions: Optional[Set[str]] = None,
     ):
+        """Create a handler bound to one builder and repository root.
+
+        Args:
+            builder: Configured :class:`KnowledgeGraphBuilder` instance.
+            repo_root: Root directory passed to ``watchdog`` and used to build
+                repo-relative paths for graph operations.
+            supported_extensions: If omitted, uses ``.py``, ``.js``, ``.ts``,
+                ``.tsx``, and ``.jsx``.
+        """
         self.builder = builder
         self.repo_root = repo_root
         self._debounce_cache: dict[str, float] = {}
         self.supported_extensions = supported_extensions or {".py", ".js", ".ts", ".tsx", ".jsx"}
 
     def _is_ignored_path(self, path: Path) -> bool:
-        """Check if any parent directory in this path should be ignored."""
+        """Return True when the path or any ancestor segment is ignored.
+
+        Args:
+            path: Absolute or repo-relative path from the event.
+
+        Returns:
+            True if the builder's path or directory ignore rules exclude this
+            file.
+        """
         try:
             rel_path = path.relative_to(self.repo_root)
             dir_parts = rel_path.parts[:-1]
@@ -57,7 +86,7 @@ class CodeChangeHandler(FileSystemEventHandler):
         return any(self.builder._should_ignore_dir(part) for part in dir_parts)
 
     def on_modified(self, event):
-        """Handle file modification events."""
+        """Reindex a changed file when it passes extension and ignore filters."""
         if event.is_directory:
             return
 
@@ -69,7 +98,8 @@ class CodeChangeHandler(FileSystemEventHandler):
         if self._is_ignored_path(path):
             return
 
-        # Simple debounce (ignore events within 1 second of last event for this file)
+        # Editors often emit several modified events in quick succession; skip
+        # duplicates within one second per path to avoid redundant graph work.
         now = time.time()
         last_time = self._debounce_cache.get(str(path), 0)
         if now - last_time < 1.0:
@@ -89,7 +119,7 @@ class CodeChangeHandler(FileSystemEventHandler):
             logger.error(f"❌ Failed to ingest {path.name}: {e}")
 
     def on_created(self, event):
-        """Handle file creation events."""
+        """Index a newly created file when it passes extension and ignore filters."""
         if event.is_directory:
             return
 
@@ -111,7 +141,7 @@ class CodeChangeHandler(FileSystemEventHandler):
             logger.error(f"❌ Failed to ingest new file {path.name}: {e}")
 
     def on_deleted(self, event):
-        """Handle file deletion events."""
+        """Remove a deleted file and its derived nodes from the graph."""
         if event.is_directory:
             return
 
@@ -166,17 +196,30 @@ def start_continuous_watch(
     supported_extensions: Optional[Set[str]] = None,
     initial_scan: bool = True,
 ):
-    """
-    Start continuous file watching for a repository.
+    """Configure Neo4j, optionally ingest the whole repo, then watch until Ctrl+C.
+
+    Creates a :class:`KnowledgeGraphBuilder`, ensures constraints/indexes exist,
+    and when ``initial_scan`` is True runs :meth:`KnowledgeGraphBuilder.run_pipeline`
+    so the graph matches disk before events arrive. Schedules a recursive
+    :class:`watchdog.observers.Observer` on ``repo_path`` and blocks in a sleep
+    loop; the observer processes filesystem events on a background thread.
 
     Args:
-        repo_path: Path to the repository to watch
-        config: Repo config used for Neo4j connection and code embedding resolution
-        ignore_dirs: Directory names/patterns to ignore
-        ignore_files: File names/patterns to ignore
-        ignore_patterns: .graphignore-style patterns to ignore
-        supported_extensions: File extensions to process
-        initial_scan: Whether to run full pipeline before watching (default: True)
+        repo_path: Repository root to watch and to use as the graph ``repo_id``.
+        config: Application configuration (Neo4j URI/credentials and code
+            embedding module settings).
+        ignore_dirs: Directory name globs skipped during scans (merged with
+            builder defaults when provided).
+        ignore_files: Basenames to skip.
+        ignore_patterns: Path/basename patterns in ``.graphignore`` style.
+        supported_extensions: Suffixes for Pass 1 and for handler filtering;
+            defaults inside the builder/handler if omitted.
+        initial_scan: If True, run the full default pipeline (through import pass)
+            before subscribing to events.
+
+    Returns:
+        None. This function is intended to run until ``KeyboardInterrupt``,
+        then stop the observer and close the Neo4j driver.
     """
     neo4j_cfg = config.get_neo4j_config()
 
@@ -214,6 +257,7 @@ def start_continuous_watch(
 
     logger.info(f"👀 Watching {repo_path} for changes. Press Ctrl+C to stop.")
     try:
+        # Main thread idles; filesystem work runs on the observer thread.
         while True:
             time.sleep(1)
     except KeyboardInterrupt:

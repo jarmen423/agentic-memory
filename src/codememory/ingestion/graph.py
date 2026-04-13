@@ -1,8 +1,20 @@
-"""
-Knowledge Graph Builder for Agentic Memory.
+"""Neo4j code-graph ingestion: multi-pass pipeline and hybrid retrieval.
 
-Ported from legacy 4_pass_ingestion_with_prep_hybridgraphRAG.py
-This module orchestrates the creation of a hybrid GraphRAG system in Neo4j.
+Builds a **structural + semantic** representation of a repository in Neo4j:
+``File`` / ``Function`` / ``Class`` / ``Chunk`` nodes, ``IMPORTS`` and ``CALLS``
+edges, and vector indexes for chunk embeddings. The design follows the legacy
+four-pass hybrid GraphRAG flow (structure scan → entities/chunks → imports →
+call graph), extended with circuit breaking around read queries and OpenAI
+embedding retries.
+
+Main entry points:
+    ``KnowledgeGraphBuilder.run_pipeline``: Full offline (re)index of a repo root.
+    ``KnowledgeGraphBuilder.ingest``: ``BaseIngestionPipeline`` adapter for the same.
+    ``semantic_search`` / ``get_file_dependencies``: MCP-oriented read helpers.
+
+Dependencies:
+    Neo4j driver, OpenAI client (optional; zero-vector fallback), tree-sitter
+    Python and JavaScript grammars.
 """
 
 import os
@@ -37,14 +49,30 @@ register_source("code_treesitter", ["Memory", "Code", "Chunk"])
 
 
 class CircuitBreaker:
+    """Fail-fast guard around Neo4j operations after repeated ``ServiceUnavailable``.
+
+    States:
+        CLOSED: Normal operation; failures increment a counter.
+        OPEN: Short-circuit with ``ServiceUnavailable`` until ``recovery_timeout``.
+        HALF_OPEN: One successful call closes the circuit again.
+
+    Attributes:
+        failure_threshold: Consecutive failures before opening the circuit.
+        recovery_timeout: Seconds to wait before attempting HALF_OPEN.
+        failure_count: Current consecutive failure count in CLOSED/HALF_OPEN.
+        last_failure_time: Epoch seconds of the last recorded failure.
+        state: ``"CLOSED"``, ``"OPEN"``, or ``"HALF_OPEN"``.
     """
-    Circuit breaker pattern for handling repeated Neo4j connection failures.
-    
-    After a threshold of failures, the circuit opens and subsequent calls
-    fail fast until a timeout period passes.
-    """
-    
+
     def __init__(self, failure_threshold=5, recovery_timeout=30):
+        """Create a breaker with the given thresholds.
+
+        Args:
+            failure_threshold: Number of Neo4j ``ServiceUnavailable`` errors
+                before the circuit opens. Defaults to 5.
+            recovery_timeout: Seconds after opening before trying HALF_OPEN.
+                Defaults to 30.
+        """
         self.failure_threshold = failure_threshold
         self.recovery_timeout = recovery_timeout
         self.failure_count = 0
@@ -52,7 +80,21 @@ class CircuitBreaker:
         self.state = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
         
     def call(self, func, *args, **kwargs):
-        """Execute function with circuit breaker protection."""
+        """Run ``func`` unless the circuit is open, recording Neo4j failures.
+
+        Args:
+            func: Callable to invoke (typically a lambda wrapping a session query).
+            *args: Positional arguments forwarded to ``func``.
+            **kwargs: Keyword arguments forwarded to ``func``.
+
+        Returns:
+            The return value of ``func``.
+
+        Raises:
+            neo4j.exceptions.ServiceUnavailable: When the circuit is OPEN and
+                still within ``recovery_timeout``, or when ``func`` raises it
+                and the threshold is reached.
+        """
         if self.state == "OPEN":
             if time.time() - self.last_failure_time > self.recovery_timeout:
                 self.state = "HALF_OPEN"
@@ -74,7 +116,7 @@ class CircuitBreaker:
             raise e
             
     def _record_failure(self):
-        """Record a failure and potentially open the circuit."""
+        """Increment failure count and open the circuit when at threshold."""
         self.failure_count += 1
         self.last_failure_time = time.time()
         
@@ -318,6 +360,8 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         Pass 0: Pre-flight Configuration.
         Creates constraints and vector indexes to optimize ingestion and retrieval.
         """
+        # Ingestion pipeline — Pass 0: schema guarantees MERGE keys and hybrid indexes
+        # before any file scan (Pass 1) writes nodes.
         logger.info("🚀 [Pass 0] Configuring Database Constraints & Indexes...")
 
         queries = [
@@ -427,6 +471,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
 
         supported_extensions = supported_extensions or {".py", ".js", ".ts", ".tsx", ".jsx"}
 
+        # Pass 1: walk the repo, upsert File nodes when content hash changes, prune stale paths.
         logger.info("📂 [Pass 1] Scanning Directory Structure...")
 
         count = 0
@@ -502,6 +547,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         if not repo_path:
             raise ValueError("repo_path must be provided either in __init__ or as parameter")
 
+        # Pass 2: Tree-sitter definitions → Class/Function nodes + Chunk embeddings (contextual prefix).
         logger.info("🧠 [Pass 2] Extracting Entities & Creating Chunks...")
 
         with self.driver.session() as session:
@@ -830,6 +876,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         if not repo_path:
             raise ValueError("repo_path must be provided either in __init__ or as parameter")
 
+        # Pass 3: parse import specifiers per File, rebuild IMPORTS edges (exact + fuzzy fallback).
         logger.info("🕸️ [Pass 3] Linking Files via Imports...")
         supported_exts = {".py", ".js", ".jsx", ".ts", ".tsx"}
 
@@ -920,6 +967,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         if not repo_path:
             raise ValueError("repo_path must be provided either in __init__ or as parameter")
 
+        # Pass 4: per-file call sites (Python identifier calls) → CALLS edges between Function nodes.
         logger.info("📞 [Pass 4] Constructing Call Graph...")
 
         query_scm = """(call function: (identifier) @name)"""
@@ -1015,6 +1063,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         print("🚀 Starting Hybrid GraphRAG Ingestion")
         print("=" * 60)
 
+        # Full ingestion DAG: schema → files → entities/chunks → imports → call graph.
         self.setup_database()
         self.pass_1_structure_scan(repo_path, supported_extensions=supported_extensions)
         self.pass_2_entity_definition(repo_path)

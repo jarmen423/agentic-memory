@@ -1,5 +1,9 @@
-"""
-SQLite telemetry utilities for MCP tool-call tracking and manual annotation.
+"""SQLite telemetry for MCP tool calls and post-hoc annotation bursts.
+
+Persists per-invocation rows (tool name, latency, success, client id) and a
+small workflow for tagging recent bursts with ``prompt_prefix`` /
+``annotation_mode``. Used by the MCP server decorator layer; path resolution is
+repo-aware via ``resolve_telemetry_db_path``.
 """
 
 from __future__ import annotations
@@ -15,21 +19,28 @@ from typing import Any, Dict, List, Optional
 
 
 def _utc_now_iso() -> str:
+    """Return current UTC time as an ISO-8601 string."""
     return datetime.now(timezone.utc).isoformat()
 
 
 def _epoch_ms_now() -> int:
+    """Return current UTC time as epoch milliseconds (int)."""
     return int(time.time() * 1000)
 
 
 def resolve_telemetry_db_path(repo_root: Optional[Path] = None) -> Path:
-    """
-    Resolve telemetry database path.
+    """Resolve the SQLite file path for ``TelemetryStore``.
 
-    Priority:
-    1) CODEMEMORY_TELEMETRY_DB
-    2) <repo_root>/.codememory/telemetry.sqlite3
-    3) <cwd>/.codememory/telemetry.sqlite3
+    Resolution order:
+        1. Environment variable ``CODEMEMORY_TELEMETRY_DB`` (expanded user path).
+        2. ``<repo_root>/.codememory/telemetry.sqlite3`` when ``repo_root`` given.
+        3. ``<cwd>/.codememory/telemetry.sqlite3``.
+
+    Args:
+        repo_root: Optional repository root; when omitted, uses ``Path.cwd()``.
+
+    Returns:
+        Absolute ``Path`` to the database file (parent dirs may not exist yet).
     """
     env_path = os.getenv("CODEMEMORY_TELEMETRY_DB")
     if env_path:
@@ -260,6 +271,7 @@ class TelemetryStore:
         client_id: Optional[str],
         limit: int = 500,
     ) -> List[sqlite3.Row]:
+        """Fetch recent rows with NULL ``annotation_id`` for burst detection."""
         lower_epoch = _epoch_ms_now() - max(1, int(lookback_seconds)) * 1000
         with self._lock:
             with self._connect() as conn:
@@ -297,11 +309,19 @@ class TelemetryStore:
         idle_seconds: int,
         client_id: Optional[str],
     ) -> List[Dict[str, Any]]:
-        """
-        Return the newest unannotated burst of tool calls.
+        """Return the newest contiguous unannotated burst of tool calls.
 
-        Burst logic: starting from the most recent call, include older calls
-        while each adjacent gap is <= idle_seconds.
+        Starting from the latest matching row (within ``lookback_seconds``),
+        walks backward while successive rows are separated by at most
+        ``idle_seconds``. Results are returned oldest-first.
+
+        Args:
+            lookback_seconds: Maximum age window for candidate rows.
+            idle_seconds: Maximum gap between adjacent rows in the same burst.
+            client_id: When set, restrict to this client; otherwise all clients.
+
+        Returns:
+            List of row dicts (empty when no candidates).
         """
         rows_desc = self._recent_unannotated_calls(
             lookback_seconds=lookback_seconds,

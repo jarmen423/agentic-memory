@@ -1,10 +1,11 @@
-"""Source registry for Agentic Memory ingestion pipelines.
+"""Mutable registry: ingestion source_key → ordered Neo4j labels.
 
-Maps source keys to Neo4j label tiers. This is a LEAF module — it imports
-nothing from codememory. All other modules that need label resolution import
-from here.
+Pipelines call `register_source` at import time so `node_labels` can build label
+strings like Memory:Code:Chunk without hard-coding tiers in each module.
+This module is intentionally dependency-free (no other codememory imports).
 """
 
+# Populated by ingestion modules via register_source; keys are stable identifiers (e.g. parser backend).
 SOURCE_REGISTRY: dict[str, list[str]] = {}
 
 

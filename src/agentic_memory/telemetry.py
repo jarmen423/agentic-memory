@@ -1,40 +1,36 @@
-"""
-SQLite-backed telemetry store for MCP tool-call tracking and manual annotation.
+"""Local SQLite telemetry for MCP tool calls and manual prompted/unprompted labels.
 
-Provides lightweight, local observability for the Agentic Memory MCP server:
-every tool invocation is recorded with timing, success/failure, and client
-identity so usage can be audited and annotated for prompted/unprompted labeling.
+The MCP server records each tool invocation (timing, outcome, client id); the
+CLI can later attach human labels to bursts of calls for research or quality
+analysis. All state lives in a single SQLite file on disk.
 
-Extended:
-    Two SQLite tables power the telemetry system:
-    - ``tool_calls``: One row per MCP tool invocation with duration, success flag,
-      error type, and an optional back-reference to a ``manual_annotations`` row.
-    - ``manual_annotations``: Records user-driven annotations that classify a burst
-      of tool calls as "prompted" (user asked for it) or "unprompted" (agent acted
-      autonomously).  Annotations move from status ``pending`` → ``applied`` once
-      they are matched to actual call rows.
+Database layout:
+    * ``tool_calls``: One row per invocation; annotation columns start null and
+      are filled when a burst is matched.
+    * ``manual_annotations``: Pending intents created by the CLI, then marked
+      ``applied`` when rows are updated (or deleted if no match).
 
-    The annotation workflow is:
-    1. User runs ``agentic-memory --prompted "my prompt"`` immediately after an
-       agent response.
-    2. ``create_pending_annotation`` records the intent.
-    3. ``get_latest_unannotated_burst`` identifies the contiguous block of recent
-       tool calls that belong to this interaction.
-    4. ``apply_annotation_to_calls`` back-fills the annotation onto those rows and
-       marks the annotation as ``applied``.
+Annotation workflow (CLI + store):
+    #. Operator runs ``agentic-memory --prompted`` / ``--unprompted`` after a turn.
+    #. :meth:`TelemetryStore.create_pending_annotation` persists the intent.
+    #. :meth:`TelemetryStore.get_latest_unannotated_burst` finds recent unlabeled calls.
+    #. :meth:`TelemetryStore.apply_annotation_to_calls` writes labels and closes the loop.
 
-Role:
-    Used by ``server/app.py`` (``log_tool_call`` decorator) to record every tool
-    invocation at runtime, and by ``cli.py`` (``cmd_annotate_interaction``) to
-    apply manual annotations.
+Lifecycle notes:
+    * :class:`TelemetryStore` creation ensures the parent directory exists, opens
+      (or creates) the DB file, and runs idempotent ``CREATE TABLE`` DDL under a
+      lock.
+    * Connections use WAL and a busy timeout so concurrent readers (MCP) and
+      the CLI do not deadlock on Windows or slow disks.
 
-Dependencies:
-    - sqlite3 (stdlib — no external database required)
-    - CODEMEMORY_TELEMETRY_DB environment variable (optional path override)
-    - CODEMEMORY_TELEMETRY_ENABLED (set to "0" to disable)
+Environment:
+    * ``CODEMEMORY_TELEMETRY_DB``: optional absolute path override for the DB file.
+    * ``CODEMEMORY_TELEMETRY_ENABLED``: documented for callers (e.g. server) to
+      short-circuit recording when set to ``"0"``.
 
-Key Technologies:
-    SQLite with WAL journal mode, threading.Lock for write serialization.
+See Also:
+    ``agentic_memory.server.app`` (instrumentation) and
+    ``agentic_memory.cli.cmd_annotate_interaction`` (annotation UX).
 """
 
 from __future__ import annotations
@@ -50,37 +46,62 @@ from typing import Any, Dict, List, Optional
 
 
 def _utc_now_iso() -> str:
+    """UTC timestamp string for human-readable columns (``ts_utc``)."""
     return datetime.now(timezone.utc).isoformat()
 
 
 def _epoch_ms_now() -> int:
+    """Unix epoch milliseconds for ordering and burst detection."""
     return int(time.time() * 1000)
 
 
 def resolve_telemetry_db_path(repo_root: Optional[Path] = None) -> Path:
-    """
-    Resolve telemetry database path.
+    """Choose the SQLite file path used by :class:`TelemetryStore`.
 
-    Priority:
-    1) CODEMEMORY_TELEMETRY_DB
-    2) <repo_root>/.agentic-memory/telemetry.sqlite3
-    3) <cwd>/.agentic-memory/telemetry.sqlite3
+    Resolution order:
+        #. ``CODEMEMORY_TELEMETRY_DB`` if set (expanded and resolved).
+        #. Else ``<repo_root>/.agentic-memory/telemetry.sqlite3`` when
+           ``repo_root`` is provided.
+        #. Else ``<cwd>/.agentic-memory/telemetry.sqlite3``.
+
+    Args:
+        repo_root: Optional repository root; when omitted, the current working
+            directory is used as the base for the default relative path.
+
+    Returns:
+        Absolute :class:`~pathlib.Path` to the database file (file may not exist
+        yet until the store is constructed).
     """
     env_path = os.getenv("CODEMEMORY_TELEMETRY_DB")
     if env_path:
         return Path(env_path).expanduser().resolve()
 
+    # Default: co-locate with other Agentic Memory control-plane files under .agentic-memory/
     base = repo_root.resolve() if repo_root else Path.cwd().resolve()
     return base / ".agentic-memory" / "telemetry.sqlite3"
 
 
 class TelemetryStore:
-    """Simple SQLite-backed telemetry store."""
+    """Thread-safe SQLite persistence for tool calls and annotation state.
+
+    Construction lifecycle:
+        #. Normalize ``db_path`` and create parent directories if missing.
+        #. Allocate a process-wide ``threading.Lock`` so writes serialize.
+        #. Run :meth:`_init_schema` once to ensure tables and indexes exist.
+
+    Runtime lifecycle:
+        Each mutating method acquires the lock, opens a short-lived connection via
+        :meth:`_connect`, runs SQL, and returns. Readers and writers rely on WAL +
+        ``busy_timeout`` for stability under concurrent MCP traffic.
+    """
 
     def __init__(self, db_path: Path):
+        """Open (or create) the store at ``db_path`` and ensure schema exists."""
         self.db_path = Path(db_path)
+        # Ensure .agentic-memory/ (or custom parent) exists before sqlite connects.
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        # Idempotent DDL: safe on every process start.
         self._init_schema()
 
     @staticmethod
@@ -94,13 +115,17 @@ class TelemetryStore:
         return uuid.uuid4().hex[:12]
 
     def _connect(self) -> sqlite3.Connection:
+        """Create a connection with Row factory and durability-friendly pragmas."""
         conn = sqlite3.connect(str(self.db_path), timeout=30)
         conn.row_factory = sqlite3.Row
+        # WAL: better concurrent read/write than default rollback journal.
         conn.execute("PRAGMA journal_mode=WAL;")
+        # Wait up to 5s when the DB is locked instead of failing immediately.
         conn.execute("PRAGMA busy_timeout=5000;")
         return conn
 
     def _init_schema(self) -> None:
+        """Create tables and indexes if absent (no-op when already provisioned)."""
         with self._lock:
             with self._connect() as conn:
                 conn.executescript(

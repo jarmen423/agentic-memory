@@ -1,9 +1,15 @@
-"""Request-scoped context helpers shared across app layers."""
+"""Async-safe request correlation id via :mod:`contextvars`.
+
+HTTP/MCP handlers call :func:`set_request_id` when a request starts and
+:func:`reset_request_id` when done so logs and downstream code can read the same id
+with :func:`get_request_id` without threading globals through every function.
+"""
 
 from __future__ import annotations
 
 from contextvars import ContextVar
 
+# Isolated per asyncio task / worker request; default None when outside a tracked request.
 _request_id: ContextVar[str | None] = ContextVar("request_id", default=None)
 
 

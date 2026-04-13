@@ -1,8 +1,13 @@
-"""Content normalization and markdown chunking for web research.
+"""Normalize crawled or pasted content and chunk it for the research pipeline.
 
-Normalizes HTML, PDF, and text to markdown, then chunks by headers
-with recursive fixed-size fallback. Per CONTEXT.md: 512 token max,
-50 token overlap on recursive splits only.
+``ResearchIngestionPipeline._ingest_report`` calls ``_to_markdown`` and
+``chunk_markdown`` after entity extraction on the full report body. Chunk size
+policy follows project CONTEXT: **512** token target with **50** token overlap
+on recursive splits only (header splits do not overlap).
+
+Formats:
+    ``markdown`` and ``text`` pass through; ``html`` uses ``markdownify`` when
+    installed; ``pdf`` uses ``pymupdf4llm`` and requires ``RawContent.path``.
 """
 
 import dataclasses

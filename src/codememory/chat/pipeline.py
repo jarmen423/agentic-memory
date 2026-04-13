@@ -1,9 +1,13 @@
-"""Conversation ingestion pipeline — turn-by-turn chat memory path.
+"""Conversation ingestion pipeline: one graph write per chat turn.
 
-ConversationIngestionPipeline subclasses BaseIngestionPipeline to ingest
-conversation turns as :Memory:Conversation:Turn nodes. Each turn is one
-atomic ingest call — no chunking. Session grouping is handled by the
-companion :Memory:Conversation:Session node written per-turn.
+``ConversationIngestionPipeline`` subclasses ``BaseIngestionPipeline`` and maps
+each ``ingest`` call to a single ``Turn`` node (plus session upsert and
+relationships). User/assistant turns are embedded and entity-linked; system/tool
+turns are stored without vectors. Multiple ``source_key`` variants register at
+import time for different MCP/proxy/CLI producers.
+
+Temporal shadow writes (optional) mirror ``MENTIONS``/``ABOUT`` edges into the
+SpacetimeDB bridge when configured.
 """
 
 import hashlib
@@ -64,6 +68,7 @@ class ConversationIngestionPipeline(BaseIngestionPipeline):
             connection_manager: Configured ConnectionManager instance.
             embedding_service: Configured EmbeddingService (Gemini provider).
             entity_extractor: Configured EntityExtractionService (Groq).
+            temporal_bridge: Optional ``TemporalBridge`` for shadow relation writes.
         """
         super().__init__(connection_manager)
         self._embedder = embedding_service
@@ -121,6 +126,7 @@ class ConversationIngestionPipeline(BaseIngestionPipeline):
         Returns:
             Summary dict with ingestion results.
         """
+        # Turn pipeline: hash → optional embed/extract → memory node → session → edges → entities.
         now = self._now()
         role = source["role"]
         content = source["content"]

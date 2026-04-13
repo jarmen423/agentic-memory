@@ -1,4 +1,11 @@
-"""Shared seed-discovery helpers for temporal retrieval."""
+"""Build seed entity lists for temporal ``retrieve`` from search rows or queries.
+
+Consumers (e.g. unified search) pass vector-hit rows containing ``entities`` /
+``entity_types`` / ``score``; ``collect_seed_entities`` aggregates and ranks
+deterministic seeds. ``extract_query_seed_entities`` adds LLM-extracted seeds
+from the raw user question. Time-window parsing helpers support ``as_of`` query
+parameters and conversation evidence ids.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +16,15 @@ from codememory.core.entity_extraction import EntityExtractionService
 
 
 def collect_seed_entities(rows: list[dict[str, Any]], limit: int = 5) -> list[dict[str, Any]]:
-    """Collect deterministic entity-first seeds from vector-search rows."""
+    """Aggregate entity mentions from retrieval rows into ranked seed dicts.
+
+    Args:
+        rows: Each row may include ``entities``, ``entity_types``, and ``score``.
+        limit: Maximum number of seeds to return after ranking.
+
+    Returns:
+        List of ``{"name", "kind", "score"}`` dicts sorted by descending score.
+    """
     aggregates: dict[tuple[str, str], dict[str, Any]] = {}
 
     for row_index, row in enumerate(rows):
@@ -54,7 +69,16 @@ def extract_query_seed_entities(
     extractor: EntityExtractionService,
     limit: int = 5,
 ) -> list[dict[str, Any]]:
-    """Use query-time entity extraction as a secondary seed source."""
+    """Extract up to ``limit`` unique entities from the literal user query.
+
+    Args:
+        query: Natural-language question or keywords.
+        extractor: Configured ``EntityExtractionService`` (same stack as pipelines).
+        limit: Cap on distinct (name, type) pairs returned.
+
+    Returns:
+        Seed dicts with unit weight scores for ordering compatibility.
+    """
     seen: set[tuple[str, str]] = set()
     ranked: list[dict[str, Any]] = []
 
@@ -75,7 +99,14 @@ def extract_query_seed_entities(
 
 
 def parse_as_of_to_micros(as_of: str | None) -> int | None:
-    """Parse an ISO-8601 `as_of` string into UTC microseconds."""
+    """Parse an ISO-8601 ``as_of`` string into UTC microseconds since epoch.
+
+    Args:
+        as_of: ISO timestamp or None.
+
+    Returns:
+        Integer microseconds, or None when input is empty or invalid.
+    """
     if not as_of:
         return None
     try:
@@ -89,6 +120,16 @@ def parse_as_of_to_micros(as_of: str | None) -> int | None:
 
 
 def parse_conversation_source_id(source_id: str) -> tuple[str, int]:
-    """Split the stable conversation evidence source id into session and turn index."""
+    """Split ``session_id:turn_index`` evidence ids used in conversation shadow writes.
+
+    Args:
+        source_id: String with the last ``:`` separating integer turn index.
+
+    Returns:
+        Tuple of ``(session_id, turn_index)``.
+
+    Raises:
+        ValueError: If the turn index is not a valid integer (propagated from ``int``).
+    """
     session_id, raw_turn_index = source_id.rsplit(":", 1)
     return session_id, int(raw_turn_index)

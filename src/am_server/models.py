@@ -121,6 +121,11 @@ class OpenClawOnboardingContractModel(BaseModel):
     """
 
     status: str
+    deployment_mode: str
+    supported_deployment_modes: list[str] = Field(default_factory=list)
+    auth_strategy: str
+    provider_key_mode: str
+    hosted_base_url: str | None = None
     plugin_package_name: str
     plugin_id: str
     install_command: str

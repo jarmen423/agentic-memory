@@ -9,6 +9,11 @@ function createContract(
 ): BackendOnboardingContract {
   return {
     status: "ok",
+    deployment_mode: "self_hosted",
+    supported_deployment_modes: ["managed", "self_hosted"],
+    auth_strategy: "shared_api_key",
+    provider_key_mode: "operator_managed",
+    hosted_base_url: null,
     plugin_package_name: "agentic-memory-openclaw",
     plugin_id: "agentic-memory",
     install_command: "openclaw plugin install agentic-memory-openclaw",
@@ -128,6 +133,7 @@ test("doctor formatting includes blocking reasons for failed readiness", () => {
   const text = formatDoctorText({
     ok: false,
     backendUrl: "http://127.0.0.1:8765",
+    backendKind: "self_hosted",
     mode: "capture_only",
     contract: createContract({
       readiness: {

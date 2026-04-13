@@ -29,8 +29,10 @@ Design choice for this phase:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import secrets
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -109,6 +111,8 @@ class ProductStateStore:
             "projects": [],
             "active_projects": [],
             "project_automations": [],
+            "hosted_api_keys": [],
+            "usage_counters": [],
             "events": [],
             "runtime": {
                 "components": {
@@ -454,6 +458,168 @@ class ProductStateStore:
 
         return self._update(mutate)
 
+    def issue_hosted_workspace_api_key(
+        self,
+        *,
+        workspace_id: str,
+        label: str | None = None,
+        created_by: str = "operator",
+        raw_token: str | None = None,
+    ) -> dict[str, Any]:
+        """Create one managed-beta API key bound to a single workspace."""
+
+        normalized_workspace_id = workspace_id.strip()
+        normalized_label = (label or f"{normalized_workspace_id} hosted key").strip()
+        token = (raw_token or secrets.token_urlsafe(24)).strip()
+        if not normalized_workspace_id:
+            raise ValueError("workspace_id is required")
+        if not token:
+            raise ValueError("raw token must not be empty")
+
+        timestamp = _utc_now()
+        record = {
+            "key_id": f"wk_{secrets.token_hex(8)}",
+            "workspace_id": normalized_workspace_id,
+            "label": normalized_label,
+            "token_hash": self._hash_api_token(token),
+            "token_prefix": token[:8],
+            "status": "active",
+            "created_by": created_by.strip() or "operator",
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "last_used_at": None,
+        }
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            keys = state["hosted_api_keys"]
+            keys.append(record)
+            keys.sort(key=lambda item: (item["workspace_id"], item["label"], item["key_id"]))
+            self._touch_state(state)
+            return {**record, "token": token}
+
+        return self._update(mutate)
+
+    def lookup_hosted_workspace_api_key(self, raw_token: str) -> dict[str, Any] | None:
+        """Return the active workspace-bound key record matching a raw token."""
+
+        token_hash = self._hash_api_token(raw_token.strip())
+        if not token_hash:
+            return None
+
+        state = self.load()
+        for record in state["hosted_api_keys"]:
+            if record.get("status") != "active":
+                continue
+            if record.get("token_hash") == token_hash:
+                return record
+        return None
+
+    def touch_hosted_workspace_api_key_use(self, key_id: str) -> dict[str, Any] | None:
+        """Update the last-used timestamp for one hosted workspace key."""
+
+        normalized_key_id = key_id.strip()
+        if not normalized_key_id:
+            raise ValueError("key_id is required")
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any] | None:
+            for index, existing in enumerate(state["hosted_api_keys"]):
+                if existing.get("key_id") != normalized_key_id:
+                    continue
+                updated = {
+                    **existing,
+                    "last_used_at": _utc_now(),
+                    "updated_at": _utc_now(),
+                }
+                state["hosted_api_keys"][index] = updated
+                self._touch_state(state)
+                return updated
+            return None
+
+        return self._update(mutate)
+
+    def revoke_hosted_workspace_api_key(self, key_id: str) -> dict[str, Any] | None:
+        """Mark one hosted workspace key inactive without removing audit history."""
+
+        normalized_key_id = key_id.strip()
+        if not normalized_key_id:
+            raise ValueError("key_id is required")
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any] | None:
+            for index, existing in enumerate(state["hosted_api_keys"]):
+                if existing.get("key_id") != normalized_key_id:
+                    continue
+                updated = {
+                    **existing,
+                    "status": "revoked",
+                    "updated_at": _utc_now(),
+                }
+                state["hosted_api_keys"][index] = updated
+                self._touch_state(state)
+                return updated
+            return None
+
+        return self._update(mutate)
+
+    def record_usage_counter(
+        self,
+        *,
+        workspace_id: str,
+        metric: str,
+        amount: int = 1,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Increment one workspace-scoped usage counter for hosted beta."""
+
+        normalized_workspace_id = workspace_id.strip()
+        normalized_metric = metric.strip()
+        if not normalized_workspace_id or not normalized_metric:
+            raise ValueError("workspace_id and metric are required")
+        if amount < 0:
+            raise ValueError("amount must be non-negative")
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            counters = state["usage_counters"]
+            for index, existing in enumerate(counters):
+                if (
+                    existing.get("workspace_id") == normalized_workspace_id
+                    and existing.get("metric") == normalized_metric
+                ):
+                    updated = {
+                        **existing,
+                        "count": int(existing.get("count", 0)) + amount,
+                        "metadata": {
+                            **(existing.get("metadata", {}) if isinstance(existing.get("metadata"), dict) else {}),
+                            **(metadata or {}),
+                        },
+                        "updated_at": _utc_now(),
+                    }
+                    counters[index] = updated
+                    self._touch_state(state)
+                    return updated
+
+            record = {
+                "workspace_id": normalized_workspace_id,
+                "metric": normalized_metric,
+                "count": amount,
+                "metadata": metadata or {},
+                "updated_at": _utc_now(),
+            }
+            counters.append(record)
+            counters.sort(key=lambda item: (item["workspace_id"], item["metric"]))
+            self._touch_state(state)
+            return record
+
+        return self._update(mutate)
+
+    def get_usage_summary(self, workspace_id: str | None = None) -> list[dict[str, Any]]:
+        """Return hosted usage counters, optionally filtered to one workspace."""
+
+        rows = self.load()["usage_counters"]
+        if workspace_id is None:
+            return rows
+        normalized_workspace_id = workspace_id.strip()
+        return [row for row in rows if row.get("workspace_id") == normalized_workspace_id]
+
     def set_component_status(
         self,
         component: str,
@@ -545,6 +711,21 @@ class ProductStateStore:
             "projects": state["projects"],
             "active_projects": state["active_projects"],
             "project_automations": state["project_automations"],
+            "hosted_api_keys": [
+                {
+                    "key_id": record["key_id"],
+                    "workspace_id": record["workspace_id"],
+                    "label": record["label"],
+                    "token_prefix": record["token_prefix"],
+                    "status": record["status"],
+                    "created_by": record["created_by"],
+                    "created_at": record["created_at"],
+                    "updated_at": record["updated_at"],
+                    "last_used_at": record["last_used_at"],
+                }
+                for record in state["hosted_api_keys"]
+            ],
+            "usage_counters": state["usage_counters"],
             "events": state["events"],
             "runtime": state["runtime"],
             "summary": {
@@ -553,6 +734,8 @@ class ProductStateStore:
                 "project_count": len(state["projects"]),
                 "active_project_count": len(state["active_projects"]),
                 "project_automation_count": len(state["project_automations"]),
+                "hosted_api_key_count": len(state["hosted_api_keys"]),
+                "usage_counter_count": len(state["usage_counters"]),
                 "event_count": len(state["events"]),
                 "component_count": len(state["runtime"]["components"]),
                 "onboarding_completed": bool(required_steps)
@@ -589,6 +772,8 @@ class ProductStateStore:
                 "projects": list(payload.get("projects", [])),
                 "active_projects": list(payload.get("active_projects", [])),
                 "project_automations": list(payload.get("project_automations", [])),
+                "hosted_api_keys": list(payload.get("hosted_api_keys", [])),
+                "usage_counters": list(payload.get("usage_counters", [])),
                 "events": list(payload.get("events", []))[-DEFAULT_EVENT_CAP:],
                 "runtime": {**state["runtime"], **payload.get("runtime", {})},
             }
@@ -610,7 +795,43 @@ class ProductStateStore:
         state["app"]["onboarding"] = onboarding
         state["app"]["updated_at"] = state["app"].get("updated_at", _utc_now())
         state["app"]["last_seen_at"] = state["app"].get("last_seen_at")
+        state["hosted_api_keys"] = [
+            {
+                "key_id": record.get("key_id"),
+                "workspace_id": record.get("workspace_id"),
+                "label": record.get("label", ""),
+                "token_hash": record.get("token_hash", ""),
+                "token_prefix": record.get("token_prefix", ""),
+                "status": record.get("status", "active"),
+                "created_by": record.get("created_by", "operator"),
+                "created_at": record.get("created_at", _utc_now()),
+                "updated_at": record.get("updated_at", _utc_now()),
+                "last_used_at": record.get("last_used_at"),
+            }
+            for record in state.get("hosted_api_keys", [])
+            if isinstance(record, dict) and record.get("workspace_id")
+        ]
+        state["usage_counters"] = [
+            {
+                "workspace_id": record.get("workspace_id"),
+                "metric": record.get("metric"),
+                "count": int(record.get("count", 0)),
+                "metadata": record.get("metadata", {}) if isinstance(record.get("metadata"), dict) else {},
+                "updated_at": record.get("updated_at", _utc_now()),
+            }
+            for record in state.get("usage_counters", [])
+            if isinstance(record, dict) and record.get("workspace_id") and record.get("metric")
+        ]
         return state
+
+    @staticmethod
+    def _hash_api_token(raw_token: str) -> str:
+        """Return a stable SHA256 digest for one raw API token."""
+
+        normalized = raw_token.strip()
+        if not normalized:
+            return ""
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
     def _touch_state(self, state: dict[str, Any]) -> dict[str, Any]:
         timestamp = _utc_now()

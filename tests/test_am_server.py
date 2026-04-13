@@ -144,6 +144,10 @@ def test_health_onboarding_is_public_and_returns_locked_contract(client):
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "ok"
+    assert body["deployment_mode"] == "self_hosted"
+    assert body["supported_deployment_modes"] == ["managed", "self_hosted"]
+    assert body["auth_strategy"] == "shared_api_key"
+    assert body["provider_key_mode"] == "operator_managed"
     assert body["plugin_package_name"] == "agentic-memory-openclaw"
     assert body["plugin_id"] == "agentic-memory"
     assert body["install_command"] == "openclaw plugin install agentic-memory-openclaw"

@@ -87,6 +87,13 @@ AI agents get seamless, persistent memory that works regardless of content type 
 - [x] Collapse the current install/docs/runbook story into one supported onboarding path that matches what the code actually validates
 - [x] Keep public beta, hosted multi-tenant auth, SSO, and GA launch collateral deferred until the onboarding path is credible in practice
 
+**OpenClaw Hosted Beta Platform + Dual-Mode Wave (`w17-openclaw-hosted-beta-and-dual-mode`) — Active in Phase 17:**
+- [ ] Turn the current GCP VM deployment into the first honest managed Agentic Memory beta backend instead of a manually reasoned operator stack
+- [ ] Add explicit hosted vs self-hosted behavior to the backend onboarding contract and the OpenClaw plugin setup/doctor UX
+- [ ] Replace shared generic API-key assumptions with workspace-bound hosted keys plus backend-side workspace enforcement
+- [ ] Meter hosted usage now so the product can move toward usage-based charging later without making beta users bring their own provider keys
+- [ ] Keep self-hosted as a first-class full-stack fallback rather than drifting into a mixed hosted-API / customer-managed-database mode
+
 ### Out of Scope
 
 - Web UI dashboard — Nice-to-have, not v1 priority
@@ -95,7 +102,7 @@ AI agents get seamless, persistent memory that works regardless of content type 
 - Real-time collaboration features — Single-user focus for v1
 - Advanced conversation analytics (sentiment, topic modeling) — Basic retrieval first
 - Video/audio transcription — Rely on external tools, ingest transcripts only
-- Broad universal adapter expansion beyond the current shipped integrations — post-v1. The targeted OpenClaw docs + private beta wave is active now.
+- Broad universal adapter expansion beyond the current shipped integrations — post-v1. The active OpenClaw work is Phase 17 hosted beta + dual-mode deployment, not broader adapter expansion.
 - Simple cron scheduling (repeat same query) — Replaced by smart scheduled research with LLM-driven variable substitution
 
 ## Context
@@ -143,4 +150,4 @@ AI agents get seamless, persistent memory that works regardless of content type 
 | Modular architecture | Each module independently usable, scales to future content types | ✓ Confirmed |
 
 ---
-*Last updated: 2026-04-13 after Phase 16 (OpenClaw whole-stack onboarding) completed and the execution snapshot was archived*
+*Last updated: 2026-04-13 after Phase 17 (OpenClaw hosted beta platform + dual-mode deployment) became the active execution track*

@@ -98,6 +98,10 @@ def test_openclaw_onboarding_contract_is_public_and_matches_locked_identity(clie
 
     assert response.status_code == 200
     body = response.json()
+    assert body["deployment_mode"] == "self_hosted"
+    assert body["supported_deployment_modes"] == ["managed", "self_hosted"]
+    assert body["auth_strategy"] == "shared_api_key"
+    assert body["provider_key_mode"] == "operator_managed"
     assert body["plugin_package_name"] == "agentic-memory-openclaw"
     assert body["plugin_id"] == "agentic-memory"
     assert body["install_command"] == "openclaw plugin install agentic-memory-openclaw"
@@ -107,6 +111,80 @@ def test_openclaw_onboarding_contract_is_public_and_matches_locked_identity(clie
     assert body["readiness"]["capture_only_ready"] is True
     assert any(service["service_id"] == "openclaw_memory" for service in body["required_services"])
     assert any(service["service_id"] == "temporal_stack" for service in body["optional_services"])
+
+
+def test_openclaw_contract_managed_workspace_keys_are_workspace_scoped(monkeypatch, tmp_path):
+    """Managed hosted keys should only authorize requests for their bound workspace."""
+
+    monkeypatch.delenv("AM_SERVER_API_KEY", raising=False)
+    monkeypatch.delenv("AM_SERVER_API_KEYS", raising=False)
+    monkeypatch.setenv("AGENTIC_MEMORY_DEPLOYMENT_MODE", "managed")
+    monkeypatch.setenv("AGENTIC_MEMORY_HOSTED_BASE_URL", "https://memory.example.com")
+    monkeypatch.setenv("NEO4J_URI", "bolt://localhost:7687")
+    monkeypatch.setenv("NEO4J_USER", "neo4j")
+    monkeypatch.setenv("NEO4J_PASSWORD", "test")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini")
+    monkeypatch.setenv("GROQ_API_KEY", "fake-groq")
+    monkeypatch.setenv("CODEMEMORY_PRODUCT_STATE", str(tmp_path / "managed-product-state.json"))
+
+    mock_research_pipeline = MagicMock()
+    monkeypatch.setattr(
+        "am_server.dependencies.ResearchIngestionPipeline",
+        lambda *args, **kwargs: mock_research_pipeline,
+    )
+
+    mock_conversation_pipeline = MagicMock()
+    mock_conversation_pipeline.ingest.return_value = {"stored": True}
+    monkeypatch.setattr(
+        "am_server.dependencies.ConversationIngestionPipeline",
+        lambda *args, **kwargs: mock_conversation_pipeline,
+    )
+
+    dependencies.get_pipeline.cache_clear()
+    dependencies.get_conversation_pipeline.cache_clear()
+    dependencies.get_product_store.cache_clear()
+    with openclaw._CACHE_LOCK:  # type: ignore[attr-defined]
+        openclaw._PROJECT_STATUS_CACHE.clear()  # type: ignore[attr-defined]
+        openclaw._SEARCH_CACHE.clear()  # type: ignore[attr-defined]
+
+    store = dependencies.get_product_store()
+    store.issue_hosted_workspace_api_key(
+        workspace_id="workspace-1",
+        label="managed beta key",
+        raw_token="workspace-managed-key",
+    )
+
+    app = create_app()
+    with TestClient(app, raise_server_exceptions=False) as test_client:
+        allowed = test_client.post(
+            "/openclaw/session/register",
+            headers={"Authorization": "Bearer workspace-managed-key"},
+            json={
+                "workspace_id": "workspace-1",
+                "device_id": "device-1",
+                "agent_id": "agent-1",
+                "session_id": "session-1",
+            },
+        )
+        assert allowed.status_code == 200
+
+        denied = test_client.post(
+            "/openclaw/session/register",
+            headers={"Authorization": "Bearer workspace-managed-key"},
+            json={
+                "workspace_id": "workspace-2",
+                "device_id": "device-1",
+                "agent_id": "agent-1",
+                "session_id": "session-1",
+            },
+        )
+
+    _assert_error_envelope(
+        denied,
+        code="workspace_access_denied",
+        status_code=403,
+        message_contains="bound to a different workspace",
+    )
 
 
 def test_openclaw_contract_missing_auth_returns_error_envelope_and_header(client):

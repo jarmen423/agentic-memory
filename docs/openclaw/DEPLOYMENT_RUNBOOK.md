@@ -3,14 +3,23 @@
 This runbook explains how to stand up the Agentic Memory backend that the
 OpenClaw plugin uses during the controlled beta phase.
 
-The deployment shape in this phase is intentionally simple:
+Phase 17 introduces two explicit modes:
+
+- managed hosted beta
+  - this runbook's primary path
+  - the current GCP VM is the first real target
+- self-hosted full stack
+  - still supported, but covered by `D:\code\agentic-memory\docs\SETUP_FULL_STACK.md`
+
+The managed deployment shape in this phase is intentionally simple:
 
 - one `am-server` instance
 - one Neo4j instance
+- one shared hosted data plane with strict workspace scoping
 - optional hosted-MCP keys
 - optional temporal bridge configuration
 
-This is a beta scaffold, not a hosted multi-tenant GA architecture.
+This is a bootstrap-stage managed beta scaffold, not a hosted multi-tenant GA architecture.
 
 ## What This Stack Serves
 
@@ -36,7 +45,8 @@ That backend handles:
 - Docker with Compose support
 - a checked-out repo revision you intend to run for beta
 - at least one valid embedding/extraction provider configuration
-- a real `AM_SERVER_API_KEYS` value for the OpenClaw plugin to use
+- a real operator/admin `AM_SERVER_API_KEYS` value
+- an explicit deployment mode env value for the hosted backend
 
 ## 1. Create A Production Environment File
 
@@ -49,6 +59,8 @@ NEO4J_USER=neo4j
 NEO4J_PASSWORD=replace-with-real-password
 
 AM_SERVER_API_KEYS=replace-with-real-rest-key
+AGENTIC_MEMORY_DEPLOYMENT_MODE=managed
+AGENTIC_MEMORY_HOSTED_BASE_URL=https://your-managed-hostname.example.com
 
 # Use at least one provider path that matches the workloads you want.
 GOOGLE_API_KEY=replace-with-real-key
@@ -74,7 +86,11 @@ NEO4J_BOLT_BIND_ADDRESS=127.0.0.1
 Why these values matter:
 
 - `AM_SERVER_API_KEYS`
-  - the OpenClaw plugin uses this bearer token surface
+  - operator/admin bearer key surface for the managed backend
+- `AGENTIC_MEMORY_DEPLOYMENT_MODE=managed`
+  - makes `/health/onboarding` and auth surfaces identify this backend as the hosted path
+- `AGENTIC_MEMORY_HOSTED_BASE_URL`
+  - gives setup/doctor/docs one canonical hosted URL to point at
 - provider keys
   - search, ingest, and context resolution can depend on them
 - Neo4j credentials

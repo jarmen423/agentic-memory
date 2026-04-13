@@ -1,5 +1,12 @@
 # Full-Stack Local Setup
 
+This document is the self-hosted full-stack path.
+
+If you want the managed hosted beta path instead, stop here and use:
+
+- `D:\code\agentic-memory\docs\INSTALLATION.md`
+- `D:\code\agentic-memory\docs\openclaw\DEPLOYMENT_RUNBOOK.md`
+
 This runbook starts the full local stack used by the current Phase 10 implementation:
 
 1. Neo4j

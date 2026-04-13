@@ -2,22 +2,22 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: — Full Multi-Module Memory System with Temporal GraphRAG
-current_phase: 16
-status: completed
-last_updated: "2026-04-13T15:20:00Z"
+current_phase: 17
+status: active
+last_updated: "2026-04-13T22:20:00Z"
 progress:
-  total_phases: 16
+  total_phases: 17
   completed_phases: 14
-  total_plans: 23
+  total_plans: 24
   completed_plans: 23
 ---
 
 # Agentic Memory — Project State
 
 **Last Updated:** 2026-04-13
-**Current Phase:** 16
-**Phase Status:** Phase 16 complete; no next follow-on track locked yet
-**Last Session Stopped At:** Phase 16 is complete and archived under `.planning/execution/archive/w16-openclaw-whole-stack-onboarding/`. The OpenClaw stack now has a doctor-first onboarding contract, explicit temporal targeting, and CI/release gates for the supported path. Phase 10 still needs live manual verification from the runbooks, and Phase 11 remains resumable from `.planning/execution/archive/w11-calls/`.
+**Current Phase:** 17
+**Phase Status:** Phase 17 active; hosted beta platform + dual-mode deployment is now the live OpenClaw delivery track
+**Last Session Stopped At:** Phase 17 has just been locked as the next OpenClaw execution wave. The current focus is turning the GCP VM into the first honest managed beta backend while keeping self-hosted as a verified full-stack fallback. Phase 16 remains archived under `.planning/execution/archive/w16-openclaw-whole-stack-onboarding/`. Phase 10 still needs live manual verification from the runbooks, and Phase 11 remains resumable from `.planning/execution/archive/w11-calls/`.
 
 ---
 
@@ -25,7 +25,7 @@ progress:
 
 **Phase 16: OpenClaw Whole-Stack Onboarding**
 
-**Next Action:** Choose the next delivery track. The most recent OpenClaw execution wave is complete; remaining choices are to define a new follow-on phase or resume paused Phase 10 / Phase 11 work.
+**Next Action:** Execute Phase 17 hosted-beta and dual-mode work. The first contract lock is to freeze managed versus self-hosted behavior before widening backend auth, plugin setup UX, and hosted deployment docs.
 
 ---
 
@@ -58,6 +58,7 @@ progress:
 | 14 | OpenClaw Scaling + Packaging | Complete |
 | 15 | OpenClaw Docs + Private Beta | Complete |
 | 16 | OpenClaw Whole-Stack Onboarding | Complete |
+| 17 | OpenClaw Hosted Beta Platform + Dual-Mode Deployment | Active |
 
 ---
 

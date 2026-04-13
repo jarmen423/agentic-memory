@@ -41,9 +41,9 @@ from threading import Lock
 import time
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
-from am_server.auth import require_auth
+from am_server.auth import ensure_workspace_access, require_auth
 from am_server.dependencies import get_conversation_pipeline, get_pipeline, get_product_store
 from am_server.metrics import (
     record_openclaw_context_resolve,
@@ -75,6 +75,20 @@ _CACHE_LOCK = Lock()
 _PROJECT_STATUS_CACHE: dict[tuple[str, str, str, str], tuple[float, dict[str, Any] | None]] = {}
 _SEARCH_CACHE: dict[tuple[str, str, str, str, str | None, str, int, str | None, tuple[str, ...]], tuple[float, dict[str, Any]]] = {}
 _CACHE_MISS = object()
+
+
+def _record_workspace_usage(*, workspace_id: str, metric: str, metadata: dict[str, Any] | None = None) -> None:
+    """Increment one hosted-beta usage counter for the current workspace."""
+
+    store = get_product_store()
+    if not hasattr(store, "record_usage_counter"):
+        return
+    store.record_usage_counter(
+        workspace_id=workspace_id,
+        metric=metric,
+        amount=1,
+        metadata=metadata or {},
+    )
 
 
 def _serialize(value: object) -> object:
@@ -521,7 +535,7 @@ def _format_conversation_read_document(
 
 
 @router.post("/openclaw/session/register")
-async def register_openclaw_session(body: OpenClawSessionRegisterRequest) -> dict:
+async def register_openclaw_session(request: Request, body: OpenClawSessionRegisterRequest) -> dict:
     """Register or refresh an OpenClaw session in the local product store.
 
     Persists workspace/device/agent/session metadata and records an audit event.
@@ -539,6 +553,7 @@ async def register_openclaw_session(body: OpenClawSessionRegisterRequest) -> dic
     Dependencies:
         ``get_product_store`` (implicit via ``get_product_store()``).
     """
+    ensure_workspace_access(request, body.workspace_id)
     store = get_product_store()
     integration = store.upsert_integration(
         surface="openclaw",
@@ -573,6 +588,11 @@ async def register_openclaw_session(body: OpenClawSessionRegisterRequest) -> dic
         workspace_id=body.workspace_id,
         session_id=body.session_id,
     )
+    _record_workspace_usage(
+        workspace_id=body.workspace_id,
+        metric="openclaw_session_register",
+        metadata={"agent_id": body.agent_id},
+    )
     _invalidate_project_status_cache(
         workspace_id=body.workspace_id,
         agent_id=body.agent_id,
@@ -594,7 +614,7 @@ async def register_openclaw_session(body: OpenClawSessionRegisterRequest) -> dic
 
 
 @router.post("/openclaw/project/activate")
-async def activate_openclaw_project(body: OpenClawProjectActivationRequest) -> dict:
+async def activate_openclaw_project(request: Request, body: OpenClawProjectActivationRequest) -> dict:
     """Bind an active ``project_id`` to the resolved OpenClaw session.
 
     If ``body.session_id`` is omitted, the backend infers the current session
@@ -612,7 +632,7 @@ async def activate_openclaw_project(body: OpenClawProjectActivationRequest) -> d
     Raises:
         HTTPException: 422 when no session can be inferred for the identity.
     """
-
+    ensure_workspace_access(request, body.workspace_id)
     session_id = _resolve_openclaw_session_id(
         workspace_id=body.workspace_id,
         device_id=body.device_id,
@@ -661,7 +681,7 @@ async def activate_openclaw_project(body: OpenClawProjectActivationRequest) -> d
 
 
 @router.post("/openclaw/project/deactivate")
-async def deactivate_openclaw_project(body: OpenClawProjectDeactivationRequest) -> dict:
+async def deactivate_openclaw_project(request: Request, body: OpenClawProjectDeactivationRequest) -> dict:
     """Remove the active project binding for the resolved OpenClaw session.
 
     Session resolution matches ``activate_openclaw_project``.
@@ -676,7 +696,7 @@ async def deactivate_openclaw_project(body: OpenClawProjectDeactivationRequest) 
     Raises:
         HTTPException: 422 when session id cannot be resolved.
     """
-
+    ensure_workspace_access(request, body.workspace_id)
     session_id = _resolve_openclaw_session_id(
         workspace_id=body.workspace_id,
         device_id=body.device_id,
@@ -721,7 +741,7 @@ async def deactivate_openclaw_project(body: OpenClawProjectDeactivationRequest) 
 
 
 @router.post("/openclaw/project/status")
-async def status_openclaw_project(body: OpenClawProjectStatusRequest) -> dict:
+async def status_openclaw_project(request: Request, body: OpenClawProjectStatusRequest) -> dict:
     """Return the active project binding for the resolved OpenClaw session.
 
     Uses a short TTL in-process cache keyed by workspace/device/agent/session
@@ -737,7 +757,7 @@ async def status_openclaw_project(body: OpenClawProjectStatusRequest) -> dict:
     Raises:
         HTTPException: 422 when session id cannot be resolved.
     """
-
+    ensure_workspace_access(request, body.workspace_id)
     session_id = _resolve_openclaw_session_id(
         workspace_id=body.workspace_id,
         device_id=body.device_id,
@@ -774,7 +794,7 @@ async def status_openclaw_project(body: OpenClawProjectStatusRequest) -> dict:
 
 
 @router.post("/openclaw/project/automation")
-async def automate_openclaw_project(body: OpenClawProjectAutomationRequest) -> dict:
+async def automate_openclaw_project(request: Request, body: OpenClawProjectAutomationRequest) -> dict:
     """Upsert automation settings for a project within a workspace.
 
     Args:
@@ -784,7 +804,7 @@ async def automate_openclaw_project(body: OpenClawProjectAutomationRequest) -> d
     Returns:
         JSON with ``status`` ``"ok"``, persisted ``automation``, and ``event``.
     """
-
+    ensure_workspace_access(request, body.workspace_id)
     store = get_product_store()
     automation = store.upsert_project_automation(
         workspace_id=body.workspace_id,
@@ -802,7 +822,7 @@ async def automate_openclaw_project(body: OpenClawProjectAutomationRequest) -> d
 
 
 @router.post("/openclaw/memory/ingest-turn", status_code=202)
-async def ingest_openclaw_turn(body: OpenClawTurnIngestRequest) -> dict:
+async def ingest_openclaw_turn(request: Request, body: OpenClawTurnIngestRequest) -> dict:
     """Accept one conversation turn and persist it via the conversation pipeline.
 
     Effective ``project_id`` is resolved server-side (explicit body value wins;
@@ -826,7 +846,7 @@ async def ingest_openclaw_turn(body: OpenClawTurnIngestRequest) -> dict:
     Note:
         Responds with HTTP 202 Accepted (see route ``status_code``).
     """
-
+    ensure_workspace_access(request, body.workspace_id)
     effective_project_id = _resolve_active_project_id(
         workspace_id=body.workspace_id,
         agent_id=body.agent_id,
@@ -870,6 +890,11 @@ async def ingest_openclaw_turn(body: OpenClawTurnIngestRequest) -> dict:
         agent_id=body.agent_id,
         source_key=body.source_key,
     )
+    _record_workspace_usage(
+        workspace_id=body.workspace_id,
+        metric="openclaw_turn_ingest",
+        metadata={"agent_id": body.agent_id, "source_key": body.source_key},
+    )
     _invalidate_search_cache(
         workspace_id=body.workspace_id,
         agent_id=body.agent_id,
@@ -886,7 +911,7 @@ async def ingest_openclaw_turn(body: OpenClawTurnIngestRequest) -> dict:
 
 
 @router.post("/openclaw/memory/search")
-async def search_openclaw_memory(body: OpenClawMemorySearchRequest) -> dict:
+async def search_openclaw_memory(request: Request, body: OpenClawMemorySearchRequest) -> dict:
     """Run unified memory search scoped to the effective project and identity.
 
     Results pass through ``search_all_memory_sync`` (code graph + research +
@@ -906,6 +931,7 @@ async def search_openclaw_memory(body: OpenClawMemorySearchRequest) -> dict:
         ``get_graph``, ``get_pipeline``, ``get_conversation_pipeline`` for the
         search call; product store for events.
     """
+    ensure_workspace_access(request, body.workspace_id)
     effective_project_id = _resolve_active_project_id(
         workspace_id=body.workspace_id,
         agent_id=body.agent_id,
@@ -962,6 +988,11 @@ async def search_openclaw_memory(body: OpenClawMemorySearchRequest) -> dict:
         modules=body.modules,
         duration_seconds=duration,
     )
+    _record_workspace_usage(
+        workspace_id=body.workspace_id,
+        metric="openclaw_memory_search",
+        metadata={"agent_id": body.agent_id},
+    )
     get_product_store().record_event(
         event_type="openclaw_memory_search",
         actor="openclaw",
@@ -990,7 +1021,7 @@ async def search_openclaw_memory(body: OpenClawMemorySearchRequest) -> dict:
 
 
 @router.post("/openclaw/memory/read")
-async def read_openclaw_memory(body: OpenClawMemoryReadRequest) -> dict:
+async def read_openclaw_memory(request: Request, body: OpenClawMemoryReadRequest) -> dict:
     """Fetch full text for a hit previously returned by search (v1: turns only).
 
     Only conversation-turn source ids (``session_id:turn_index`` form after
@@ -1011,6 +1042,7 @@ async def read_openclaw_memory(body: OpenClawMemoryReadRequest) -> dict:
             or no turn exists in the graph.
     """
 
+    ensure_workspace_access(request, body.workspace_id)
     # Search hits may cite "#L{line}" — canonical id is the path before the fragment.
     canonical_path = body.rel_path.split("#", 1)[0].strip()
     conversation_pipeline = get_conversation_pipeline()
@@ -1054,7 +1086,7 @@ async def read_openclaw_memory(body: OpenClawMemoryReadRequest) -> dict:
 
 
 @router.post("/openclaw/context/resolve")
-async def resolve_openclaw_context(body: OpenClawContextResolveRequest) -> dict:
+async def resolve_openclaw_context(request: Request, body: OpenClawContextResolveRequest) -> dict:
     """Build LLM-oriented context blocks from a memory search for this session.
 
     Internally reuses ``search_openclaw_memory`` with the same identity and
@@ -1075,6 +1107,7 @@ async def resolve_openclaw_context(body: OpenClawContextResolveRequest) -> dict:
     Dependencies:
         Product store for audit event; OpenClaw context-resolve metric.
     """
+    ensure_workspace_access(request, body.workspace_id)
     effective_project_id = _resolve_active_project_id(
         workspace_id=body.workspace_id,
         agent_id=body.agent_id,
@@ -1083,6 +1116,7 @@ async def resolve_openclaw_context(body: OpenClawContextResolveRequest) -> dict:
     )
     started = time.perf_counter()
     search_response = await search_openclaw_memory(
+        request,
         OpenClawMemorySearchRequest(
             workspace_id=body.workspace_id,
             device_id=body.device_id,
@@ -1097,6 +1131,11 @@ async def resolve_openclaw_context(body: OpenClawContextResolveRequest) -> dict:
         )
     )
     record_openclaw_context_resolve(duration_seconds=time.perf_counter() - started)
+    _record_workspace_usage(
+        workspace_id=body.workspace_id,
+        metric="openclaw_context_resolve",
+        metadata={"agent_id": body.agent_id, "context_engine": body.context_engine},
+    )
     blocks = _format_context_blocks(search_response.get("results", []))
     prompt_addition = None
     if body.include_system_prompt:

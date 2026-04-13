@@ -17,6 +17,7 @@ test("setup config merge enables the plugin and fills both OpenClaw slots", () =
       },
     },
     {
+      backendKind: "self_hosted",
       backendUrl: "http://127.0.0.1:8765",
       apiKey: "${AGENTIC_MEMORY_API_KEY}",
       workspaceId: "workspace-1",
@@ -34,6 +35,7 @@ test("setup config merge enables the plugin and fills both OpenClaw slots", () =
 
   assert.equal(agenticMemory.enabled, true);
   assert.equal(config.schemaVersion, 1);
+  assert.equal(config.backendKind, "self_hosted");
   assert.equal(config.backendUrl, "http://127.0.0.1:8765");
   assert.equal(config.workspaceId, "workspace-1");
   assert.equal(config.deviceId, "device-1");

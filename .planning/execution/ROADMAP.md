@@ -1,36 +1,36 @@
 # Wave Roadmap
 
-## Latest Completed Track: `w16-openclaw-whole-stack-onboarding`
+## Active Track: `w17-openclaw-hosted-beta-and-dual-mode`
 
 ### Wave 0: Orchestrator lock
 
-- `W16-OC-00`: archive the completed `w15-openclaw-docs-and-private-beta`
-  registry, update `.planning` truth, and freeze write ownership plus merge
-  gates for the onboarding wave.
+- `W17-HB-00`: activate Phase 17, freeze the managed vs self-hosted execution
+  contract, and seed the hosted-beta registry plus merge gates.
 
 ### Wave 1: Contract lock
 
-- `W16-OC-01`: define the onboarding contract for what the plugin, backend,
-  shell, and local services must validate, report, or treat as optional before
-  the user sees a "setup complete" result.
+- `W17-HB-01`: define the hosted-beta contract for deployment mode, workspace
+  auth, managed provider-key ownership, and what users vs operators should be
+  expected to care about.
 
 ### Wave 2: Parallel implementation threads
 
-- `W16-OC-02`: add plugin-side doctor/setup UX so OpenClaw validates the real
-  backend path instead of only persisting config.
-- `W16-OC-03`: clean up whole-stack bootstrap and temporal-target assumptions so
-  local services do not rely on saved aliases or silent port defaults.
-- `W16-OC-04`: rewrite install, troubleshooting, and whole-stack onboarding
-  docs so the supported path matches the actual validated flow.
+- `W17-HB-02`: implement backend hosted-beta auth, workspace-bound key
+  enforcement, usage metering, and operator provisioning helpers.
+- `W17-HB-03`: implement plugin-side hosted vs self-hosted setup/doctor UX so
+  the user sees one clear mode and one clear resolved backend target.
+- `W17-HB-04`: update managed-beta deployment/docs/runbooks around the current
+  GCP VM while keeping self-hosted guidance and validation alive.
 
 ### Wave 3: Integration gate
 
-- `W16-OC-05`: reconcile CI, release validation, and onboarding regression
-  coverage so the stack cannot drift back into hidden local assumptions.
+- `W17-HB-05`: reconcile backend tests, plugin tests, and docs truth so the
+  managed hosted path and self-hosted fallback cannot silently drift apart.
 
 ### Wave 4: Verification
 
-- run the backend, contract, dashboard, package, and whole-stack regression gates
-- verify the temporal packages still build/typecheck with the new bootstrap path
-- write handoffs and update the registry so the next follow-on track can start
-  from a truthful onboarding snapshot
+- run the backend and plugin regression gates for the widened contract
+- verify hosted-beta docs match the deployed GCP VM assumptions
+- verify self-hosted docs still point to the full-stack path rather than a mixed mode
+- write handoffs and update the registry so the next follow-on phase starts from
+  a truthful hosted-beta baseline

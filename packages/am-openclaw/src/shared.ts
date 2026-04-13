@@ -26,6 +26,7 @@ export interface OpenClawIdentity {
  */
 export interface AgenticMemoryPluginConfig extends Partial<OpenClawIdentity> {
   schemaVersion?: number;
+  backendKind?: "hosted" | "self_hosted";
   backendUrl?: string;
   apiKey?: string | null;
   projectId?: string | null;
@@ -55,6 +56,7 @@ export type OpenClawConfig = Record<string, unknown>;
 
 export type ResolvedPluginConfig = Required<OpenClawIdentity> & {
   schemaVersion: number;
+  backendKind: "hosted" | "self_hosted";
   backendUrl: string;
   apiKey: string | null;
   projectId: string | null;
@@ -100,6 +102,11 @@ export interface OnboardingReadinessStatus {
  */
 export interface BackendOnboardingContract {
   status: string;
+  deployment_mode: string;
+  supported_deployment_modes: string[];
+  auth_strategy: string;
+  provider_key_mode: string;
+  hosted_base_url?: string | null;
   plugin_package_name: string;
   plugin_id: string;
   install_command: string;
@@ -151,6 +158,7 @@ export const PLUGIN_CONFIG_SCHEMA = {
   additionalProperties: false,
   properties: {
     schemaVersion: { type: "integer" },
+    backendKind: { enum: ["hosted", "self_hosted"] },
     backendUrl: { type: "string" },
     apiKey: { type: "string" },
     workspaceId: { type: "string" },
@@ -186,6 +194,7 @@ export function normalizeOpenClawIdentity(identity: OpenClawIdentity): OpenClawI
  */
 export function buildOpenClawBootstrapConfig(
   options: OpenClawIdentity & {
+    backendKind?: "hosted" | "self_hosted";
     backendUrl: string;
     backendApiKey?: string | null;
     apiKeyTemplateVar?: string | null;
@@ -210,6 +219,7 @@ export function buildOpenClawBootstrapConfig(
           enabled: true,
           config: {
             schemaVersion: PLUGIN_CONFIG_SCHEMA_VERSION,
+            backendKind: options.backendKind ?? "self_hosted",
             backendUrl: options.backendUrl.trim(),
             apiKey:
               options.backendApiKey?.trim() ||
@@ -320,11 +330,14 @@ export function resolveAgenticMemoryPluginConfig(
   const resolvedAgentId = agentIdFromHost?.trim() || asString(pluginConfig.agentId) || "default-agent";
   const mode: "capture_only" | "augment_context" =
     pluginConfig.mode === "augment_context" ? "augment_context" : "capture_only";
-  const resolved = {
+  const backendKind: "hosted" | "self_hosted" =
+    pluginConfig.backendKind === "hosted" ? "hosted" : "self_hosted";
+  const resolved: ResolvedPluginConfig = {
     schemaVersion:
       typeof pluginConfig.schemaVersion === "number" && Number.isFinite(pluginConfig.schemaVersion)
         ? pluginConfig.schemaVersion
         : PLUGIN_CONFIG_SCHEMA_VERSION,
+    backendKind,
     backendUrl: asString(pluginConfig.backendUrl) ?? DEFAULT_BACKEND_URL,
     apiKey: asString(pluginConfig.apiKey) ?? null,
     workspaceId: asString(pluginConfig.workspaceId) ?? createDefaultWorkspaceId(resolvedAgentId),

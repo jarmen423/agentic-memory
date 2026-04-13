@@ -23,6 +23,7 @@ import {
 export interface DoctorReport {
   ok: boolean;
   backendUrl: string;
+  backendKind: "hosted" | "self_hosted";
   mode: "capture_only" | "augment_context";
   contract: BackendOnboardingContract;
   localWarnings: string[];
@@ -59,6 +60,20 @@ function localConfigWarnings(config: ResolvedPluginConfig): string[] {
   return warnings;
 }
 
+function backendModeWarnings(
+  config: ResolvedPluginConfig,
+  contract: BackendOnboardingContract,
+): string[] {
+  const warnings: string[] = [];
+  const expectedKind = contract.deployment_mode === "managed" ? "hosted" : "self_hosted";
+  if (config.backendKind !== expectedKind) {
+    warnings.push(
+      `The saved plugin backend mode is ${config.backendKind}, but the backend reports ${contract.deployment_mode}.`,
+    );
+  }
+  return warnings;
+}
+
 function packageIdentityWarnings(contract: BackendOnboardingContract): string[] {
   const warnings: string[] = [];
   if (contract.plugin_package_name !== OPENCLAW_PACKAGE_INFO.packageName) {
@@ -85,6 +100,7 @@ export function validateSetupAgainstContract(
   const warnings = [
     ...localConfigWarnings(config),
     ...packageIdentityWarnings(contract),
+    ...backendModeWarnings(config, contract),
   ];
 
   if (!contract.readiness.setup_ready) {
@@ -132,6 +148,7 @@ export async function runAgenticMemoryDoctor(
   return {
     ok: validation.ok,
     backendUrl: config.backendUrl,
+    backendKind: config.backendKind,
     mode: config.mode,
     contract,
     localWarnings: validation.localWarnings,
@@ -147,6 +164,10 @@ export function formatDoctorText(report: DoctorReport): string {
   const lines = [
     `Agentic Memory doctor for ${report.backendUrl}`,
     `Mode: ${report.mode}`,
+    `Configured backend kind: ${report.backendKind === "hosted" ? "hosted" : "self-hosted"}`,
+    `Backend deployment mode: ${report.contract.deployment_mode}`,
+    `Backend auth strategy: ${report.contract.auth_strategy}`,
+    `Provider key mode: ${report.contract.provider_key_mode}`,
     `Install command: ${report.contract.install_command}`,
     `Setup command: ${report.contract.setup_command}`,
     `Doctor command: ${report.contract.doctor_command}`,

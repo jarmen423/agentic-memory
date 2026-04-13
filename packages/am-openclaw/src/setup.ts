@@ -30,6 +30,8 @@ import {
 } from "./shared.js";
 
 export type SetupCommandOptions = {
+  hosted?: boolean;
+  selfHosted?: boolean;
   backendUrl?: string;
   apiKey?: string;
   workspace?: string;
@@ -48,6 +50,7 @@ export type SetupCommandOptions = {
 
 export type ResolvedSetupValues = {
   schemaVersion: number;
+  backendKind: "hosted" | "self_hosted";
   backendUrl: string;
   apiKey: string;
   workspaceId: string;
@@ -58,6 +61,8 @@ export type ResolvedSetupValues = {
 };
 
 export type DoctorCommandOptions = {
+  hosted?: boolean;
+  selfHosted?: boolean;
   backendUrl?: string;
   apiKey?: string;
   workspace?: string;
@@ -95,6 +100,37 @@ function resolveExistingMode(config: OpenClawConfig): "capture_only" | "augment_
   return existing.mode === "augment_context" ? "augment_context" : "capture_only";
 }
 
+function resolveExistingBackendKind(config: OpenClawConfig): "hosted" | "self_hosted" | null {
+  const existing = resolveExistingPluginConfig(config);
+  if (existing.backendKind === "hosted") {
+    return "hosted";
+  }
+  if (existing.backendKind === "self_hosted") {
+    return "self_hosted";
+  }
+  return null;
+}
+
+function describeBackendUrlSource(existing: Record<string, unknown>, options: SetupCommandOptions): string {
+  if (options.backendUrl?.trim()) {
+    return "command flag";
+  }
+  if (asString(existing.backendUrl)) {
+    return "saved config";
+  }
+  return "default";
+}
+
+function describeBackendKindSource(existing: Record<string, unknown>, options: SetupCommandOptions): string {
+  if (options.hosted || options.selfHosted) {
+    return "command flag";
+  }
+  if (existing.backendKind === "hosted" || existing.backendKind === "self_hosted") {
+    return "saved config";
+  }
+  return "default";
+}
+
 /**
  * Apply the plugin's config into the active OpenClaw config object.
  */
@@ -112,6 +148,7 @@ export function mergeAgenticMemoryPluginConfigIntoOpenClawConfig(
     enabled: true,
     config: {
       schemaVersion: values.schemaVersion ?? PLUGIN_CONFIG_SCHEMA_VERSION,
+      backendKind: values.backendKind,
       backendUrl: values.backendUrl,
       apiKey: values.apiKey,
       workspaceId: values.workspaceId,
@@ -138,17 +175,24 @@ export function mergeAgenticMemoryPluginConfigIntoOpenClawConfig(
 
 async function promptWithDefault(
   question: string,
-  defaultValue: string,
+  defaultValue: string | null,
   options?: { allowEmpty?: boolean },
 ): Promise<string> {
   const rl = createInterface({ input, output });
   try {
-    const raw = await rl.question(`${question} [${defaultValue}]: `);
+    const prompt = defaultValue ? `${question} [${defaultValue}]: ` : `${question}: `;
+    const raw = await rl.question(prompt);
     const trimmed = raw.trim();
     if (!trimmed && options?.allowEmpty) {
       return "";
     }
-    return trimmed || defaultValue;
+    if (!trimmed && defaultValue) {
+      return defaultValue;
+    }
+    if (!trimmed) {
+      throw new Error(`${question} is required.`);
+    }
+    return trimmed;
   } finally {
     rl.close();
   }
@@ -169,7 +213,35 @@ async function promptYesNo(question: string, defaultValue: boolean): Promise<boo
   }
 }
 
+async function promptBackendKind(
+  defaultValue: "hosted" | "self_hosted",
+): Promise<"hosted" | "self_hosted"> {
+  const rl = createInterface({ input, output });
+  const defaultLabel = defaultValue === "hosted" ? "hosted" : "self-hosted";
+  try {
+    const raw = await rl.question(
+      `Agentic Memory backend mode [${defaultLabel}] (hosted/self-hosted): `,
+    );
+    const normalized = raw.trim().toLowerCase();
+    if (!normalized) {
+      return defaultValue;
+    }
+    if (normalized === "hosted") {
+      return "hosted";
+    }
+    if (normalized === "self-hosted" || normalized === "self_hosted" || normalized === "selfhosted") {
+      return "self_hosted";
+    }
+    throw new Error("Backend mode must be either hosted or self-hosted.");
+  } finally {
+    rl.close();
+  }
+}
+
 function ensureSetupFlagCompatibility(options: SetupCommandOptions): void {
+  if (options.hosted && options.selfHosted) {
+    throw new Error("Use either --hosted or --self-hosted, not both.");
+  }
   if (
     options.enableContextAugmentation &&
     options.disableContextAugmentation
@@ -205,6 +277,36 @@ function resolveWorkspaceIdDefault(
   );
 }
 
+function resolveBackendKindDefault(
+  currentConfig: OpenClawConfig,
+  options: SetupCommandOptions,
+): "hosted" | "self_hosted" {
+  if (options.hosted) {
+    return "hosted";
+  }
+  if (options.selfHosted) {
+    return "self_hosted";
+  }
+  return resolveExistingBackendKind(currentConfig) ?? "self_hosted";
+}
+
+function resolveBackendUrlDefault(
+  existing: Record<string, unknown>,
+  options: SetupCommandOptions,
+  backendKind: "hosted" | "self_hosted",
+): string | null {
+  if (options.backendUrl?.trim()) {
+    return options.backendUrl.trim();
+  }
+  if (asString(existing.backendUrl)) {
+    return asString(existing.backendUrl)!;
+  }
+  if (backendKind === "hosted") {
+    return process.env.AGENTIC_MEMORY_HOSTED_BACKEND_URL?.trim() || null;
+  }
+  return DEFAULT_BACKEND_URL;
+}
+
 async function resolveSetupValues(
   currentConfig: OpenClawConfig,
   options: SetupCommandOptions,
@@ -213,6 +315,7 @@ async function resolveSetupValues(
 
   const existing = resolveExistingPluginConfig(currentConfig);
   const interactive = isInteractiveTerminal();
+  const backendKindDefault = resolveBackendKindDefault(currentConfig, options);
   const modeDefault =
     options.mode ??
     (options.enableContextAugmentation || options.enableContextEngine
@@ -221,15 +324,24 @@ async function resolveSetupValues(
         ? "capture_only"
         : resolveExistingMode(currentConfig));
 
-  const backendUrlDefault = options.backendUrl?.trim() || asString(existing.backendUrl) || DEFAULT_BACKEND_URL;
+  const backendUrlDefault = resolveBackendUrlDefault(existing, options, backendKindDefault);
   const apiKeyDefault = options.apiKey?.trim() || asString(existing.apiKey) || "${AGENTIC_MEMORY_API_KEY}";
   const deviceIdDefault = options.deviceId?.trim() || asString(existing.deviceId) || createDefaultDeviceId();
   const agentIdDefault = options.agentId?.trim() || asString(existing.agentId) || createDefaultAgentId();
   const workspaceIdDefault = resolveWorkspaceIdDefault(existing, options, agentIdDefault);
 
+  if (!backendUrlDefault) {
+    throw new Error(
+      backendKindDefault === "hosted"
+        ? "No hosted backend URL is configured yet. Pass --backend-url or set AGENTIC_MEMORY_HOSTED_BACKEND_URL."
+        : "No self-hosted backend URL is configured yet.",
+    );
+  }
+
   if (!interactive) {
     return {
       schemaVersion: PLUGIN_CONFIG_SCHEMA_VERSION,
+      backendKind: backendKindDefault,
       backendUrl: backendUrlDefault,
       apiKey: apiKeyDefault,
       workspaceId: workspaceIdDefault,
@@ -240,7 +352,15 @@ async function resolveSetupValues(
     };
   }
 
-  const backendUrl = await promptWithDefault("Agentic Memory backend URL", backendUrlDefault);
+  const backendKindSource = describeBackendKindSource(existing, options);
+  output.write(`Backend mode default source: ${backendKindSource}\n`);
+  const backendKind = await promptBackendKind(backendKindDefault);
+  const backendUrl = await promptWithDefault(
+    backendKind === "hosted"
+      ? `Agentic Memory hosted backend URL (${describeBackendUrlSource(existing, options)})`
+      : `Agentic Memory self-hosted backend URL (${describeBackendUrlSource(existing, options)})`,
+    resolveBackendUrlDefault(existing, options, backendKind),
+  );
   const apiKey = await promptWithDefault("API key or interpolation template", apiKeyDefault);
   const deviceId = await promptWithDefault("Device ID", deviceIdDefault);
   const agentId = await promptWithDefault("Agent ID", agentIdDefault);
@@ -252,6 +372,7 @@ async function resolveSetupValues(
 
   return {
     schemaVersion: PLUGIN_CONFIG_SCHEMA_VERSION,
+    backendKind,
     backendUrl,
     apiKey,
     workspaceId,
@@ -276,6 +397,7 @@ function printSetupResult(
     ok: true,
     pluginId: PLUGIN_ID,
     schemaVersion: values.schemaVersion,
+    backendKind: values.backendKind,
     backendUrl: values.backendUrl,
     workspaceId: values.workspaceId,
     deviceId: values.deviceId,
@@ -292,6 +414,7 @@ function printSetupResult(
   }
 
   output.write(`Configured ${PLUGIN_ID} in the active OpenClaw profile.\n`);
+  output.write(`Backend kind: ${values.backendKind === "hosted" ? "hosted" : "self-hosted"}\n`);
   output.write(`Backend: ${values.backendUrl}\n`);
   output.write(`Workspace: ${values.workspaceId} (auto-resolved unless overridden)\n`);
   output.write(`Device: ${values.deviceId}\n`);
@@ -342,6 +465,7 @@ function resolveProjectCommandConfig(
   const agentId =
     options.agentId?.trim() || asString(existing.agentId) || createDefaultAgentId();
   return {
+    backendKind: resolveExistingBackendKind(currentConfig) ?? "self_hosted",
     backendUrl: asString(existing.backendUrl) ?? DEFAULT_BACKEND_URL,
     apiKey: asString(existing.apiKey) ?? null,
     workspaceId: resolveWorkspaceIdDefault(existing, options, agentId),
@@ -359,7 +483,12 @@ function resolveDoctorConfig(
     options.agentId?.trim() || asString(existing.agentId) || createDefaultAgentId();
   return {
     schemaVersion: PLUGIN_CONFIG_SCHEMA_VERSION,
-    backendUrl: options.backendUrl?.trim() || asString(existing.backendUrl) || DEFAULT_BACKEND_URL,
+    backendKind: resolveBackendKindDefault(currentConfig, options),
+    backendUrl:
+      options.backendUrl?.trim() ||
+      asString(existing.backendUrl) ||
+      (options.hosted ? process.env.AGENTIC_MEMORY_HOSTED_BACKEND_URL?.trim() : undefined) ||
+      DEFAULT_BACKEND_URL,
     apiKey: options.apiKey?.trim() || asString(existing.apiKey) || null,
     workspaceId: resolveWorkspaceIdDefault(existing, options, agentId),
     deviceId: options.deviceId?.trim() || asString(existing.deviceId) || createDefaultDeviceId(),
@@ -392,6 +521,7 @@ async function printDoctorResult(
         {
           ok: report.ok,
           backendUrl: report.backendUrl,
+          backendKind: report.backendKind,
           mode: report.mode,
           readiness: report.contract.readiness,
           blockingReasons: report.blockingReasons,
@@ -507,6 +637,8 @@ export function registerAgenticMemoryCli(ctx: AgenticMemoryCliContext): void {
   root
     .command("setup")
     .description("Run the Agentic Memory setup wizard or apply flags non-interactively")
+    .option("--hosted", "Use the hosted Agentic Memory path", false)
+    .option("--self-hosted", "Use the self-hosted Agentic Memory path", false)
     .option("--backend-url <url>", "Agentic Memory backend URL")
     .option(
       "--api-key <value>",
@@ -545,6 +677,7 @@ export function registerAgenticMemoryCli(ctx: AgenticMemoryCliContext): void {
       if (!options.skipDoctor) {
         const doctorConfig = {
           schemaVersion: values.schemaVersion,
+          backendKind: values.backendKind,
           backendUrl: values.backendUrl,
           apiKey: values.apiKey,
           workspaceId: values.workspaceId,
@@ -584,6 +717,8 @@ export function registerAgenticMemoryCli(ctx: AgenticMemoryCliContext): void {
   root
     .command("doctor")
     .description("Check whether the configured backend is honestly ready for OpenClaw setup")
+    .option("--hosted", "Check readiness for the hosted Agentic Memory path", false)
+    .option("--self-hosted", "Check readiness for the self-hosted Agentic Memory path", false)
     .option("--backend-url <url>", "Agentic Memory backend URL")
     .option(
       "--api-key <value>",

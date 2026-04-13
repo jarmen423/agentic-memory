@@ -31,14 +31,37 @@ Environment variables (see :func:`expected_api_keys_for_surface`):
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 
 from fastapi import HTTPException, Request, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+from am_server.dependencies import get_product_store
 
 # Use ``auto_error=False`` so the dependency can normalize both missing and
 # invalid bearer tokens into the same explicit 401 contract expected by the
 # public API and test suite.
 _bearer = HTTPBearer(auto_error=False)
+
+
+@dataclass(frozen=True)
+class AuthContext:
+    """Resolved authentication context for one request.
+
+    Attributes:
+        auth_type: ``operator`` for legacy/shared admin keys or ``workspace``
+            for hosted managed-beta workspace-bound keys.
+        raw_token: The validated bearer token string.
+        workspace_id: Present only for workspace-bound hosted keys.
+        key_id: Stable store id for a hosted workspace key when applicable.
+        source: Human-readable source of truth used for validation.
+    """
+
+    auth_type: str
+    raw_token: str
+    workspace_id: str | None = None
+    key_id: str | None = None
+    source: str = "env"
 
 
 def _truthy_env(value: str | None) -> bool:
@@ -58,6 +81,15 @@ def strict_mcp_auth_enabled() -> bool:
     """
 
     return _truthy_env(os.environ.get("AM_SERVER_STRICT_MCP_AUTH"))
+
+
+def deployment_mode() -> str:
+    """Return the backend deployment mode exposed to clients and auth logic."""
+
+    mode = str(os.environ.get("AGENTIC_MEMORY_DEPLOYMENT_MODE", "self_hosted")).strip().lower()
+    if mode == "managed":
+        return "managed"
+    return "self_hosted"
 
 
 def _parse_api_keys(raw_multi: str, raw_single: str) -> set[str]:
@@ -182,9 +214,78 @@ def validate_surface_token(token: str | None, surface: str) -> tuple[int, str, s
     return 200, "ok", "ok"
 
 
+def _resolve_auth_context(raw_token: str) -> AuthContext | None:
+    """Resolve a request token into an operator or workspace auth context."""
+
+    operator_keys = _expected_api_keys()
+    if raw_token in operator_keys:
+        return AuthContext(auth_type="operator", raw_token=raw_token, source="env")
+
+    if deployment_mode() != "managed":
+        return None
+
+    record = get_product_store().lookup_hosted_workspace_api_key(raw_token)
+    if not record:
+        return None
+
+    return AuthContext(
+        auth_type="workspace",
+        raw_token=raw_token,
+        workspace_id=str(record.get("workspace_id") or "").strip() or None,
+        key_id=str(record.get("key_id") or "").strip() or None,
+        source="product_state",
+    )
+
+
+def get_request_auth_context(request: Request) -> AuthContext | None:
+    """Read the previously validated auth context from request state."""
+
+    context = getattr(request.state, "agentic_memory_auth", None)
+    return context if isinstance(context, AuthContext) else None
+
+
+def ensure_workspace_access(request: Request, workspace_id: str) -> AuthContext:
+    """Reject requests that present a workspace-bound key for another workspace."""
+
+    context = get_request_auth_context(request)
+    if context is None:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "auth_context_missing",
+                "message": "Authentication context was not attached to the request.",
+            },
+        )
+
+    normalized_workspace_id = workspace_id.strip()
+    if not normalized_workspace_id:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "workspace_id_required",
+                "message": "workspace_id is required for OpenClaw routes.",
+            },
+        )
+
+    if context.auth_type == "workspace" and context.workspace_id != normalized_workspace_id:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "workspace_access_denied",
+                "message": (
+                    "The presented hosted API key is bound to a different workspace. "
+                    f"Expected workspace `{context.workspace_id}`, got `{normalized_workspace_id}`."
+                ),
+            },
+        )
+
+    return context
+
+
 def require_auth(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Security(_bearer),
-) -> str:
+) -> AuthContext:
     """FastAPI dependency: validate Bearer credentials against the general API key set.
 
     Uses only the REST/API surface keys (``AM_SERVER_API_KEYS`` / ``AM_SERVER_API_KEY``),
@@ -205,7 +306,8 @@ def require_auth(
             401 responses include ``WWW-Authenticate: Bearer``.
     """
     expected_keys = _expected_api_keys()
-    if not expected_keys:
+    has_hosted_keys = bool(get_product_store().load().get("hosted_api_keys", []))
+    if not expected_keys and not (deployment_mode() == "managed" and has_hosted_keys):
         raise HTTPException(
             status_code=503,
             detail={
@@ -222,7 +324,8 @@ def require_auth(
             },
             headers={"WWW-Authenticate": "Bearer"},
         )
-    if credentials.credentials not in expected_keys:
+    context = _resolve_auth_context(credentials.credentials)
+    if context is None:
         raise HTTPException(
             status_code=401,
             detail={
@@ -231,4 +334,7 @@ def require_auth(
             },
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return credentials.credentials
+    request.state.agentic_memory_auth = context
+    if context.auth_type == "workspace" and context.key_id:
+        get_product_store().touch_hosted_workspace_api_key_use(context.key_id)
+    return context

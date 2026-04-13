@@ -1,10 +1,10 @@
 {
-  "active_wave_id": "w16-openclaw-whole-stack-onboarding",
-  "phase": "16-openclaw-whole-stack-onboarding",
+  "active_wave_id": "w17-openclaw-hosted-beta-and-dual-mode",
+  "phase": "17-openclaw-hosted-beta-and-dual-mode",
   "tasks": [
     {
-      "id": "W16-OC-00",
-      "title": "Lock execution contract for the OpenClaw whole-stack onboarding wave",
+      "id": "W17-HB-00",
+      "title": "Lock execution contract for the OpenClaw hosted beta + dual-mode wave",
       "status": "completed",
       "owner": "orchestrator",
       "depends_on": [],
@@ -15,58 +15,78 @@
         ".planning/execution/README.md",
         ".planning/execution/ROADMAP.md",
         ".planning/execution/tasks.json",
-        ".planning/phases/16-openclaw-whole-stack-onboarding/16-CONTEXT.md",
-        ".planning/phases/16-openclaw-whole-stack-onboarding/16-UAT.md",
-        ".planning/phases/16-openclaw-whole-stack-onboarding/16-TASKS.md",
-        ".planning/phases/16-openclaw-whole-stack-onboarding/16-01-PLAN.md"
+        ".planning/phases/17-openclaw-hosted-beta-and-dual-mode/17-CONTEXT.md",
+        ".planning/phases/17-openclaw-hosted-beta-and-dual-mode/17-UAT.md",
+        ".planning/phases/17-openclaw-hosted-beta-and-dual-mode/17-TASKS.md",
+        ".planning/phases/17-openclaw-hosted-beta-and-dual-mode/17-01-PLAN.md"
       ],
       "verify": [],
-      "handoff_path": ".planning/execution/handoffs/w16-openclaw-whole-stack-onboarding/W16-OC-00.md"
+      "handoff_path": ".planning/execution/handoffs/w17-openclaw-hosted-beta-and-dual-mode/W17-HB-00.md"
     },
     {
-      "id": "W16-OC-01",
-      "title": "Lock the onboarding contract for plugin setup, backend health, shell bootstrap, and required versus optional local services",
-      "status": "completed",
+      "id": "W17-HB-01",
+      "title": "Lock the managed vs self-hosted contract for backend onboarding, hosted auth, provider-key ownership, and operator-vs-user expectations",
+      "status": "pending",
       "owner": "contract",
       "depends_on": [
-        "W16-OC-00"
+        "W17-HB-00"
       ],
       "write_scope": [
         "src/am_server/app.py",
         "src/am_server/models.py",
         "src/am_server/routes/health.py",
-        "desktop_shell/app.py",
-        "desktop_shell/tests/test_app.py"
+        "docs/openclaw/DEPLOYMENT_RUNBOOK.md"
       ],
       "do_not_touch": [
         "packages/am-openclaw/**",
-        "packages/am-temporal-kg/**",
-        "packages/am-sync-neo4j/**",
+        "src/agentic_memory/product/state.py",
+        "tests/**",
+        ".github/workflows/**",
+        "desktop_shell/**"
+      ],
+      "verify": [
+        "python -m pytest tests/test_am_server.py tests/test_openclaw_contract.py -q"
+      ],
+      "handoff_path": ".planning/execution/handoffs/w17-openclaw-hosted-beta-and-dual-mode/W17-HB-01.md"
+    },
+    {
+      "id": "W17-HB-02",
+      "title": "Implement backend hosted-beta auth, workspace-bound API keys, usage metering, and operator provisioning helpers",
+      "status": "pending",
+      "owner": "backend",
+      "depends_on": [
+        "W17-HB-01"
+      ],
+      "write_scope": [
+        "src/am_server/**",
+        "src/agentic_memory/product/state.py"
+      ],
+      "do_not_touch": [
         "docs/**",
+        "packages/am-openclaw/**",
+        "desktop_shell/**",
         ".github/workflows/**"
       ],
       "verify": [
-        "python -m pytest desktop_shell/tests/test_app.py -q"
+        "python -m pytest tests/test_am_server.py tests/test_openclaw_contract.py -q"
       ],
-      "handoff_path": ".planning/execution/handoffs/w16-openclaw-whole-stack-onboarding/W16-OC-01.md"
+      "handoff_path": ".planning/execution/handoffs/w17-openclaw-hosted-beta-and-dual-mode/W17-HB-02.md"
     },
     {
-      "id": "W16-OC-02",
-      "title": "Add plugin-side doctor and setup UX that validates the real backend path before declaring success",
-      "status": "completed",
+      "id": "W17-HB-03",
+      "title": "Implement plugin-side hosted vs self-hosted setup and doctor UX with clearer resolved backend defaults",
+      "status": "pending",
       "owner": "plugin-ux",
       "depends_on": [
-        "W16-OC-01"
+        "W17-HB-01"
       ],
       "write_scope": [
         "packages/am-openclaw/**"
       ],
       "do_not_touch": [
         "src/am_server/**",
-        "desktop_shell/**",
-        "packages/am-temporal-kg/**",
-        "packages/am-sync-neo4j/**",
         "docs/**",
+        "desktop_shell/**",
         ".github/workflows/**"
       ],
       "verify": [
@@ -74,122 +94,63 @@
         "npm run test:openclaw",
         "npm run typecheck:openclaw"
       ],
-      "handoff_path": ".planning/execution/handoffs/w16-openclaw-whole-stack-onboarding/W16-OC-02.md"
+      "handoff_path": ".planning/execution/handoffs/w17-openclaw-hosted-beta-and-dual-mode/W17-HB-03.md"
     },
     {
-      "id": "W16-OC-03",
-      "title": "Clean up whole-stack bootstrap and temporal-service targeting so local aliases and silent port defaults are no longer required",
-      "status": "completed",
-      "owner": "stack-bootstrap",
+      "id": "W17-HB-04",
+      "title": "Rewrite managed-beta and self-hosted docs/runbooks around the current GCP VM deployment and the supported dual-mode setup path",
+      "status": "pending",
+      "owner": "docs-ops",
       "depends_on": [
-        "W16-OC-01"
-      ],
-      "write_scope": [
-        "docker-compose.prod.yml",
-        "package.json",
-        "packages/am-temporal-kg/**",
-        "packages/am-sync-neo4j/**",
-        "scripts/**"
-      ],
-      "do_not_touch": [
-        "packages/am-openclaw/**",
-        "src/am_server/**",
-        "desktop_shell/**",
-        "docs/**",
-        ".github/workflows/**"
-      ],
-      "verify": [
-        "npm run build --workspace am-temporal-kg",
-        "npm run typecheck --workspace am-temporal-kg",
-        "npm run build --workspace am-sync-neo4j",
-        "npm run typecheck --workspace am-sync-neo4j",
-        "npm run validate:release-artifacts"
-      ],
-      "handoff_path": ".planning/execution/handoffs/w16-openclaw-whole-stack-onboarding/W16-OC-03.md"
-    },
-    {
-      "id": "W16-OC-04",
-      "title": "Rewrite install, troubleshooting, and whole-stack onboarding docs so the supported path matches the validated flow",
-      "status": "completed",
-      "owner": "docs-onboarding",
-      "depends_on": [
-        "W16-OC-01",
-        "W16-OC-02",
-        "W16-OC-03"
+        "W17-HB-01"
       ],
       "write_scope": [
         "docs/openclaw/**",
         "docs/INSTALLATION.md",
         "docs/TROUBLESHOOTING.md",
         "docs/SETUP_FULL_STACK.md",
-        "docs/SPACETIMEDB_OPERATIONS.md"
+        "docker-compose.prod.yml"
       ],
       "do_not_touch": [
-        "packages/am-openclaw/**",
-        "packages/am-temporal-kg/**",
-        "packages/am-sync-neo4j/**",
         "src/**",
+        "packages/am-openclaw/**",
         "desktop_shell/**",
         ".github/workflows/**"
       ],
       "verify": [
         "Get-ChildItem docs/openclaw",
-        "Get-ChildItem docs | Select-String -Pattern 'agentic-memory-openclaw|STDB_URI|doctor'"
+        "Get-ChildItem docs | Select-String -Pattern 'managed|self-hosted|agentic-memory-openclaw|doctor'"
       ],
-      "handoff_path": ".planning/execution/handoffs/w16-openclaw-whole-stack-onboarding/W16-OC-04.md"
+      "handoff_path": ".planning/execution/handoffs/w17-openclaw-hosted-beta-and-dual-mode/W17-HB-04.md"
     },
     {
-      "id": "W16-OC-05",
-      "title": "Close the onboarding integration gate with regression coverage across backend, plugin, dashboard, temporal packages, and release validation",
-      "status": "completed",
+      "id": "W17-HB-05",
+      "title": "Close the hosted-beta integration gate with backend, plugin, and docs truth aligned to the dual-mode contract",
+      "status": "pending",
       "owner": "orchestrator",
       "depends_on": [
-        "W16-OC-01",
-        "W16-OC-02",
-        "W16-OC-03",
-        "W16-OC-04"
+        "W17-HB-02",
+        "W17-HB-03",
+        "W17-HB-04"
       ],
       "write_scope": [
-        ".github/workflows/ci.yml",
-        ".github/workflows/release.yml",
         "tests/test_am_server.py",
-        "tests/test_openclaw_contract.py"
+        "tests/test_openclaw_contract.py",
+        "packages/am-openclaw/tests/**"
       ],
       "verify": [
-        "python -m pytest tests/test_am_server.py tests/test_openclaw_contract.py desktop_shell/tests/test_app.py -q",
-        "npm run build",
-        "npm run typecheck",
+        "python -m pytest tests/test_am_server.py tests/test_openclaw_contract.py -q",
         "npm run build:openclaw",
         "npm run test:openclaw",
-        "npm run typecheck:openclaw",
-        "npm run build --workspace am-dashboard",
-        "npm run test --workspace am-dashboard",
-        "npm run typecheck --workspace am-dashboard",
-        "npm run build --workspace am-temporal-kg",
-        "npm run typecheck --workspace am-temporal-kg",
-        "npm run build --workspace am-sync-neo4j",
-        "npm run typecheck --workspace am-sync-neo4j",
-        "npm run pack:openclaw",
-        "npm run validate:release-artifacts"
+        "npm run typecheck:openclaw"
       ],
-      "handoff_path": ".planning/execution/handoffs/w16-openclaw-whole-stack-onboarding/W16-OC-05.md"
+      "handoff_path": ".planning/execution/handoffs/w17-openclaw-hosted-beta-and-dual-mode/W17-HB-05.md"
     }
   ],
   "merge_gates": [
-    "python -m pytest tests/test_am_server.py tests/test_openclaw_contract.py desktop_shell/tests/test_app.py -q",
-    "npm run build",
-    "npm run typecheck",
+    "python -m pytest tests/test_am_server.py tests/test_openclaw_contract.py -q",
     "npm run build:openclaw",
     "npm run test:openclaw",
-    "npm run typecheck:openclaw",
-    "npm run build --workspace am-dashboard",
-    "npm run test --workspace am-dashboard",
-    "npm run typecheck --workspace am-dashboard",
-    "npm run build --workspace am-temporal-kg",
-    "npm run typecheck --workspace am-temporal-kg",
-    "npm run build --workspace am-sync-neo4j",
-    "npm run typecheck --workspace am-sync-neo4j",
-    "npm run pack:openclaw",
-    "npm run validate:release-artifacts"
+    "npm run typecheck:openclaw"
   ]
 }

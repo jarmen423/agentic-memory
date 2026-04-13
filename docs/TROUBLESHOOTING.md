@@ -79,6 +79,19 @@ has actually been published for the environment you are testing.
 **Symptom:** Setup fails with connection refused, timeout, or backend-unhealthy
 errors.
 
+Important distinction:
+
+- the URL shown in brackets during setup is the current saved/default value
+- the URL you type after the colon is the new value that will be used
+- if those differ, the bracketed value is not proof that the backend actually lives there
+
+Also verify you are using the correct mode:
+
+- hosted backend:
+  - `openclaw agentic-memory doctor --hosted --backend-url https://...`
+- self-hosted backend:
+  - `openclaw agentic-memory doctor --self-hosted --backend-url http://127.0.0.1:8765`
+
 **Solution:**
 ```bash
 # Backend liveness

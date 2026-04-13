@@ -26,12 +26,14 @@ and permissions can differ per route.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import PlainTextResponse
 
 from am_server.auth import (
+    deployment_mode,
     expected_api_keys_for_surface,
     require_auth,
     strict_mcp_auth_enabled,
@@ -125,6 +127,10 @@ def _build_onboarding_contract() -> OpenClawOnboardingContractModel:
     public_mcp_key_count = len(expected_api_keys_for_surface("mcp_public"))
     internal_mcp_key_count = len(expected_api_keys_for_surface("mcp_internal"))
     strict_mcp = strict_mcp_auth_enabled()
+    current_deployment_mode = deployment_mode()
+    hosted_base_url = str(os.environ.get("AGENTIC_MEMORY_HOSTED_BASE_URL", "")).strip() or None
+    auth_strategy = "workspace_api_key" if current_deployment_mode == "managed" else "shared_api_key"
+    provider_key_mode = "managed" if current_deployment_mode == "managed" else "operator_managed"
 
     required_services = [
         OpenClawOnboardingServiceModel(
@@ -152,6 +158,7 @@ def _build_onboarding_contract() -> OpenClawOnboardingContractModel:
                 "api_key_count": api_key_count,
                 "configured": bool(api_key_count),
                 "env_vars": ["AM_SERVER_API_KEYS", "AM_SERVER_API_KEY"],
+                "auth_strategy": auth_strategy,
             },
         ),
         _service_from_component(
@@ -285,6 +292,11 @@ def _build_onboarding_contract() -> OpenClawOnboardingContractModel:
 
     return OpenClawOnboardingContractModel(
         status="ok",
+        deployment_mode=current_deployment_mode,
+        supported_deployment_modes=["managed", "self_hosted"],
+        auth_strategy=auth_strategy,
+        provider_key_mode=provider_key_mode,
+        hosted_base_url=hosted_base_url,
         plugin_package_name="agentic-memory-openclaw",
         plugin_id="agentic-memory",
         install_command="openclaw plugin install agentic-memory-openclaw",
@@ -297,6 +309,11 @@ def _build_onboarding_contract() -> OpenClawOnboardingContractModel:
             "The backend can be reachable without being honestly ready for plugin setup; API auth and memory capture must both be healthy.",
             "Capture-only is the minimum supported onboarding mode. Augment-context additionally requires the context engine.",
             "Temporal services, Grafana, and the desktop shell are helpful but must not be treated as hidden prerequisites.",
+            (
+                "Managed mode means Agentic Memory owns backend API keys, provider keys, and database operations."
+                if current_deployment_mode == "managed"
+                else "Self-hosted mode means the operator owns backend deployment, provider keys, and database operations."
+            ),
         ],
     )
 

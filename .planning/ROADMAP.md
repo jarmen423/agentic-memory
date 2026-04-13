@@ -3,7 +3,7 @@
 **Project:** Modular Knowledge Graph (Code + Web Research + Conversation Memory)
 **Created:** 2026-03-20
 **Last Updated:** 2026-04-13
-**Status:** Active milestone — Phase 16 OpenClaw whole-stack onboarding is complete. No next OpenClaw follow-on track is locked yet; Phase 10 and Phase 11 remain paused but preserved
+**Status:** Active milestone — Phase 17 OpenClaw hosted beta platform + dual-mode deployment is now the live delivery track. Phase 10 and Phase 11 remain paused but preserved
 
 ---
 
@@ -609,3 +609,40 @@ Plans:
 
 ---
 *Last updated: 2026-04-13 after Phase 16 (OpenClaw whole-stack onboarding) completed and was archived as the latest onboarding snapshot (total phases: 16)*
+
+### Phase 17: OpenClaw Hosted Beta Platform + Dual-Mode Deployment
+
+**Goal:** Turn the current OpenClaw beta stack into a real managed hosted beta on the existing GCP VM while preserving self-hosted as a supported full-stack path. The client contract stays stable: OpenClaw and future clients talk to one backend URL, while the backend clearly declares whether it is managed or self-hosted and how auth/provider usage are handled.
+
+**Status:** Active
+
+**Plans:** 1 execution plan locked
+
+Plans:
+- [ ] 17-01-PLAN.md — Hosted beta platform + dual-mode deployment wave: archive the Phase 16 snapshot as the last onboarding baseline, lock the managed vs self-hosted contract, add workspace-bound hosted auth plus usage metering, update the plugin setup/doctor UX, and harden the operator deployment/runbook path on the current GCP VM
+
+**Deliverables:**
+- a hosted-beta contract exposed by `/health/onboarding` that tells clients whether the backend is managed or self-hosted, which auth strategy applies, and whether provider keys are managed or BYOK
+- workspace-bound API keys for managed mode, including backend-side workspace validation and operator/admin provisioning helpers backed by the local control-plane store
+- managed usage metering for the core OpenClaw operations so the product can meter now and charge later
+- explicit hosted vs self-hosted setup/doctor UX in `packages/am-openclaw`, with saved backend defaults labeled honestly and the resolved backend URL echoed clearly before persistence
+- deployment/runbook updates that make the current GCP VM the first managed beta target while keeping self-hosted validation live
+
+**Success Criteria:**
+- a fresh OpenClaw install can complete against the managed hosted beta URL using the published npm package and the hosted auth model
+- self-hosted setup still works from repo-owned docs and the doctor/setup flow without regressing to hidden local assumptions
+- workspace-bound keys can only operate inside their allowed workspace and mismatched workspace requests are rejected with stable machine-readable errors
+- usage metering records search, ingest, and context-resolution activity in the control-plane store for operator inspection
+- merge gates pass:
+  - `python -m pytest tests/test_am_server.py tests/test_openclaw_contract.py -q`
+  - `npm run build:openclaw`
+  - `npm run test:openclaw`
+  - `npm run typecheck:openclaw`
+
+**Key Risks:**
+- widening auth from generic API keys to workspace-bound hosted keys touches shared backend and plugin seams, so contract and error behavior must lock before implementation branches drift
+- managed-mode wording can easily leak operator concerns back into the user path if setup and docs are not split cleanly from the self-hosted runbooks
+- using the current GCP VM as the first managed beta target is pragmatic but still requires explicit operator procedures for secrets, backups, and resizing so the hosted story stays honest
+
+---
+*Last updated: 2026-04-13 after Phase 17 (OpenClaw hosted beta platform + dual-mode deployment) was activated as the current delivery track (total phases: 17)*

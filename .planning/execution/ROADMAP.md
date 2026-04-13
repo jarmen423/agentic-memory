@@ -1,25 +1,30 @@
 # Wave Roadmap
 
-## Active Track: `w12-openclaw-foundation`
+## Latest Completed Track: `w15-openclaw-docs-and-private-beta`
 
 ### Wave 0: Orchestrator lock
 
-- `W12-OC-00`: archive the existing `w11-calls` registry, update `.planning`
-truth, and freeze write ownership and merge gates for the OpenClaw wave.
+- `W15-OC-00`: close Phase 14, seed the Phase 15 registry, and freeze write
+  ownership for docs, marketplace, beta-ops, and integration work.
 
-### Wave 1: Foundation threads
+### Wave 1: Parallel docs + beta-prep threads
 
-- `W12-OC-01`: backend auth, machine-readable errors, `/metrics`, and backend tests.
-- `W12-OC-02`: SQLite-backed `ProductStateStore` plus durability/concurrency tests.
-- `W12-OC-03`: `packages/am-openclaw` retry/backoff hardening and package-local TypeScript tests.
+- `W15-OC-01`: finalize install/troubleshooting docs and commit the OpenClaw
+  OpenAPI artifact.
+- `W15-OC-02`: lock package identity, install/publish surfaces, and marketplace
+  artifacts.
+- `W15-OC-03`: write private-beta onboarding, support, and partner-operations
+  runbooks.
 
 ### Wave 2: Integration gate
 
-- `W12-OC-04`: reconcile shared contracts, add explicit OpenClaw contract tests,
-and update CI to enforce Python + TypeScript merge gates.
+- `W15-OC-04`: reconcile the docs root, CI, release workflow, and private-beta
+  operator surfaces so the release artifact cannot drift from the committed docs
+  and OpenAPI contract.
 
 ### Wave 3: Verification
 
-- run the Python merge gates for backend, shared-memory, product-state, and OpenClaw contract tests
-- run the OpenClaw package build/typecheck/test gates
-- update task registry statuses and handoffs so paused Phase 10/11 work remains resumable
+- run the backend, contract, dashboard, E2E, load, and chaos regression gates
+- run the OpenClaw package build/test/typecheck/pack gates
+- run release/deployment validation plus the OpenAPI contract assertion
+- write handoffs and leave the completed registry ready for the next phase lock

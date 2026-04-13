@@ -1,10 +1,10 @@
 ---
 phase: 15-openclaw-docs-and-private-beta
-status: active
-updated: 2026-04-12T16:20:00Z
+status: complete
+updated: 2026-04-12T21:09:13Z
 summary:
-  passed: 0
-  pending: 5
+  passed: 5
+  pending: 0
   blocked: 0
 ---
 
@@ -15,7 +15,7 @@ summary:
 ### Test 1
 
 - name: user-facing install, setup, troubleshooting, and rollback docs match the actual OpenClaw plugin install and backend deployment flow
-- status: pending
+- status: passed
 - method: manual + automated
 - evidence:
   - `docs/openclaw/guides/`
@@ -26,7 +26,7 @@ summary:
 ### Test 2
 
 - name: a committed OpenAPI artifact exists for the OpenClaw backend surface and stays aligned with the FastAPI app contract
-- status: pending
+- status: passed
 - method: automated
 - evidence:
   - `docs/openclaw/openapi/`
@@ -36,7 +36,7 @@ summary:
 ### Test 3
 
 - name: package identity, install command, and marketplace/publish metadata are finalized enough for private-beta distribution
-- status: pending
+- status: passed
 - method: manual + automated
 - evidence:
   - `packages/am-openclaw/package.json`
@@ -47,7 +47,7 @@ summary:
 ### Test 4
 
 - name: private-beta onboarding, support, and partner-operations runbooks are sufficient to onboard the first five design partners without inventing missing operator steps
-- status: pending
+- status: passed
 - method: manual
 - evidence:
   - `docs/openclaw/beta/`
@@ -56,7 +56,7 @@ summary:
 ### Test 5
 
 - name: docs/private-beta work does not regress the existing backend, dashboard, package, and deployment gates
-- status: pending
+- status: passed
 - method: automated
 - evidence:
   - `python -m pytest tests/test_am_server.py tests/test_openclaw_contract.py desktop_shell/tests/test_app.py -q`

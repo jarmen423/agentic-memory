@@ -1,0 +1,430 @@
+{
+  "active_wave_id": "w15-public-plugin-publication",
+  "registry": ".planning/execution-publication",
+  "source_plan": "docs/PLUGIN_GA_PLAN.md",
+  "status": "locked",
+  "tasks": [
+    {
+      "id": "W15-PUB-00",
+      "title": "Lock a standalone publication execution registry",
+      "status": "completed",
+      "owner": "orchestrator",
+      "depends_on": [],
+      "gate_alignment": [
+        "G0"
+      ],
+      "write_scope": [
+        ".planning/execution-publication/README.md",
+        ".planning/execution-publication/ROADMAP.md",
+        ".planning/execution-publication/tasks.json",
+        ".planning/execution-publication/handoffs/w15-public-plugin-publication/**"
+      ],
+      "deliverables": [
+        "separate publication registry",
+        "locked wave id and task ids",
+        "disjoint write ownership",
+        "handoff path for the publication wave"
+      ],
+      "verify": [
+        "Get-Content .planning/execution-publication/tasks.json"
+      ],
+      "handoff_path": ".planning/execution-publication/handoffs/w15-public-plugin-publication/W15-PUB-00.md"
+    },
+    {
+      "id": "W15-PUB-01",
+      "title": "Lock public MCP contract, safety annotations, auth separation, and hosted reviewer constraints",
+      "status": "completed",
+      "owner": "backend-contract",
+      "depends_on": [
+        "W15-PUB-00"
+      ],
+      "gate_alignment": [
+        "G1"
+      ],
+      "write_scope": [
+        "src/am_server/app.py",
+        "src/am_server/auth.py",
+        "src/am_server/mcp_profiles.py",
+        "src/am_server/metrics.py",
+        "src/am_server/routes/health.py",
+        "src/agentic_memory/server/public_mcp.py",
+        "src/agentic_memory/server/tools.py",
+        "tests/test_am_server.py",
+        "tests/test_server.py"
+      ],
+      "do_not_touch": [
+        ".codex-plugin/**",
+        ".mcp.json",
+        "docs/publication/**",
+        "README.md",
+        "docs/INSTALLATION.md",
+        "docs/PUBLIC_PLUGIN_SURFACES.md",
+        "docs/PLUGIN_GA_PLAN.md",
+        ".planning/execution/**"
+      ],
+      "deliverables": [
+        "frozen public tool contract",
+        "accurate read/write/destructive/open-world annotations",
+        "public-vs-internal auth separation with no prod fallback ambiguity",
+        "reviewer-safe transport/CORS/health expectations documented in code and tests",
+        "surface-labeled telemetry and stable response labeling"
+      ],
+      "verify": [
+        "python -m pytest tests/test_am_server.py tests/test_server.py -q"
+      ],
+      "handoff_path": ".planning/execution-publication/handoffs/w15-public-plugin-publication/W15-PUB-01.md"
+    },
+    {
+      "id": "W15-PUB-02",
+      "title": "Build the OpenAI submission package and reviewer runbook",
+      "status": "completed",
+      "owner": "openai-submission",
+      "depends_on": [
+        "W15-PUB-01"
+      ],
+      "gate_alignment": [
+        "G2",
+        "G3"
+      ],
+      "write_scope": [
+        "docs/publication/openai/**"
+      ],
+      "do_not_touch": [
+        "src/am_server/**",
+        "src/agentic_memory/server/**",
+        ".codex-plugin/**",
+        ".mcp.json",
+        "docs/publication/codex/**",
+        "docs/publication/anthropic/**",
+        "docs/publication/shared/**",
+        "README.md",
+        "docs/INSTALLATION.md",
+        "docs/PUBLIC_PLUGIN_SURFACES.md"
+      ],
+      "deliverables": [
+        "OpenAI submission checklist",
+        "dashboard submission field inventory",
+        "reviewer prompts and expected responses",
+        "demo-account/test-credential checklist",
+        "publish checks for app listing and derived Codex distribution"
+      ],
+      "verify": [
+        "Get-Content docs/publication/openai/SUBMISSION_CHECKLIST.md",
+        "Get-Content docs/publication/openai/REVIEWER_RUNBOOK.md"
+      ],
+      "handoff_path": ".planning/execution-publication/handoffs/w15-public-plugin-publication/W15-PUB-02.md"
+    },
+    {
+      "id": "W15-PUB-03",
+      "title": "Harden the Codex local/preflight plugin bundle and install checklist",
+      "status": "completed",
+      "owner": "codex-preflight",
+      "depends_on": [
+        "W15-PUB-01"
+      ],
+      "gate_alignment": [
+        "G2",
+        "G3"
+      ],
+      "write_scope": [
+        ".codex-plugin/plugin.json",
+        ".mcp.json",
+        "docs/publication/codex/**"
+      ],
+      "do_not_touch": [
+        "src/am_server/**",
+        "src/agentic_memory/server/**",
+        "docs/publication/openai/**",
+        "docs/publication/anthropic/**",
+        "docs/publication/shared/**",
+        "README.md",
+        "docs/INSTALLATION.md",
+        "docs/PUBLIC_PLUGIN_SURFACES.md"
+      ],
+      "deliverables": [
+        "manifest completeness and legal/support metadata audit",
+        "Codex local marketplace install checklist",
+        "Codex preflight smoke checklist for hosted MCP handshake",
+        "future self-serve publication readiness notes"
+      ],
+      "verify": [
+        "Get-Content .codex-plugin/plugin.json | ConvertFrom-Json | Out-Null",
+        "Get-Content .mcp.json | ConvertFrom-Json | Out-Null"
+      ],
+      "handoff_path": ".planning/execution-publication/handoffs/w15-public-plugin-publication/W15-PUB-03.md"
+    },
+    {
+      "id": "W15-PUB-04",
+      "title": "Build the Anthropic connector submission package and reviewer runbook",
+      "status": "completed",
+      "owner": "claude-directory",
+      "depends_on": [
+        "W15-PUB-01"
+      ],
+      "gate_alignment": [
+        "G2",
+        "G4"
+      ],
+      "write_scope": [
+        "docs/publication/anthropic/**"
+      ],
+      "do_not_touch": [
+        "src/am_server/**",
+        "src/agentic_memory/server/**",
+        ".codex-plugin/**",
+        ".mcp.json",
+        "docs/publication/openai/**",
+        "docs/publication/codex/**",
+        "docs/publication/shared/**",
+        "README.md",
+        "docs/INSTALLATION.md",
+        "docs/PUBLIC_PLUGIN_SURFACES.md"
+      ],
+      "deliverables": [
+        "Anthropic submission checklist",
+        "minimum three usage examples",
+        "OAuth/test-account and public reachability checklist",
+        "reviewer runbook and directory post-approval checks"
+      ],
+      "verify": [
+        "Get-Content docs/publication/anthropic/SUBMISSION_CHECKLIST.md",
+        "Get-Content docs/publication/anthropic/REVIEWER_RUNBOOK.md"
+      ],
+      "handoff_path": ".planning/execution-publication/handoffs/w15-public-plugin-publication/W15-PUB-04.md"
+    },
+    {
+      "id": "W15-PUB-05",
+      "title": "Create shared legal, support, telemetry, and launch-runbook assets for both platforms",
+      "status": "completed",
+      "owner": "release-ops",
+      "depends_on": [
+        "W15-PUB-01"
+      ],
+      "gate_alignment": [
+        "G2",
+        "G5"
+      ],
+      "write_scope": [
+        "docs/publication/shared/**"
+      ],
+      "do_not_touch": [
+        "src/am_server/**",
+        "src/agentic_memory/server/**",
+        ".codex-plugin/**",
+        ".mcp.json",
+        "docs/publication/openai/**",
+        "docs/publication/codex/**",
+        "docs/publication/anthropic/**",
+        "README.md",
+        "docs/INSTALLATION.md",
+        "docs/PUBLIC_PLUGIN_SURFACES.md"
+      ],
+      "deliverables": [
+        "stable privacy policy draft/page",
+        "stable terms/support/contact draft/page",
+        "operator launch runbook",
+        "review-status tracking template",
+        "telemetry events and evidence checklist for install, first success, review, and publish"
+      ],
+      "verify": [
+        "Get-Content docs/publication/shared/LAUNCH_RUNBOOK.md",
+        "Get-Content docs/publication/shared/PUBLIC_POLICY_CHECKLIST.md"
+      ],
+      "handoff_path": ".planning/execution-publication/handoffs/w15-public-plugin-publication/W15-PUB-05.md"
+    },
+    {
+      "id": "W15-PUB-06",
+      "title": "Integrate publication assets into top-level docs without reopening parallel write scopes",
+      "status": "completed",
+      "owner": "orchestrator",
+      "depends_on": [
+        "W15-PUB-02",
+        "W15-PUB-03",
+        "W15-PUB-04",
+        "W15-PUB-05"
+      ],
+      "gate_alignment": [
+        "G5"
+      ],
+      "write_scope": [
+        "README.md",
+        "docs/INSTALLATION.md",
+        "docs/PUBLIC_PLUGIN_SURFACES.md",
+        "docs/PLUGIN_GA_PLAN.md",
+        "docs/publication/INDEX.md"
+      ],
+      "do_not_touch": [
+        "src/am_server/**",
+        "src/agentic_memory/server/**",
+        ".codex-plugin/**",
+        ".mcp.json",
+        "docs/publication/openai/**",
+        "docs/publication/codex/**",
+        "docs/publication/anthropic/**",
+        "docs/publication/shared/**",
+        ".planning/execution/**"
+      ],
+      "deliverables": [
+        "top-level docs aligned to the real publication model",
+        "single publication index with platform entrypoints",
+        "cross-links from install docs to reviewer/package docs",
+        "launch gate checklist wired into product docs"
+      ],
+      "verify": [
+        "rg -n \"OpenAI|Anthropic|Codex|publication|directory|review\" README.md docs/INSTALLATION.md docs/PUBLIC_PLUGIN_SURFACES.md docs/PLUGIN_GA_PLAN.md docs/publication/INDEX.md"
+      ],
+      "handoff_path": ".planning/execution-publication/handoffs/w15-public-plugin-publication/W15-PUB-06.md"
+    },
+    {
+      "id": "W15-PUB-07",
+      "title": "Track external review, approval evidence, and launch-gate closure",
+      "status": "completed",
+      "owner": "orchestrator",
+      "depends_on": [
+        "W15-PUB-06"
+      ],
+      "gate_alignment": [
+        "G3",
+        "G4",
+        "G5"
+      ],
+      "write_scope": [
+        ".planning/execution-publication/tasks.json",
+        "docs/publication/status/**"
+      ],
+      "do_not_touch": [
+        "src/am_server/**",
+        "src/agentic_memory/server/**",
+        ".codex-plugin/**",
+        ".mcp.json",
+        "docs/publication/openai/**",
+        "docs/publication/codex/**",
+        "docs/publication/anthropic/**",
+        "docs/publication/shared/**",
+        "README.md",
+        "docs/INSTALLATION.md",
+        "docs/PUBLIC_PLUGIN_SURFACES.md",
+        "docs/PLUGIN_GA_PLAN.md"
+      ],
+      "deliverables": [
+        "OpenAI submission status log and case tracking",
+        "Anthropic submission status log and listing tracking",
+        "approval evidence links",
+        "revision-response checklist",
+        "launch gate closure record"
+      ],
+      "verify": [
+        "Get-Content docs/publication/status/OPENAI_REVIEW.md",
+        "Get-Content docs/publication/status/ANTHROPIC_REVIEW.md"
+      ],
+      "handoff_path": ".planning/execution-publication/handoffs/w15-public-plugin-publication/W15-PUB-07.md"
+    }
+  ],
+  "gates": [
+    {
+      "id": "G0",
+      "title": "Registry lock",
+      "owner": "orchestrator",
+      "depends_on_tasks": [
+        "W15-PUB-00"
+      ],
+      "required_evidence": [
+        "standalone publication registry exists",
+        "task ids, dependencies, and handoff paths are frozen"
+      ],
+      "status": "completed"
+    },
+    {
+      "id": "G1",
+      "title": "Contract and policy freeze",
+      "owner": "backend-contract",
+      "depends_on_tasks": [
+        "W15-PUB-01"
+      ],
+      "required_evidence": [
+        "public tool list frozen",
+        "tool safety annotations accurate",
+        "public/internal auth separated",
+        "transport and client constraints verified"
+      ],
+      "status": "completed"
+    },
+    {
+      "id": "G2",
+      "title": "Submission package readiness",
+      "owner": "orchestrator",
+      "depends_on_tasks": [
+        "W15-PUB-02",
+        "W15-PUB-03",
+        "W15-PUB-04",
+        "W15-PUB-05"
+      ],
+      "required_evidence": [
+        "OpenAI submission packet complete",
+        "Codex preflight bundle complete",
+        "Anthropic submission packet complete",
+        "privacy/support/runbook assets complete"
+      ],
+      "status": "completed"
+    },
+    {
+      "id": "G3",
+      "title": "OpenAI approval and publication",
+      "owner": "orchestrator",
+      "depends_on_tasks": [
+        "W15-PUB-02",
+        "W15-PUB-03",
+        "W15-PUB-07"
+      ],
+      "required_evidence": [
+        "OpenAI submission case recorded",
+        "approval confirmed",
+        "app published",
+        "direct listing link recorded",
+        "derived Codex distribution recorded"
+      ],
+      "status": "pending"
+    },
+    {
+      "id": "G4",
+      "title": "Anthropic approval and directory listing",
+      "owner": "orchestrator",
+      "depends_on_tasks": [
+        "W15-PUB-04",
+        "W15-PUB-07"
+      ],
+      "required_evidence": [
+        "Anthropic submission recorded",
+        "approval confirmed",
+        "directory listing link recorded"
+      ],
+      "status": "pending"
+    },
+    {
+      "id": "G5",
+      "title": "Launch integration and closure",
+      "owner": "orchestrator",
+      "depends_on_tasks": [
+        "W15-PUB-05",
+        "W15-PUB-06",
+        "W15-PUB-07"
+      ],
+      "required_evidence": [
+        "top-level docs aligned",
+        "launch runbook aligned",
+        "OpenAI and Anthropic publication evidence attached",
+        "launch gate closed in registry"
+      ],
+      "status": "in_progress"
+    }
+  ],
+  "merge_gates": [
+    "python -m pytest tests/test_am_server.py tests/test_server.py -q",
+    "Get-Content .codex-plugin/plugin.json | ConvertFrom-Json | Out-Null",
+    "Get-Content .mcp.json | ConvertFrom-Json | Out-Null",
+    "Get-Content docs/publication/openai/SUBMISSION_CHECKLIST.md",
+    "Get-Content docs/publication/anthropic/SUBMISSION_CHECKLIST.md",
+    "Get-Content docs/publication/shared/LAUNCH_RUNBOOK.md",
+    "rg -n \"OpenAI|Anthropic|Codex|publication|directory|review\" README.md docs/INSTALLATION.md docs/PUBLIC_PLUGIN_SURFACES.md docs/PLUGIN_GA_PLAN.md docs/publication/INDEX.md"
+  ]
+}

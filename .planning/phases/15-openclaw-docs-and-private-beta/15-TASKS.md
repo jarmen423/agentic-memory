@@ -11,16 +11,16 @@
 
 - [x] Finalize user/operator docs, troubleshooting/install guidance, and committed OpenAPI output.
 - [x] Lock package identity, publish/install surfaces, and marketplace preparation artifacts.
-- [ ] Prepare private-beta onboarding, support, and partner-operations runbooks.
+- [x] Prepare private-beta onboarding, support, and partner-operations runbooks.
 
 ## Wave 2
 
-- [ ] Reconcile docs, package identity, release wiring, and beta-ops surfaces.
-- [ ] Wire any missing docs/private-beta validation into CI or release automation where appropriate.
+- [x] Reconcile docs, package identity, release wiring, and beta-ops surfaces.
+- [x] Wire any missing docs/private-beta validation into CI or release automation where appropriate.
 
 ## Wave 3
 
-- [ ] Run the backend, contract, dashboard, and harness regression gates.
-- [ ] Run the OpenClaw package build/test/typecheck/pack gates.
-- [ ] Run the release/deployment and OpenAPI validation gates.
-- [ ] Write handoffs and mark the wave complete.
+- [x] Run the backend, contract, dashboard, and harness regression gates.
+- [x] Run the OpenClaw package build/test/typecheck/pack gates.
+- [x] Run the release/deployment and OpenAPI validation gates.
+- [x] Write handoffs and mark the wave complete.

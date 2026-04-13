@@ -73,12 +73,12 @@ AI agents get seamless, persistent memory that works regardless of content type 
 - [x] Add production deployment and release artifacts for `am-server`, including Docker/release workflow outputs aligned to the GTM plan
 - [x] Close the CI/release integration gate so package validation no longer depends on the unresolved public package name
 
-**OpenClaw Docs + Private Beta Wave (`w15-openclaw-docs-and-private-beta`) — Active in Phase 15:**
-- [ ] Finalize the public install/setup story, including the remaining package-name decision and the OpenClaw install command used in docs and marketplace surfaces
-- [ ] Commit the OpenAPI contract for the OpenClaw-facing backend surface and keep it aligned with the actual app routes
-- [ ] Prepare marketplace listing artifacts and publish metadata for private beta distribution
-- [ ] Write the user, operator, and support docs needed to onboard the first 5 private beta partners
-- [ ] Keep public beta, hosted multi-tenant auth, SSO, and GA launch collateral deferred until the next follow-on phase
+**OpenClaw Docs + Private Beta Wave (`w15-openclaw-docs-and-private-beta`) — Completed in Phase 15:**
+- [x] Finalize the public install/setup story around the locked install path `openclaw plugin install agentic-memory-openclaw`
+- [x] Commit the OpenAPI contract for the OpenClaw-facing backend surface and keep it aligned with the actual app routes
+- [x] Prepare marketplace listing artifacts and publish metadata for private beta distribution
+- [x] Write the user, operator, and support docs needed to onboard the first 5 private beta partners
+- [x] Keep public beta, hosted multi-tenant auth, SSO, and GA launch collateral deferred until the next follow-on phase
 
 ### Out of Scope
 
@@ -136,4 +136,4 @@ AI agents get seamless, persistent memory that works regardless of content type 
 | Modular architecture | Each module independently usable, scales to future content types | ✓ Confirmed |
 
 ---
-*Last updated: 2026-04-12 after Phase 14 closed and Phase 15 (OpenClaw docs + private beta) was locked from the GTM plan*
+*Last updated: 2026-04-12 after Phase 15 (OpenClaw docs + private beta) completed and the registry was left as the latest completed snapshot*

@@ -3,7 +3,7 @@
 **Project:** Modular Knowledge Graph (Code + Web Research + Conversation Memory)
 **Created:** 2026-03-20
 **Last Updated:** 2026-04-12
-**Status:** Active milestone — OpenClaw docs + private beta is now the active delivery track. Phase 10 and Phase 11 remain paused but preserved
+**Status:** Active milestone — Phase 15 OpenClaw docs + private beta is complete. No next delivery track is locked yet. Phase 10 and Phase 11 remain paused but preserved
 
 ---
 
@@ -536,7 +536,7 @@ Plans:
 
 **Goal:** Convert the now-deployable OpenClaw stack into a partner-onboardable private beta by finalizing the public install story, committing the OpenAPI contract, preparing marketplace/publish surfaces, and writing the user, operator, and support docs needed to onboard the first five design partners.
 
-**Status:** In Progress
+**Status:** Complete
 
 **Plans:** 1 execution plan locked
 
@@ -563,4 +563,4 @@ Plans:
 - private beta readiness includes non-code operational work, so repository completion and partner readiness can drift if not tracked together
 
 ---
-*Last updated: 2026-04-12 after Phase 14 closed and Phase 15 (OpenClaw docs + private beta) was seeded as the active delivery track (total phases: 15)*
+*Last updated: 2026-04-12 after Phase 15 (OpenClaw docs + private beta) completed (total phases: 15)*

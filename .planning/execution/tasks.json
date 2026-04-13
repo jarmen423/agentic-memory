@@ -90,7 +90,7 @@
     {
       "id": "W15-OC-03",
       "title": "Prepare private-beta onboarding, support, and partner-operations runbooks",
-      "status": "pending",
+      "status": "completed",
       "owner": "beta-ops",
       "depends_on": [
         "W15-OC-00"
@@ -115,7 +115,7 @@
     {
       "id": "W15-OC-04",
       "title": "Close the docs + private beta integration gate and validate release-ready operator surfaces",
-      "status": "pending",
+      "status": "completed",
       "owner": "orchestrator",
       "depends_on": [
         "W15-OC-01",

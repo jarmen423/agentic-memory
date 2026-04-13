@@ -1,15 +1,14 @@
-"""Dashboard-facing OpenClaw read APIs.
+"""OpenClaw operator dashboard: read-only HTTP aggregation.
 
-This module exposes an authenticated read surface for the Phase 13 dashboard.
-The goal is to provide operator-meaningful data without introducing a second
-state system:
+Exposes authenticated GET routes that assemble JSON for the Phase 13 dashboard
+from existing sources only—no parallel state store:
 
-- product-state remains the source of truth for workspace/device/agent topology
-- in-process metrics remain the source of truth for request/error counters
-- recent search activity is reconstructed from bounded product-state events
+* **Product state** — workspace, device, agent, and integration topology.
+* **In-process metrics** — request counts, latency summaries, normalized errors.
+* **Events** — recent search/context activity from bounded OpenClaw event logs.
 
-The dashboard wave intentionally keeps this contract read-only. Packaging,
-release, and multi-tenant auth work remain out of scope for this phase.
+The contract is intentionally read-only; packaging, releases, and multi-tenant
+auth are out of scope for this wave.
 """
 
 from __future__ import annotations
@@ -35,6 +34,7 @@ from am_server.models import (
     OpenClawDashboardWorkspaceModel,
 )
 
+# Auth boundary: Bearer token required for all dashboard routes.
 router = APIRouter(dependencies=[Depends(require_auth)])
 
 
@@ -348,7 +348,15 @@ def _build_summary(
 
 @router.get("/openclaw/metrics/summary")
 def dashboard_metrics_summary() -> dict[str, object]:
-    """Return the operator-facing overview payload for dashboard summary cards."""
+    """Return summary metrics and cards for the dashboard overview.
+
+    Pulls current product state and a fresh in-process metrics snapshot, then
+    builds request/error rows and the aggregated summary model.
+
+    Returns:
+        Dict with ``status`` ``"ok"``, ``summary``, ``request_metrics``, and
+        ``error_metrics`` (each suitable for JSON serialization).
+    """
 
     state = get_product_store().status_payload()
     snapshot = snapshot_metrics()
@@ -365,7 +373,15 @@ def dashboard_metrics_summary() -> dict[str, object]:
 
 @router.get("/openclaw/health/detailed")
 def dashboard_health_detailed() -> dict[str, object]:
-    """Return runtime component health plus request/error telemetry details."""
+    """Return detailed runtime health and API telemetry for operators.
+
+    Combines product-state runtime components with the same metrics snapshot
+    shape as :func:`dashboard_metrics_summary` for drill-down views.
+
+    Returns:
+        Dict with ``status`` ``"ok"``, ``components``, ``request_metrics``,
+        ``error_metrics``, and embedded ``summary``.
+    """
 
     state = get_product_store().status_payload()
     snapshot = snapshot_metrics()
@@ -396,7 +412,15 @@ def dashboard_health_detailed() -> dict[str, object]:
 
 @router.get("/openclaw/search/recent")
 def dashboard_recent_searches(limit: int = Query(default=20, ge=1, le=100)) -> dict[str, object]:
-    """Return the most recent dashboard-visible search and context events."""
+    """Return recent OpenClaw search and context-resolve events (newest first).
+
+    Args:
+        limit: Maximum events to return; FastAPI validates ``1 <= limit <= 100``.
+
+    Returns:
+        Dict with ``status`` ``"ok"``, ``recent_searches``, and a small
+        ``summary`` (``returned``, ``limit``).
+    """
 
     state = get_product_store().status_payload()
     recent = _build_recent_searches(state, limit=limit)
@@ -415,7 +439,16 @@ def dashboard_agent_sessions(
     agent_id: str,
     workspace_id: str | None = Query(default=None),
 ) -> dict[str, object]:
-    """Return the latest-known session records for one OpenClaw agent id."""
+    """List session cards for a single OpenClaw agent, optionally by workspace.
+
+    Args:
+        agent_id: OpenClaw agent identifier from the path.
+        workspace_id: If provided, only sessions in this workspace are returned.
+
+    Returns:
+        Dict with ``status`` ``"ok"``, echoed ``agent_id`` / ``workspace_id``,
+        and ``sessions`` as serialized models.
+    """
 
     sessions = _build_session_models(get_product_store().status_payload())
     filtered = [
@@ -433,7 +466,12 @@ def dashboard_agent_sessions(
 
 @router.get("/openclaw/workspaces")
 def dashboard_workspaces() -> dict[str, object]:
-    """Return the workspace/device/agent tree for the dashboard workspace page."""
+    """Return the workspace → device → agent tree plus roll-up counts.
+
+    Returns:
+        Dict with ``status`` ``"ok"``, ``workspaces``, and ``summary`` counts
+        (workspaces, devices, agents).
+    """
 
     state = get_product_store().status_payload()
     workspaces = _build_workspace_models(state)

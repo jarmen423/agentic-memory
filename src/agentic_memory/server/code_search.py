@@ -117,6 +117,7 @@ def search_code(
         use_ppr=use_ppr,
     )
     ppr_enabled = ppr_requested and resolved_repo_id is not None
+    # Widen the ANN pool when PPR may rerank: seeds need coverage beyond final k.
     baseline_limit = max(limit * 3, limit) if ppr_enabled else limit
     baseline_rows = _run_baseline_search(
         graph,
@@ -470,6 +471,7 @@ def _materialize_ranked_rows(
         baseline_score = float(baseline_row.get("score", 0.0) or 0.0)
         baseline_norm = baseline_score / max_baseline if max_baseline else 0.0
         ppr_norm = ppr_score / max_ppr if max_ppr else 0.0
+        # Fixed blend: semantic remains primary; PPR nudges order without drowning ANN scores.
         combined_score = (0.6 * baseline_norm) + (0.4 * ppr_norm)
 
         ranked_rows.append(

@@ -1,4 +1,20 @@
-"""Dependency injection: singleton pipeline factory functions."""
+"""FastAPI dependency callables for long-lived service singletons.
+
+This module exposes **factory functions** meant for ``Depends(...)`` in route
+handlers. Each cached getter returns a process-wide singleton so every request
+shares one Neo4j connection manager, embedder, and pipeline graph — avoiding
+per-request construction cost and keeping external state consistent.
+
+Caching:
+    ``functools.lru_cache(maxsize=1)`` memoizes the first successful build. Clear
+    caches only in tests or process reload scenarios; in production the ASGI
+    worker process lifetime matches the singleton lifetime.
+
+FastAPI wiring:
+    Pass the bare function reference, e.g. ``Depends(get_pipeline)``. FastAPI
+    calls the dependency per request by default, but the underlying function
+    returns the same cached instance after the first resolution.
+"""
 
 from __future__ import annotations
 
@@ -17,9 +33,19 @@ from agentic_memory.web.pipeline import ResearchIngestionPipeline
 
 @lru_cache(maxsize=1)
 def get_pipeline() -> ResearchIngestionPipeline:
-    """Return a cached ResearchIngestionPipeline instance.
+    """Build or return the singleton web/research ingestion pipeline.
 
-    Reads Neo4j and API key env vars. Called at app startup and by routes.
+    Intended for ``Depends(get_pipeline)`` on routes that run the research
+    ingestion path (embeddings profile ``"web"``).
+
+    Returns:
+        Shared :class:`~agentic_memory.web.pipeline.ResearchIngestionPipeline`
+        instance for this process.
+
+    Note:
+        Reads ``NEO4J_URI``, ``NEO4J_USER``, ``NEO4J_PASSWORD`` and extraction LLM
+        configuration from the environment on first call; subsequent calls hit
+        the cache and do not re-read env.
     """
     conn = ConnectionManager(
         uri=os.environ["NEO4J_URI"],
@@ -44,9 +70,19 @@ def get_pipeline() -> ResearchIngestionPipeline:
 
 @lru_cache(maxsize=1)
 def get_conversation_pipeline() -> ConversationIngestionPipeline:
-    """Return a cached ConversationIngestionPipeline instance.
+    """Build or return the singleton chat/conversation ingestion pipeline.
 
-    Reads Neo4j and API key env vars. Independent singleton from get_pipeline().
+    Intended for ``Depends(get_conversation_pipeline)``. Uses a separate cache
+    entry from :func:`get_pipeline` (embeddings profile ``"chat"`` vs ``"web"``).
+
+    Returns:
+        Shared
+        :class:`~agentic_memory.chat.pipeline.ConversationIngestionPipeline`
+        instance for this process.
+
+    Note:
+        Environment variable reads occur only on the first cache miss, same as
+        :func:`get_pipeline`.
     """
     conn = ConnectionManager(
         uri=os.environ["NEO4J_URI"],
@@ -71,5 +107,13 @@ def get_conversation_pipeline() -> ConversationIngestionPipeline:
 
 @lru_cache(maxsize=1)
 def get_product_store() -> ProductStateStore:
-    """Return the shared local product-state store."""
+    """Build or return the shared on-disk product control-plane state store.
+
+    Intended for ``Depends(get_product_store)`` so product/dashboard routes all
+    observe the same :class:`~agentic_memory.product.state.ProductStateStore`.
+
+    Returns:
+        Cached :class:`~agentic_memory.product.state.ProductStateStore` for this
+        process.
+    """
     return ProductStateStore()

@@ -1,11 +1,20 @@
-"""Pydantic request/response models for am_server endpoints.
+"""Pydantic schemas for ``am_server`` HTTP request and response bodies.
 
-The OpenClaw-facing models intentionally separate three concerns:
+These models are the contract between FastAPI route functions and JSON
+payloads. Validation runs automatically when a route declares a body parameter
+typed with one of these classes.
 
-- stable identity: workspace / device / agent / session
-- active project state: an optional server-resolved project binding
-- context augmentation mode: whether Agentic Memory should only capture turns
-  or also assemble custom context for the host
+OpenClaw-facing types intentionally separate three concerns:
+
+* **Stable identity** — workspace, device, agent, and session identifiers the
+  plugin sends on every call.
+* **Active project state** — optional server-resolved project binding when the
+  client omits ``project_id``.
+* **Context mode** — whether the stack only captures turns or also assembles
+  custom context for the host (see session registration defaults).
+
+Attributes on each model mirror JSON field names; optional fields map to
+nullable or omitted keys per Pydantic defaults.
 """
 
 from __future__ import annotations
@@ -19,8 +28,16 @@ class ApiErrorModel(BaseModel):
     """Machine-readable API error payload used by the FastAPI exception layer.
 
     The OpenClaw foundation wave standardizes errors so operators and clients
-    can reliably branch on `code` while still seeing the request correlation id
-    that ties UI failures back to server logs.
+    can reliably branch on ``code`` while still seeing the request correlation
+    id that ties UI failures back to server logs.
+
+    Attributes:
+        code: Stable machine-readable error code (contrast with HTTP status).
+        message: Human-readable summary for display or logs.
+        request_id: Correlation id from middleware/context; matches
+            ``X-Request-ID`` on the response when present.
+        status: HTTP status code echoed for clients that only parse JSON bodies.
+        details: Optional structured payload (validation errors, nested causes).
     """
 
     code: str

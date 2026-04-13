@@ -1,4 +1,28 @@
-"""Shared cross-module search service for MCP and REST surfaces."""
+"""Cross-module search orchestration for unified memory retrieval.
+
+This module implements the *fan-out / normalize / merge* pipeline behind
+``search_all_memory`` in :mod:`agentic_memory.server.app`. It does not register
+MCP tools itself; instead :func:`search_all_memory_sync` returns a
+:class:`~agentic_memory.server.result_types.UnifiedSearchResponse` that the app
+layer formats for the LLM.
+
+Flow (high level):
+    1. **Module selection** — optional filter (``code``, ``web``, ``conversation``);
+       default is all three.
+    2. **Per-module retrieval** — each submodule runs with its own try/except so
+       one failure becomes an ``errors`` entry instead of failing the whole call.
+    3. **Normalization** — every hit becomes a :class:`~agentic_memory.server.result_types.UnifiedMemoryHit`
+       with a common score and excerpt field.
+    4. **Global sort** — :func:`_sort_hits` orders by score, then applies stable
+       tie-breakers (temporal vs non-temporal, module name, source id).
+
+Code search uses :func:`~agentic_memory.server.code_search.search_code` with
+``SAFE_RETRIEVAL_POLICY`` so unified search stays on the agent-safe semantic
+path (no graph rerank) unless that policy is changed deliberately elsewhere.
+
+Web (research) search mirrors the temporal-first strategy in ``search_web_memory``:
+vector baseline, optional temporal bridge rerank when seeds and project id exist.
+"""
 
 from __future__ import annotations
 
@@ -19,6 +43,7 @@ from agentic_memory.web.pipeline import ResearchIngestionPipeline
 
 logger = logging.getLogger(__name__)
 
+# Subset strings accepted in the ``modules`` comma-list from the MCP tool layer.
 VALID_MODULES = {"code", "web", "conversation"}
 
 
@@ -246,6 +271,7 @@ def _search_research_structured(
     if not baseline_results:
         return []
 
+    # Same temporal bridge pattern as app.search_web_memory: baseline seeds the graph walk.
     bridge = pipeline.__dict__.get("_temporal_bridge") if hasattr(pipeline, "__dict__") else None
     project_id = _dominant_project_id(baseline_results)
     if bridge is not None and bridge.is_available() and project_id is not None:
@@ -297,7 +323,12 @@ def _search_conversation_structured(
 
 
 def _sort_hits(hits: list[UnifiedMemoryHit], limit: int) -> list[UnifiedMemoryHit]:
-    """Sort normalized hits by score with stable module-aware tie-breaking."""
+    """Sort normalized hits by score with stable module-aware tie-breaking.
+
+    Tie-break order (after descending score): prefer temporal-enhanced hits,
+    then deterministic ``module`` and ``source_id`` so ordering is stable
+    across runs for the same inputs.
+    """
     ordered = sorted(
         hits,
         key=lambda hit: (
@@ -322,7 +353,28 @@ def search_all_memory_sync(
     research_pipeline: ResearchIngestionPipeline | None = None,
     conversation_pipeline: ConversationIngestionPipeline | None = None,
 ) -> UnifiedSearchResponse:
-    """Search code, web, and conversation memory and return one normalized response."""
+    """Search code, web, and conversation memory; return one normalized response.
+
+    This is the synchronous core used by the MCP ``search_all_memory`` tool.
+    Pass ``None`` for any unavailable dependency (for example no graph or no
+    research pipeline); that module is skipped without raising.
+
+    Args:
+        query: Natural-language query shared across enabled modules.
+        limit: Maximum number of hits after global merge and sort.
+        project_id: Conversation (and temporal web) project scope when applicable.
+        repo_id: Optional explicit code-graph repository scope.
+        as_of: Optional ISO-8601 cutoff string for ingested-at filtering.
+        modules: Iterable of submodule names or ``None`` for all.
+        graph: Live :class:`~agentic_memory.ingestion.graph.KnowledgeGraphBuilder`
+            for code search; if ``None``, code results are omitted.
+        research_pipeline: Ingestion pipeline with embedder and Neo4j connection.
+        conversation_pipeline: Conversation pipeline for turn search.
+
+    Returns:
+        :class:`~agentic_memory.server.result_types.UnifiedSearchResponse` with
+        merged ``results`` and per-module ``errors`` for non-fatal failures.
+    """
     safe_limit = max(1, int(limit))
     selected_modules = _normalize_modules(modules)
     hits: list[UnifiedMemoryHit] = []

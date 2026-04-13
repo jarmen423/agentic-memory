@@ -131,6 +131,68 @@ def test_health(client):
     assert resp.json() == {"status": "ok"}
 
 
+def test_health_onboarding_is_public_and_returns_locked_contract(client):
+    """GET /health/onboarding stays public and exposes the doctor-first contract.
+
+    This endpoint is the backend source of truth for whole-stack setup. The
+    local shell and OpenClaw plugin doctor flow both depend on it before they
+    can honestly claim the stack is ready.
+    """
+
+    resp = client.get("/health/onboarding")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert body["plugin_package_name"] == "agentic-memory-openclaw"
+    assert body["plugin_id"] == "agentic-memory"
+    assert body["install_command"] == "openclaw plugin install agentic-memory-openclaw"
+    assert body["doctor_command"] == "openclaw agentic-memory doctor"
+    assert body["setup_command"] == "openclaw agentic-memory setup"
+    assert body["readiness"]["setup_ready"] is True
+    assert body["readiness"]["capture_only_ready"] is True
+    assert body["readiness"]["augment_context_ready"] is True
+
+    required = {service["service_id"]: service for service in body["required_services"]}
+    optional = {service["service_id"]: service for service in body["optional_services"]}
+    assert required["backend_http"]["required"] is True
+    assert required["api_auth"]["details"]["configured"] is True
+    assert required["openclaw_memory"]["required"] is True
+    assert optional["temporal_stack"]["required"] is False
+    assert optional["grafana"]["required"] is False
+
+
+def test_health_onboarding_reports_blocking_memory_pipeline(client):
+    """Onboarding health must distinguish reachable backend vs ready memory path."""
+
+    store = dependencies.get_product_store()
+    store.set_component_status(
+        "openclaw_memory",
+        status="degraded",
+        details={"warmup_error": "RuntimeError"},
+    )
+    store.set_component_status(
+        "openclaw_context_engine",
+        status="degraded",
+        details={"warmup_error": "RuntimeError"},
+    )
+
+    resp = client.get("/health/onboarding")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["readiness"]["setup_ready"] is True
+    assert body["readiness"]["capture_only_ready"] is False
+    assert body["readiness"]["augment_context_ready"] is False
+    assert "openclaw_memory" in body["readiness"]["blocking_services"]
+    assert "openclaw_context_engine" in body["readiness"]["degraded_optional_services"]
+
+    required = {service["service_id"]: service for service in body["required_services"]}
+    optional = {service["service_id"]: service for service in body["optional_services"]}
+    assert required["openclaw_memory"]["status"] == "degraded"
+    assert optional["openclaw_context_engine"]["status"] == "degraded"
+
+
 def test_health_includes_request_id_header(client):
     """FastAPI middleware adds a stable request correlation header."""
     resp = client.get("/health")

@@ -91,6 +91,24 @@ def test_openclaw_contract_accepts_rotated_keys(client):
         assert response.json()["identity"]["session_id"] == "session-1"
 
 
+def test_openclaw_onboarding_contract_is_public_and_matches_locked_identity(client):
+    """Plugin doctor should be able to inspect the onboarding contract pre-auth."""
+
+    response = client.get("/health/onboarding")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["plugin_package_name"] == "agentic-memory-openclaw"
+    assert body["plugin_id"] == "agentic-memory"
+    assert body["install_command"] == "openclaw plugin install agentic-memory-openclaw"
+    assert body["doctor_command"] == "openclaw agentic-memory doctor"
+    assert body["setup_command"] == "openclaw agentic-memory setup"
+    assert body["readiness"]["setup_ready"] is True
+    assert body["readiness"]["capture_only_ready"] is True
+    assert any(service["service_id"] == "openclaw_memory" for service in body["required_services"])
+    assert any(service["service_id"] == "temporal_stack" for service in body["optional_services"])
+
+
 def test_openclaw_contract_missing_auth_returns_error_envelope_and_header(client):
     """Missing auth should return the shared error body and request-id header."""
 

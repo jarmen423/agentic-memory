@@ -1,50 +1,62 @@
-"""
-MCP tool registration and the Toolkit class — the primary API surface of Agentic Memory.
+"""MCP tool registration, conversation/research pipelines, and the code ``Toolkit``.
 
-Defines every capability that AI agents can invoke through the Model Context Protocol:
-conversation memory search and ingestion, web research scheduling, and structural
-code graph queries (semantic search, dependency analysis, git history).
+This module is the main bridge between **Model Context Protocol (MCP) tool handlers**
+and Agentic Memory backends (Neo4j, embedding providers, optional temporal graph).
+It is organized in three layers:
 
-Extended:
-    This module is divided into three logical layers:
+1. **Private helpers** — ``_vector_conversation_search``,
+   ``_text_conversation_search``, ``_fetch_conversation_*``,
+   ``search_conversation_turns_sync``, etc. Implement retrieval strategies (vector
+   index → optional temporal enrichment → deterministic text fallback) and shared
+   hydration logic used by MCP tools and tests.
 
-    1. **Private search helpers** (``_vector_conversation_search``,
-       ``_text_conversation_search``, ``_fetch_conversation_*``, etc.):
-       Low-level Neo4j query functions that implement the retrieval strategies
-       (vector search → temporal graph → text fallback) used by the public tools.
+2. **Registration entrypoints** — ``register_conversation_tools`` and
+   ``register_schedule_tools`` attach async handlers to a FastMCP instance at
+   server startup. Handlers **offload blocking work** (Neo4j sessions, embedders,
+   schedulers) via ``asyncio.get_event_loop().run_in_executor`` so the MCP event
+   loop is not blocked.
 
-    2. **MCP tool registration functions** (``register_conversation_tools``,
-       ``register_schedule_tools``):
-       Functions called once at server startup that attach async tool handlers to
-       a FastMCP instance.  Each handler runs its blocking Neo4j / embedding-provider
-       work in a thread executor so the MCP event loop stays unblocked.
+3. **Toolkit** — Synchronous, framework-agnostic wrappers around
+   ``KnowledgeGraphBuilder`` and ``search_code`` that return **Markdown reports**
+   for LLM consumption. Used by the internal MCP app and scripts; conversation
+   memory is **not** routed through ``Toolkit`` (see registration functions).
 
-    3. **Toolkit class**:
-       A synchronous, framework-agnostic class that wraps KnowledgeGraphBuilder
-       methods into LLM-readable string reports.  Used by the MCP server tools and
-       can also be instantiated directly in scripts or tests without a running MCP
-       server.
+Integration:
+    Imported by ``agentic_memory.server.app``, which calls ``register_*`` during
+    startup and constructs ``Toolkit`` with a shared ``KnowledgeGraphBuilder``.
+    Cached helpers ``_get_mcp_conversation_pipeline``,
+    ``_get_mcp_research_pipeline``, and ``_get_mcp_research_scheduler`` read
+    environment configuration and are **separate** from ``am_server`` process
+    singletons when the MCP server runs standalone.
 
-Role:
-    Imported by ``server/app.py`` which calls the ``register_*`` functions during
-    server startup.  The ``Toolkit`` class is instantiated there with the shared
-    ``KnowledgeGraphBuilder`` singleton.
+Error paths (conversation tools):
+    * Vector search failures in ``search_conversation_turns_sync`` trigger
+      structured log event ``conversation_search_fallback`` and fall back to
+      substring search; ``as_of`` filtering still applies.
+    * Missing temporal bridge, missing seeds, or temporal retrieve errors fall
+      back to vector (or text) baselines with the same log event.
+    * MCP wrappers ``search_conversations`` and ``get_conversation_context`` log
+      errors and return ``[]`` / ``{"turns": []}`` rather than raising.
+    * ``add_message`` logs failures and returns ``{"error": "<message>"}``.
+
+Error paths (Toolkit):
+    Neo4j ``DatabaseError`` / ``ClientError`` are caught, logged where applicable,
+    and surfaced as **error strings** in the returned report (no exceptions to
+    the caller).
+
+Error paths (research schedule tools):
+    If the scheduler cannot be configured (missing pipeline, keys, etc.), tools
+    return JSON strings with ``status: "error"``. ``run_research_session``
+    validates inputs before touching the scheduler.
 
 Dependencies:
-    - agentic_memory.chat.pipeline (ConversationIngestionPipeline)
-    - agentic_memory.core.connection (ConnectionManager)
-    - agentic_memory.core.embedding (EmbeddingService)
-    - agentic_memory.core.entity_extraction (EntityExtractionService)
-    - agentic_memory.core.scheduler (ResearchScheduler)
-    - agentic_memory.temporal.bridge (TemporalBridge — optional, degrades gracefully)
-    - Neo4j (vector index ``chat_embeddings``, label ``Memory:Conversation:Turn``)
-    - Configured embedding providers resolved through ``EmbeddingService``
-
-Key Technologies:
-    FastMCP tool decorator pattern, Neo4j vector search (``db.index.vector.queryNodes``),
-    asyncio thread executor, lru_cache for singleton pipelines, temporal graph bridge.
+    Neo4j labels/indexes (e.g. ``Memory:Conversation:Turn``, vector index
+    ``chat_embeddings``), ``EmbeddingService`` / ``build_embedding_service``,
+    optional ``TemporalBridge``, ``ResearchScheduler`` + Brave Search for web
+    schedules.
 """
 
+from collections.abc import Callable
 from typing import Any, Dict, List, Optional
 import asyncio
 import json
@@ -53,6 +65,7 @@ import os
 from functools import lru_cache
 
 import neo4j
+from mcp.types import ToolAnnotations
 from agentic_memory.chat.pipeline import ConversationIngestionPipeline
 from agentic_memory.core.connection import ConnectionManager
 from agentic_memory.core.embedding import EmbeddingService
@@ -74,10 +87,54 @@ from agentic_memory.ingestion.graph import KnowledgeGraphBuilder
 from agentic_memory.server.code_search import SAFE_RETRIEVAL_POLICY, search_code
 
 logger = logging.getLogger(__name__)
+ToolAnnotationResolver = Callable[[str], ToolAnnotations | None]
+
+
+def _tool_registration_kwargs(
+    tool_name: str,
+    description: str,
+    annotation_resolver: ToolAnnotationResolver | None,
+) -> dict[str, Any]:
+    """Build keyword arguments for ``@mcp.tool`` registration.
+
+    Merges the MCP-visible ``name`` and ``description`` with optional
+    ``ToolAnnotations`` when ``annotation_resolver`` returns a value. Used so
+    the same handler can be registered on multiple MCP apps (internal vs public)
+    with different annotation policies without duplicating handler code.
+
+    Args:
+        tool_name: Stable MCP tool identifier.
+        description: MCP tool description string passed through to clients.
+        annotation_resolver: Optional callback ``(name) -> annotations | None``.
+
+    Returns:
+        Dict suitable for unpacking into ``FastMCP.tool(...)``.
+    """
+
+    kwargs: dict[str, Any] = {
+        "name": tool_name,
+        "description": description,
+    }
+    if annotation_resolver is not None:
+        annotations = annotation_resolver(tool_name)
+        if annotations is not None:
+            kwargs["annotations"] = annotations
+    return kwargs
 
 
 def _filter_rows_as_of(rows: list[dict[str, Any]], as_of: str | None) -> list[dict[str, Any]]:
-    """Apply the Phase 7 ingested_at cutoff when provided."""
+    """Filter conversation rows to those ingested on or before ``as_of``.
+
+    Compares lexicographically on ISO-8601 ``ingested_at`` strings when ``as_of``
+    is set; no-op when ``as_of`` is ``None``.
+
+    Args:
+        rows: Turn-shaped dicts containing optional ``ingested_at``.
+        as_of: Inclusive upper bound for ``ingested_at``, or ``None``.
+
+    Returns:
+        Filtered list (may be shorter than ``rows``).
+    """
     if as_of is None:
         return rows
     return [row for row in rows if (row.get("ingested_at") or "") <= as_of]
@@ -92,7 +149,22 @@ def _vector_conversation_search(
     role: str | None,
     limit: int,
 ) -> list[dict[str, Any]]:
-    """Baseline conversation vector search with seed metadata."""
+    """Run vector retrieval over indexed conversation turns.
+
+    Queries Neo4j index ``chat_embeddings`` via ``db.index.vector.queryNodes`` and
+    applies optional ``project_id`` / ``role`` filters.
+
+    Args:
+        conn: Shared connection manager for Neo4j sessions.
+        embedder: Provider used to embed ``query``.
+        query: Natural language query text.
+        project_id: If set, restrict to turns for this project.
+        role: If set, restrict to this speaker role (e.g. ``user``).
+        limit: Maximum rows to return from the index call.
+
+    Returns:
+        List of turn dicts plus a ``score`` field from vector similarity.
+    """
     query_embedding = embedder.embed(query)
     with conn.session() as session:
         cypher = (
@@ -132,7 +204,22 @@ def _text_conversation_search(
     role: str | None,
     limit: int,
 ) -> list[dict[str, Any]]:
-    """Existing deterministic text fallback for conversation search."""
+    """Substring fallback search over conversation content.
+
+    Used when embedding or vector index access fails so callers still get
+    deterministic matches. Assigns a constant ``score`` of ``1.0`` (no ranking
+    beyond Neo4j row order / limit).
+
+    Args:
+        conn: Neo4j connection manager.
+        query: Substring matched case-insensitively against ``n.content``.
+        project_id: Optional project filter.
+        role: Optional role filter.
+        limit: Maximum number of turns.
+
+    Returns:
+        Matching turn dicts with synthetic ``score``.
+    """
     with conn.session() as session:
         text_cypher = (
             "MATCH (n:Memory:Conversation:Turn) "
@@ -167,7 +254,16 @@ def _fetch_conversation_turn(
     session_id: str,
     turn_index: int,
 ) -> dict[str, Any] | None:
-    """Hydrate one conversation turn by stable session/turn identity."""
+    """Load a single turn by ``session_id`` and ``turn_index``.
+
+    Args:
+        conn: Neo4j connection manager.
+        session_id: Conversation session identifier.
+        turn_index: Zero-based turn index within the session.
+
+    Returns:
+        Turn fields as a dict, or ``None`` if no node matches.
+    """
     with conn.session() as session:
         result = session.run(
             (
@@ -195,7 +291,20 @@ def _fetch_conversation_context_window(
     turn_index: int,
     as_of: str | None,
 ) -> list[dict[str, Any]]:
-    """Fetch the immediate surrounding turns for one matched turn."""
+    """Fetch neighboring turns at ``turn_index - 1`` and ``turn_index + 1``.
+
+    Used to supply local dialog context around a hit. Results respect ``as_of``
+    via :func:`_filter_rows_as_of` (neighbor turns after the cutoff are dropped).
+
+    Args:
+        conn: Neo4j connection manager.
+        session_id: Session containing the matched turn.
+        turn_index: Index of the matched turn (neighbors are ±1).
+        as_of: Optional ingested-at ceiling for context rows.
+
+    Returns:
+        Up to two turn dicts ordered by ``turn_index``.
+    """
     with conn.session() as session:
         ctx_result = session.run(
             (
@@ -226,7 +335,23 @@ def _hydrate_temporal_conversation_results(
     role: str | None,
     as_of: str | None,
 ) -> list[dict[str, Any]]:
-    """Resolve temporal evidence back to conversation turns."""
+    """Turn temporal bridge ``evidence`` entries into hydrated turn dicts.
+
+    Skips non-conversation evidence, malformed ``sourceId`` values, duplicates,
+    role mismatches, and turns after ``as_of``. Scores are derived from temporal
+    ``confidence`` and ``relevance`` on the parent ranked result.
+
+    Args:
+        conn: Neo4j connection manager.
+        temporal_results: ``results`` list from ``TemporalBridge.retrieve``.
+        limit: Maximum hydrated turns to return.
+        role: If set, exclude turns whose ``role`` differs.
+        as_of: Optional ingested-at ceiling.
+
+    Returns:
+        Hydrated turns (with ``score``), newest-first by processing order, capped
+        at ``limit``.
+    """
     hydrated: list[dict[str, Any]] = []
     seen: set[tuple[str, int]] = set()
 
@@ -288,6 +413,13 @@ def search_conversation_turns_sync(
     The ``as_of`` cutoff is applied at each tier to support time-bounded
     memory retrieval (e.g., "what did we know before this date?").
 
+    Error handling:
+        Any exception from the initial vector search triggers a warning log
+        (``conversation_search_fallback`` / ``fallback: text_search_after_vector_failure``)
+        and switches to :func:`_text_conversation_search`. When ``project_id`` is
+        set, temporal retrieval failures are non-fatal: the caller receives the
+        baseline vector results (already ``as_of``-filtered) after logging.
+
     Args:
         pipeline: A ``ConversationIngestionPipeline`` instance that provides
             ``_conn`` (ConnectionManager), ``_embedder`` (EmbeddingService),
@@ -321,6 +453,7 @@ def search_conversation_turns_sync(
             limit=limit,
         )
     except Exception as exc:
+        # Embedding or vector index failure: deterministic text search still works.
         logger.warning(
             "conversation_search_fallback",
             extra={
@@ -431,10 +564,20 @@ def search_conversation_turns_sync(
 
 @lru_cache(maxsize=1)
 def _get_mcp_conversation_pipeline() -> ConversationIngestionPipeline:
-    """Cached ConversationIngestionPipeline for MCP tool layer.
+    """Return a process-local singleton ``ConversationIngestionPipeline`` for MCP.
 
-    Reads from environment variables. Separate singleton from am-server's
-    get_conversation_pipeline() — MCP server and am-server are distinct processes.
+    Configuration is read from environment variables (Neo4j URI, credentials,
+    chat embedding profile via :func:`build_embedding_service`, extraction
+    service, optional temporal bridge). Cached with ``lru_cache`` so every MCP
+    tool shares one pipeline per process.
+
+    Note:
+        This is intentionally **not** the same object as ``am_server`` pipeline
+        helpers when those run in another process; each runtime constructs its own
+        cached instance.
+
+    Returns:
+        Shared pipeline used by conversation MCP tools.
     """
     conn = ConnectionManager(
         uri=os.getenv("NEO4J_URI", "bolt://localhost:7687"),
@@ -453,7 +596,15 @@ def _get_mcp_conversation_pipeline() -> ConversationIngestionPipeline:
 
 @lru_cache(maxsize=1)
 def _get_mcp_research_pipeline() -> ResearchIngestionPipeline | None:
-    """Cached ResearchIngestionPipeline for MCP tool registration."""
+    """Return a cached web research pipeline, or ``None`` if misconfigured.
+
+    Requires a working ``web`` embedding service **and** extraction LLM API
+    credentials. When prerequisites are missing, logs a warning and returns
+    ``None`` so schedule tools can degrade without raising at import time.
+
+    Returns:
+        Shared :class:`ResearchIngestionPipeline`, or ``None`` if unavailable.
+    """
     extraction_llm = resolve_extraction_llm_config()
     try:
         embedder = build_embedding_service("web")
@@ -486,7 +637,15 @@ def _get_mcp_research_pipeline() -> ResearchIngestionPipeline | None:
 
 @lru_cache(maxsize=1)
 def _get_mcp_research_scheduler() -> ResearchScheduler | None:
-    """Cached ResearchScheduler started alongside the MCP tool layer."""
+    """Return a cached :class:`ResearchScheduler` for MCP, or ``None``.
+
+    Depends on :func:`_get_mcp_research_pipeline`, extraction LLM configuration,
+    and a Brave Search API key (``BRAVE_SEARCH_API_KEY`` or ``BRAVE_API_KEY``).
+    Logs and returns ``None`` when any dependency is absent.
+
+    Returns:
+        Scheduler instance, or ``None`` if research automation cannot start.
+    """
     pipeline = _get_mcp_research_pipeline()
     extraction_llm = resolve_extraction_llm_config()
     brave_api_key = os.getenv("BRAVE_SEARCH_API_KEY") or os.getenv("BRAVE_API_KEY")
@@ -505,20 +664,21 @@ def _get_mcp_research_scheduler() -> ResearchScheduler | None:
     )
 
 class Toolkit:
-    """Synchronous code-graph query layer for the MCP server and CLI scripts.
+    """Synchronous code-graph and git reporting for MCP tools and scripts.
 
-    Wraps ``KnowledgeGraphBuilder`` methods to format results as LLM-readable
-    Markdown strings rather than raw Neo4j data.  This separation keeps the
-    server's tool handlers thin and makes Toolkit independently testable and
-    usable from scripts that don't need a running MCP server.
+    Wraps :class:`KnowledgeGraphBuilder` and :func:`search_code` to produce
+    Markdown strings suitable for LLM context. Callers include the internal MCP
+    server and tests; this class does **not** perform async I/O and does **not**
+    implement conversation memory (those tools use
+    :func:`register_conversation_tools`).
 
-    The Toolkit handles code-domain queries only (structural code graph, git
-    history).  Conversation-domain queries are handled by the async
-    ``register_conversation_tools`` path via ``ConversationIngestionPipeline``.
+    Error contract:
+        Neo4j client/database errors are caught and returned as human-readable
+        error lines inside the Markdown string so MCP layers can forward them
+        without stack traces.
 
     Attributes:
-        graph: The shared ``KnowledgeGraphBuilder`` instance that holds the live
-            Neo4j driver and provider-aware embedding runtime.
+        graph: Shared graph builder (driver lifecycle owned by the caller).
     """
 
     def __init__(self, graph: KnowledgeGraphBuilder):
@@ -537,18 +697,25 @@ class Toolkit:
         repo_id: str | None = None,
         retrieval_policy: str = SAFE_RETRIEVAL_POLICY,
     ) -> str:
-        """Search code memory and explain the retrieval policy to the caller.
+        """Search the code graph and format hits as a Markdown report.
 
-        The Toolkit is used directly by scripts and MCP surfaces that feed
-        agent prompts. Defaulting to ``safe`` keeps those callers on the proven
-        semantic-search path unless they explicitly request graph reranking.
+        Delegates retrieval to :func:`agentic_memory.server.code_search.search_code`,
+        then appends **provenance** lines (policy, mode, structural edges used)
+        so agents understand how results were produced. Default ``retrieval_policy``
+        is ``safe`` to keep callers on the supported path unless they opt into
+        graph reranking.
 
         Args:
             query: Natural-language code search request.
             limit: Maximum number of code results to return.
             repo_id: Optional repo scope override.
-            retrieval_policy: ``safe`` by default. ``graph_reranked`` enables
-                reranking over IMPORTS/DEFINES/HAS_METHOD without using CALLS.
+            retrieval_policy: ``safe`` by default; ``graph_reranked`` enables
+                structural reranking without ``CALLS`` edges.
+
+        Returns:
+            Markdown report, ``No relevant code found...`` when empty, or
+            ``Error executing search: ...`` on Neo4j ``DatabaseError`` /
+            ``ClientError``.
         """
         try:
             results = search_code(
@@ -590,8 +757,18 @@ class Toolkit:
             return f"Error executing search: {str(e)}"
     
     def get_file_dependencies(self, file_path: str, repo_id: str | None = None) -> str:
-        """
-        Returns what this file imports and what calls it.
+        """Summarize import edges for a single file.
+
+        Calls :meth:`KnowledgeGraphBuilder.get_file_dependencies` and formats
+        outgoing imports and incoming ``imported_by`` paths for the model.
+
+        Args:
+            file_path: Repository-relative path of the file to analyze.
+            repo_id: Optional multi-repo scope.
+
+        Returns:
+            Markdown dependency report, or ``Error analyzing dependencies: ...``
+            when Neo4j raises ``DatabaseError`` / ``ClientError``.
         """
         try:
             deps = self.graph.get_file_dependencies(
@@ -610,8 +787,16 @@ class Toolkit:
             return f"Error analyzing dependencies: {str(e)}"
 
     def get_git_file_history(self, file_path: str, limit: int = 20) -> str:
-        """
-        Return git commit history for a specific file.
+        """List recent commits touching ``file_path`` using ingested git graph data.
+
+        Args:
+            file_path: Path as stored in the git graph.
+            limit: Maximum commits to include.
+
+        Returns:
+            Markdown bullet list of short SHAs and subjects, a message when no
+            git graph exists, ``No git history found...`` when the query is empty,
+            or ``Error getting git file history: ...`` on Neo4j errors.
         """
         try:
             if not self.graph.has_git_graph_data():
@@ -633,8 +818,16 @@ class Toolkit:
             return f"Error getting git file history: {str(e)}"
 
     def get_commit_context(self, sha: str, include_diff_stats: bool = True) -> str:
-        """
-        Return metadata and optional diff stats for a commit.
+        """Show metadata (and optional diff stats) for one commit SHA.
+
+        Args:
+            sha: Commit identifier as stored in the graph (prefixes are resolved
+                by the graph layer).
+            include_diff_stats: When ``True``, append file/addition/deletion counts.
+
+        Returns:
+            Markdown summary, guidance when git data is missing, ``No commit found``
+            when unknown, or ``Error getting commit context: ...`` on Neo4j errors.
         """
         try:
             if not self.graph.has_git_graph_data():
@@ -669,21 +862,36 @@ class Toolkit:
 # ---------------------------------------------------------------------------
 
 
-def register_conversation_tools(mcp: object) -> None:  # type: ignore[type-arg]
-    """Register Phase 4 conversation tools on the provided MCP instance.
+def register_conversation_tools(
+    mcp: object,  # type: ignore[type-arg]
+    *,
+    annotation_resolver: ToolAnnotationResolver | None = None,
+) -> None:
+    """Attach conversation search, context, and ingestion tools to ``mcp``.
 
-    Call this from the MCP server startup (codememory/server/app.py) after
-    the mcp instance is created.
+    Registers ``search_conversations``, ``get_conversation_context``, and
+    ``add_message``. Each async handler resolves the cached pipeline then runs
+    blocking Neo4j / embedding work in the default thread pool executor so the
+    MCP server remains responsive.
 
     Args:
-        mcp: The FastMCP instance to register tools on.
+        mcp: FastMCP application instance (supports ``@mcp.tool``).
+        annotation_resolver: Optional callback passed to
+            :func:`_tool_registration_kwargs` to attach per-tool
+            ``ToolAnnotations`` (used by the public MCP profile).
+
+    Note:
+        MCP-visible ``description`` strings are defined at registration sites
+        below; Python docstrings document runtime behavior for maintainers.
     """
 
     @mcp.tool(  # type: ignore[attr-defined]
-        description=(
+        **_tool_registration_kwargs(
+            "search_conversations",
             "Search past conversations for relevant exchanges. Use when you need to find "
             "prior context, check what was discussed about a topic, or retrieve conversation "
-            "history by semantic similarity."
+            "history by semantic similarity.",
+            annotation_resolver,
         )
     )
     async def search_conversations(
@@ -693,17 +901,26 @@ def register_conversation_tools(mcp: object) -> None:  # type: ignore[type-arg]
         limit: int = 10,
         as_of: str | None = None,
     ) -> list[dict]:
-        """Semantic search over conversation turn embeddings.
+        """Semantic search over conversation turn embeddings (vector index path).
+
+        Unlike :func:`get_conversation_context`, this tool queries the
+        ``chat_embeddings`` index directly inside the executor and does **not**
+        run the temporal fusion path in :func:`search_conversation_turns_sync`.
+        On any failure in the synchronous closure, logs and returns an empty
+        list (no exception propagates to MCP).
 
         Args:
             query: Natural language search query.
-            project_id: Optional project filter. Searches all projects if None.
-            role: Optional role filter ("user" or "assistant"). All roles if None.
-            limit: Maximum number of results to return (1-50).
+            project_id: Optional project filter; ``None`` searches all projects.
+            role: Optional role filter (``user`` / ``assistant``); ``None`` keeps
+                all roles.
+            limit: Maximum number of results to return (bounded by the Cypher
+                ``LIMIT``).
+            as_of: Optional ISO-8601 ceiling on ``ingested_at`` applied to rows
+                after the query returns.
 
         Returns:
-            List of dicts: [{session_id, turn_index, role, content,
-                source_agent, timestamp, ingested_at, entities, score}]
+            List of turn dicts with vector ``score``, or ``[]`` on error.
         """
         pipeline = _get_mcp_conversation_pipeline()
         conn = pipeline._conn  # type: ignore[attr-defined]
@@ -753,14 +970,17 @@ def register_conversation_tools(mcp: object) -> None:  # type: ignore[type-arg]
                 logger.error("search_conversations failed: %s", exc)
                 return []
 
+        # Blocking embed + Neo4j session: keep off the asyncio event loop.
         return await loop.run_in_executor(None, _run)
 
     @mcp.tool(  # type: ignore[attr-defined]
-        description=(
+        **_tool_registration_kwargs(
+            "get_conversation_context",
             "Retrieve the most relevant past conversation context for a given query or task. "
             "Returns a compact, structured bundle of prior exchanges ranked by relevance. "
             "Use this to ground responses in prior conversation history before answering a "
-            "user's question."
+            "user's question.",
+            annotation_resolver,
         )
     )
     async def get_conversation_context(
@@ -772,20 +992,24 @@ def register_conversation_tools(mcp: object) -> None:  # type: ignore[type-arg]
     ) -> dict:
         """Retrieve structured conversation context for LLM grounding.
 
-        Performs vector search over chat_embeddings filtered to project_id.
-        If include_session_context=True, fetches the previous and next turn
-        from the same session for each matched turn to provide conversational
-        framing.
+        Uses :func:`search_conversation_turns_sync`, so results may include
+        **temporal graph reranking** when a bridge is available (contrast with
+        :func:`search_conversations`). Optionally hydrates a ±1 **context
+        window** per hit via :func:`_fetch_conversation_context_window`. On
+        failure, logs and returns ``{"query": query, "turns": []}``.
 
         Args:
             query: Natural language query describing what context is needed.
-            project_id: Project scope (required — context is always project-scoped).
-            limit: Number of turns to return (keep small for context window, 1-10).
-            include_session_context: If True, fetch +/-1 surrounding turns per match.
+            project_id: Required project scope (temporal path needs a project).
+            limit: Number of primary turns to return (keep small for LLM windows).
+            include_session_context: When ``True``, attach neighboring turns
+                (respecting ``as_of``) for each match.
+            as_of: Optional ingested-at ceiling forwarded to search and window
+                hydration.
 
         Returns:
-            Dict: {query, turns: [{session_id, turn_index, role, content, score,
-                context_window: [{turn_index, role, content}]}]}
+            Dict with ``query`` and ``turns`` (each turn may include
+            ``context_window``).
         """
         pipeline = _get_mcp_conversation_pipeline()
         conn = pipeline._conn  # type: ignore[attr-defined]
@@ -825,13 +1049,16 @@ def register_conversation_tools(mcp: object) -> None:  # type: ignore[type-arg]
                 logger.error("get_conversation_context failed: %s", exc)
                 return {"query": query, "turns": []}
 
+        # search_conversation_turns_sync + Neo4j window reads are synchronous.
         return await loop.run_in_executor(None, _run)
 
     @mcp.tool(  # type: ignore[attr-defined]
-        description=(
+        **_tool_registration_kwargs(
+            "add_message",
             "Explicitly save a conversation turn to memory. Use this when you want to ensure "
             "a specific message is persisted, or when passive capture is not configured. "
-            "Provide turn_index=0 for single messages; use sequential indexes for multi-turn writes."
+            "Provide turn_index=0 for single messages; use sequential indexes for multi-turn writes.",
+            annotation_resolver,
         )
     )
     async def add_message(
@@ -850,26 +1077,28 @@ def register_conversation_tools(mcp: object) -> None:  # type: ignore[type-arg]
     ) -> dict:
         """Persist a single conversation turn to the memory graph.
 
-        source_key is always 'chat_mcp' for this path (explicit agent write).
-        ingestion_mode is always 'active'.
+        Builds a turn payload with fixed ``source_key="chat_mcp"`` and
+        ``ingestion_mode="active"`` so downstream ingestion can distinguish
+        explicit MCP writes from passive capture. Executes
+        :meth:`ConversationIngestionPipeline.ingest` in a worker thread.
 
         Args:
-            role: Turn role: "user" | "assistant" | "system" | "tool".
+            role: Turn role: ``user`` | ``assistant`` | ``system`` | ``tool``.
             content: Turn text content.
             session_id: Caller-owned session boundary identifier.
             project_id: Project this conversation belongs to.
-            turn_index: 0-based position within the session (default 0).
-            source_agent: AI that produced this turn (e.g. "claude").
-            model: Specific model variant (e.g. "claude-opus-4-6").
-            tool_name: For role="tool": the tool that was called.
-            tool_call_id: For request/response pairing in tool turns.
+            turn_index: 0-based position within the session (default ``0``).
+            source_agent: AI that produced this turn (e.g. ``claude``).
+            model: Specific model variant (e.g. ``claude-opus-4-6``).
+            tool_name: For ``role="tool"``: the tool that was called.
+            tool_call_id: Request/response pairing for tool turns.
             tokens_input: Input token count if known.
             tokens_output: Output token count if known.
-            timestamp: ISO-8601 turn timestamp; uses ingested_at if not provided.
+            timestamp: ISO-8601 turn timestamp; ingestion fills timing if omitted.
 
         Returns:
-            Dict with ingestion result: {role, session_id, turn_index,
-                content_hash, embedded, entities_count, project_id}.
+            Ingestion summary dict (hashes, embedding/entity counts, ids) on
+            success, or ``{"error": "<message>"}`` if ingestion raises.
         """
         pipeline = _get_mcp_conversation_pipeline()
         loop = asyncio.get_event_loop()
@@ -892,6 +1121,7 @@ def register_conversation_tools(mcp: object) -> None:  # type: ignore[type-arg]
         }
 
         try:
+            # Ingestion performs Neo4j writes and embedding work; keep it off the loop.
             result: dict = await loop.run_in_executor(None, pipeline.ingest, turn)
             return result
         except Exception as exc:
@@ -928,11 +1158,17 @@ def register_schedule_tools(
         groq_api_key: Optional Groq API key for the extraction LLM.
         brave_api_key: Optional Brave Search API key for web research.
         pipeline: Optional pre-built ResearchIngestionPipeline.
+
+    Note:
+        Tool ``description=`` strings are defined on decorators below; they are
+        the MCP-facing summaries. Python docstrings describe return contracts
+        and validation behavior.
     """
 
     scheduler_singleton: ResearchScheduler | None = None
 
     def _get_scheduler():
+        """Lazily construct or return the shared :class:`ResearchScheduler`."""
         nonlocal scheduler_singleton
         if scheduler_singleton is not None:
             return scheduler_singleton
@@ -953,6 +1189,8 @@ def register_schedule_tools(
         scheduler_singleton = _get_mcp_research_scheduler()
         return scheduler_singleton
 
+    # Resolve scheduler once at import/registration time when possible so logs
+    # appear early; tools call _get_scheduler() again idempotently.
     _get_scheduler()
 
     @mcp.tool(  # type: ignore[attr-defined]
@@ -968,7 +1206,20 @@ def register_schedule_tools(
         project_id: str,
         max_runs_per_day: int = 5,
     ) -> str:
-        """Create and persist a recurring research schedule."""
+        """Create and persist a recurring research schedule.
+
+        Args:
+            template: Prompt / URL pattern template for scheduled runs.
+            variables: Template variable names or values as required by scheduler.
+            cron_expr: Cron expression consumed by APScheduler.
+            project_id: Owning project identifier in Neo4j.
+            max_runs_per_day: Safety cap forwarded to the scheduler.
+
+        Returns:
+            JSON string ``{"status": "ok", "schedule_id": ...}`` on success, or
+            ``{"status": "error", "error": "Research scheduler is not configured."}``
+            when dependencies are missing.
+        """
         scheduler = _get_scheduler()
         if scheduler is None:
             return json.dumps(
@@ -1001,7 +1252,24 @@ def register_schedule_tools(
         template: str | None = None,
         variables: list[str] | None = None,
     ) -> str:
-        """Trigger one scheduled or ad hoc research session."""
+        """Trigger one scheduled or ad hoc research session.
+
+        Validates inputs before touching the scheduler: callers must supply either
+        ``schedule_id`` **or** both ``project_id`` and ``template`` for ad hoc
+        runs. Delegates to :meth:`ResearchScheduler.run_research_session` inside
+        a worker thread.
+
+        Args:
+            schedule_id: Existing schedule to run, if any.
+            project_id: Required for ad hoc runs together with ``template``.
+            template: Ad hoc template when no ``schedule_id`` is provided.
+            variables: Optional template variables for ad hoc execution.
+
+        Returns:
+            JSON-encoded dict from the scheduler (structure defined by
+            ``ResearchScheduler``), or a JSON error object when validation fails
+            or the scheduler is unavailable.
+        """
         if not schedule_id and not (project_id and template):
             return json.dumps(
                 {
@@ -1035,7 +1303,15 @@ def register_schedule_tools(
         )
     )
     async def list_research_schedules(project_id: str) -> str:
-        """List recurring research schedules for a project."""
+        """List recurring research schedules for a project.
+
+        Args:
+            project_id: Project key whose schedules are loaded from Neo4j.
+
+        Returns:
+            JSON ``{"status": "ok", "schedules": [...]}`` on success, or a JSON
+            error payload when the scheduler is not configured.
+        """
         scheduler = _get_scheduler()
         if scheduler is None:
             return json.dumps(

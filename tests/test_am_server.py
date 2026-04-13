@@ -10,8 +10,10 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from agentic_memory.core.connection import ConnectionManager
 from am_server import dependencies
 from am_server.app import create_app
+from am_server.mcp_profiles import FULL_MCP_TOOL_NAMES, PUBLIC_MCP_TOOL_NAMES
 from am_server.routes import dashboard, openclaw
 
 
@@ -64,6 +66,8 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini")
     monkeypatch.setenv("GROQ_API_KEY", "fake-groq")
     monkeypatch.setenv("CODEMEMORY_PRODUCT_STATE", str(tmp_path / "product-state.json"))
+    monkeypatch.setenv("AM_SERVER_PUBLIC_MCP_API_KEY", "public-mcp-key")
+    monkeypatch.setenv("AM_SERVER_INTERNAL_MCP_API_KEY", "internal-mcp-key")
 
     mock_pipeline = MagicMock()
     mock_pipeline.ingest.return_value = {"stored": True}
@@ -89,6 +93,9 @@ def client(monkeypatch, tmp_path):
     dependencies.get_pipeline.cache_clear()
     dependencies.get_conversation_pipeline.cache_clear()
     dependencies.get_product_store.cache_clear()
+    with openclaw._CACHE_LOCK:  # type: ignore[attr-defined]
+        openclaw._PROJECT_STATUS_CACHE.clear()  # type: ignore[attr-defined]
+        openclaw._SEARCH_CACHE.clear()  # type: ignore[attr-defined]
     app = create_app()
     with TestClient(app, raise_server_exceptions=False) as c:
         yield c
@@ -98,6 +105,18 @@ def client(monkeypatch, tmp_path):
 def auth_headers() -> dict:
     """Valid Authorization header."""
     return {"Authorization": "Bearer test-key-abc"}
+
+
+@pytest.fixture()
+def public_mcp_headers() -> dict:
+    """Valid Authorization header for hosted/public MCP surfaces."""
+    return {"Authorization": "Bearer public-mcp-key"}
+
+
+@pytest.fixture()
+def internal_mcp_headers() -> dict:
+    """Valid Authorization header for full/internal MCP surfaces."""
+    return {"Authorization": "Bearer internal-mcp-key"}
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +136,36 @@ def test_health_includes_request_id_header(client):
     resp = client.get("/health")
     assert resp.status_code == 200
     assert resp.headers["X-Request-ID"]
+
+
+def test_publication_root_redirects_to_overview(client):
+    """GET /publication redirects to the stable product overview page."""
+
+    resp = client.get("/publication", follow_redirects=False)
+
+    assert resp.status_code == 307
+    assert resp.headers["location"] == "/publication/agentic-memory"
+
+
+def test_publication_pages_are_public_and_linked(client):
+    """Legal/support publication pages stay public and cross-link correctly."""
+
+    expected_pages = {
+        "/publication/agentic-memory": "Agentic Memory",
+        "/publication/privacy": "Privacy Policy",
+        "/publication/terms": "Terms of Service",
+        "/publication/support": "Support",
+        "/publication/dpa": "Data Processing Addendum",
+    }
+
+    for path, marker in expected_pages.items():
+        resp = client.get(path)
+        assert resp.status_code == 200
+        assert marker in resp.text
+        assert "/publication/privacy" in resp.text
+        assert "/publication/terms" in resp.text
+        assert "/publication/support" in resp.text
+        assert "/publication/dpa" in resp.text
 
 
 def test_ingest_no_auth(client):
@@ -412,14 +461,316 @@ def test_rotated_api_keys_accept_any_configured_key(monkeypatch):
             assert resp.status_code == 202
 
 
-def test_mcp_mounted(client):
-    """GET /mcp returns non-404 (verifies FastMCP ASGI mount exists).
+def test_connection_manager_uses_phase14_fail_fast_defaults(monkeypatch):
+    """Neo4j pool acquisition now fails fast by default for user-facing routes."""
 
-    The SSE app at /mcp issues a 307 redirect for bare /mcp requests.
-    We check without following redirects so the mount itself is verified.
-    """
+    captured = {}
+
+    def fake_driver(uri, *, auth, max_connection_pool_size, connection_acquisition_timeout, connection_timeout, max_transaction_retry_time):
+        captured.update(
+            {
+                "uri": uri,
+                "auth": auth,
+                "max_connection_pool_size": max_connection_pool_size,
+                "connection_acquisition_timeout": connection_acquisition_timeout,
+                "connection_timeout": connection_timeout,
+                "max_transaction_retry_time": max_transaction_retry_time,
+            }
+        )
+        return MagicMock()
+
+    monkeypatch.delenv("AM_NEO4J_MAX_CONNECTION_POOL_SIZE", raising=False)
+    monkeypatch.delenv("AM_NEO4J_CONNECTION_ACQUISITION_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("AM_NEO4J_CONNECTION_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("AM_NEO4J_MAX_TRANSACTION_RETRY_SECONDS", raising=False)
+    monkeypatch.setattr("agentic_memory.core.connection.neo4j.GraphDatabase.driver", fake_driver)
+
+    manager = ConnectionManager("bolt://localhost:7687", "neo4j", "test")
+
+    assert manager.pool_settings["connection_acquisition_timeout"] == 10
+    assert captured["connection_acquisition_timeout"] == 10
+    assert captured["max_connection_pool_size"] == 50
+
+
+def test_public_mcp_requires_auth(client):
+    """Hosted/public MCP mount is not anonymously accessible."""
     resp = client.get("/mcp", follow_redirects=False)
+    _assert_error_envelope(resp, code="auth_missing_api_key", status_code=401)
+    assert resp.headers["X-Agentic-Memory-MCP-Surface"] == "public"
+    assert resp.headers["X-Agentic-Memory-MCP-Auth-Surface"] == "mcp_public"
+
+
+def test_public_mcp_mounted(client, public_mcp_headers):
+    """GET /mcp returns non-404 with valid public MCP auth."""
+    resp = client.get("/mcp", follow_redirects=False, headers=public_mcp_headers)
     assert resp.status_code != 404
+    assert resp.headers["X-Agentic-Memory-MCP-Surface"] == "public"
+    assert resp.headers["X-Agentic-Memory-MCP-Auth-Surface"] == "mcp_public"
+
+
+def test_internal_mcp_mount_uses_separate_auth_surface(client, public_mcp_headers):
+    """Public MCP keys must not unlock the full/internal MCP surface."""
+    resp = client.get("/mcp-full", follow_redirects=False, headers=public_mcp_headers)
+    _assert_error_envelope(resp, code="auth_invalid_api_key", status_code=401)
+    assert resp.headers["X-Agentic-Memory-MCP-Surface"] == "full"
+    assert resp.headers["X-Agentic-Memory-MCP-Auth-Surface"] == "mcp_internal"
+
+
+def test_internal_mcp_mounted(client, internal_mcp_headers):
+    """GET /mcp/full returns non-404 with the internal MCP key."""
+    resp = client.get("/mcp-full", follow_redirects=False, headers=internal_mcp_headers)
+    assert resp.status_code != 404
+    assert resp.headers["X-Agentic-Memory-MCP-Surface"] == "full"
+    assert resp.headers["X-Agentic-Memory-MCP-Auth-Surface"] == "mcp_internal"
+
+
+def test_public_and_internal_mcp_can_fallback_to_rest_api_key(monkeypatch, tmp_path):
+    """Hosted MCP surfaces fall back to the REST API key when surface keys are unset."""
+
+    monkeypatch.setenv("AM_SERVER_API_KEY", "shared-api-key")
+    monkeypatch.delenv("AM_SERVER_API_KEYS", raising=False)
+    monkeypatch.delenv("AM_SERVER_PUBLIC_MCP_API_KEY", raising=False)
+    monkeypatch.delenv("AM_SERVER_PUBLIC_MCP_API_KEYS", raising=False)
+    monkeypatch.delenv("AM_SERVER_INTERNAL_MCP_API_KEY", raising=False)
+    monkeypatch.delenv("AM_SERVER_INTERNAL_MCP_API_KEYS", raising=False)
+    monkeypatch.setenv("NEO4J_URI", "bolt://localhost:7687")
+    monkeypatch.setenv("NEO4J_USER", "neo4j")
+    monkeypatch.setenv("NEO4J_PASSWORD", "test")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini")
+    monkeypatch.setenv("GROQ_API_KEY", "fake-groq")
+    monkeypatch.setenv("CODEMEMORY_PRODUCT_STATE", str(tmp_path / "product-state.json"))
+
+    mock_pipeline = MagicMock()
+    monkeypatch.setattr(
+        "am_server.dependencies.ResearchIngestionPipeline",
+        lambda *args, **kwargs: mock_pipeline,
+    )
+
+    mock_conversation_pipeline = MagicMock()
+    monkeypatch.setattr(
+        "am_server.dependencies.ConversationIngestionPipeline",
+        lambda *args, **kwargs: mock_conversation_pipeline,
+    )
+
+    dependencies.get_pipeline.cache_clear()
+    dependencies.get_conversation_pipeline.cache_clear()
+    dependencies.get_product_store.cache_clear()
+    app = create_app()
+    with TestClient(app, raise_server_exceptions=False) as fallback_client:
+        headers = {"Authorization": "Bearer shared-api-key"}
+        public_response = fallback_client.get("/mcp", follow_redirects=False, headers=headers)
+        internal_response = fallback_client.get("/mcp-full", follow_redirects=False, headers=headers)
+
+    assert public_response.status_code != 404
+    assert internal_response.status_code != 404
+
+
+def test_strict_mcp_auth_disables_rest_api_key_fallback(monkeypatch, tmp_path):
+    """Hosted MCP surfaces can require dedicated keys in production-like config."""
+
+    monkeypatch.setenv("AM_SERVER_API_KEY", "shared-api-key")
+    monkeypatch.setenv("AM_SERVER_STRICT_MCP_AUTH", "1")
+    monkeypatch.delenv("AM_SERVER_API_KEYS", raising=False)
+    monkeypatch.delenv("AM_SERVER_PUBLIC_MCP_API_KEY", raising=False)
+    monkeypatch.delenv("AM_SERVER_PUBLIC_MCP_API_KEYS", raising=False)
+    monkeypatch.delenv("AM_SERVER_INTERNAL_MCP_API_KEY", raising=False)
+    monkeypatch.delenv("AM_SERVER_INTERNAL_MCP_API_KEYS", raising=False)
+    monkeypatch.setenv("NEO4J_URI", "bolt://localhost:7687")
+    monkeypatch.setenv("NEO4J_USER", "neo4j")
+    monkeypatch.setenv("NEO4J_PASSWORD", "test")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini")
+    monkeypatch.setenv("GROQ_API_KEY", "fake-groq")
+    monkeypatch.setenv("CODEMEMORY_PRODUCT_STATE", str(tmp_path / "product-state.json"))
+
+    mock_pipeline = MagicMock()
+    monkeypatch.setattr(
+        "am_server.dependencies.ResearchIngestionPipeline",
+        lambda *args, **kwargs: mock_pipeline,
+    )
+
+    mock_conversation_pipeline = MagicMock()
+    mock_conversation_pipeline.ingest.return_value = {"stored": True}
+    mock_conversation_pipeline._embedder = MagicMock()
+    mock_conversation_pipeline._embedder.embed.return_value = [0.1] * 768
+    mock_conversation_pipeline._extractor = MagicMock()
+    mock_conversation_pipeline._extractor.extract.return_value = []
+    mock_conversation_pipeline._temporal_bridge = MagicMock()
+    mock_conversation_pipeline._temporal_bridge.is_available.return_value = False
+    mock_conversation_pipeline._conn = MagicMock()
+    monkeypatch.setattr(
+        "am_server.dependencies.ConversationIngestionPipeline",
+        lambda *args, **kwargs: mock_conversation_pipeline,
+    )
+
+    dependencies.get_pipeline.cache_clear()
+    dependencies.get_conversation_pipeline.cache_clear()
+    dependencies.get_product_store.cache_clear()
+    app = create_app()
+    with TestClient(app, raise_server_exceptions=False) as strict_client:
+        public_resp = strict_client.get(
+            "/mcp",
+            follow_redirects=False,
+            headers={"Authorization": "Bearer shared-api-key"},
+        )
+        internal_resp = strict_client.get(
+            "/mcp-full",
+            follow_redirects=False,
+            headers={"Authorization": "Bearer shared-api-key"},
+        )
+
+    public_error = _assert_error_envelope(
+        public_resp,
+        code="auth_not_configured",
+        status_code=503,
+        message_contains="mcp_public",
+    )
+    assert public_error["details"]["surface"] == "public"
+
+    internal_error = _assert_error_envelope(
+        internal_resp,
+        code="auth_not_configured",
+        status_code=503,
+        message_contains="mcp_internal",
+    )
+    assert internal_error["details"]["surface"] == "full"
+
+
+def test_public_mcp_supports_surface_specific_rotated_keys(monkeypatch, tmp_path):
+    """Public MCP can rotate keys independently from the REST API surface."""
+
+    monkeypatch.setenv("AM_SERVER_API_KEY", "rest-key")
+    monkeypatch.setenv("AM_SERVER_PUBLIC_MCP_API_KEYS", "public-old,public-new")
+    monkeypatch.setenv("AM_SERVER_INTERNAL_MCP_API_KEY", "internal-key")
+    monkeypatch.delenv("AM_SERVER_PUBLIC_MCP_API_KEY", raising=False)
+    monkeypatch.delenv("AM_SERVER_INTERNAL_MCP_API_KEYS", raising=False)
+    monkeypatch.setenv("NEO4J_URI", "bolt://localhost:7687")
+    monkeypatch.setenv("NEO4J_USER", "neo4j")
+    monkeypatch.setenv("NEO4J_PASSWORD", "test")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini")
+    monkeypatch.setenv("GROQ_API_KEY", "fake-groq")
+    monkeypatch.setenv("CODEMEMORY_PRODUCT_STATE", str(tmp_path / "product-state.json"))
+
+    mock_pipeline = MagicMock()
+    monkeypatch.setattr(
+        "am_server.dependencies.ResearchIngestionPipeline",
+        lambda *args, **kwargs: mock_pipeline,
+    )
+
+    mock_conversation_pipeline = MagicMock()
+    monkeypatch.setattr(
+        "am_server.dependencies.ConversationIngestionPipeline",
+        lambda *args, **kwargs: mock_conversation_pipeline,
+    )
+
+    dependencies.get_pipeline.cache_clear()
+    dependencies.get_conversation_pipeline.cache_clear()
+    dependencies.get_product_store.cache_clear()
+    app = create_app()
+    with TestClient(app, raise_server_exceptions=False) as rotated_client:
+        for key in ("public-old", "public-new"):
+            response = rotated_client.get(
+                "/mcp",
+                follow_redirects=False,
+                headers={"Authorization": f"Bearer {key}"},
+            )
+            assert response.status_code != 404
+
+        wrong_surface = rotated_client.get(
+            "/mcp-full",
+            follow_redirects=False,
+            headers={"Authorization": "Bearer public-new"},
+        )
+
+    _assert_error_envelope(wrong_surface, code="auth_invalid_api_key", status_code=401)
+
+
+def test_health_mcp_surfaces_reports_frozen_public_contract(client, auth_headers):
+    """Operator health route exposes mounted MCP surface inventory and annotations."""
+
+    resp = client.get("/health/mcp-surfaces", headers=auth_headers)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert body["strict_mcp_auth"] is False
+    assert "https://chatgpt.com" in body["cors_allow_origins"]
+
+    surfaces = {surface["name"]: surface for surface in body["surfaces"]}
+    assert surfaces["public"]["tool_names_match"] is True
+    assert surfaces["openai"]["tool_names_match"] is True
+    assert surfaces["codex"]["tool_names_match"] is True
+    assert surfaces["claude"]["tool_names_match"] is True
+    assert surfaces["public"]["annotation_coverage_complete"] is True
+    assert surfaces["openai"]["annotations"]["search_codebase"]["readOnlyHint"] is True
+    assert surfaces["public"]["annotations"]["memory_ingest_research"]["destructiveHint"] is True
+
+
+def test_public_mcp_preflight_allows_configured_browser_origin(client):
+    """Hosted MCP mounts answer browser preflight requests for approved origins."""
+
+    resp = client.options(
+        "/mcp",
+        headers={
+            "Origin": "https://chatgpt.com",
+            "Access-Control-Request-Method": "POST",
+        },
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 200
+    assert resp.headers["access-control-allow-origin"] == "https://chatgpt.com"
+
+
+def test_metrics_include_mcp_surface_series(client, auth_headers, public_mcp_headers, internal_mcp_headers):
+    """Prometheus metrics expose per-surface MCP traffic counters for hosted mounts."""
+
+    client.get("/mcp", follow_redirects=False, headers=public_mcp_headers)
+    client.get("/mcp-full", follow_redirects=False, headers=internal_mcp_headers)
+
+    resp = client.get("/metrics", headers=auth_headers)
+
+    assert resp.status_code == 200
+    assert "am_mcp_surface_requests_total" in resp.text
+    assert 'surface="public"' in resp.text
+    assert 'surface="full"' in resp.text
+    assert 'auth_surface="mcp_public"' in resp.text
+    assert 'auth_surface="mcp_internal"' in resp.text
+
+
+def test_openclaw_health_detailed_includes_runtime_component_statuses(client, auth_headers):
+    """Detailed health exposes backend component records published at startup."""
+
+    resp = client.get("/openclaw/health/detailed", headers=auth_headers)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    components = {component["component"]: component for component in body["components"]}
+
+    assert components["server"]["status"] == "healthy"
+    assert components["server"]["details"]["app"] == "am-server"
+    assert components["mcp"]["status"] == "available"
+    assert components["mcp"]["details"]["surface_count"] >= 2
+    assert any(surface["name"] == "public" for surface in components["mcp"]["details"]["surfaces"])
+    assert any(surface["name"] == "full" for surface in components["mcp"]["details"]["surfaces"])
+    assert components["openclaw_memory"]["status"] in {"healthy", "degraded"}
+    assert components["openclaw_context_engine"]["status"] in {"healthy", "degraded"}
+
+
+def test_public_mcp_tool_allowlist_excludes_internal_admin_tools():
+    """Hosted/public plugin surfaces expose only the bounded public tool set."""
+    assert "search_codebase" in PUBLIC_MCP_TOOL_NAMES
+    assert "trace_execution_path" in PUBLIC_MCP_TOOL_NAMES
+    assert "add_message" in PUBLIC_MCP_TOOL_NAMES
+    assert "schedule_research" not in PUBLIC_MCP_TOOL_NAMES
+    assert "get_git_file_history" not in PUBLIC_MCP_TOOL_NAMES
+    assert "brave_search" not in PUBLIC_MCP_TOOL_NAMES
+
+
+def test_full_mcp_tool_allowlist_keeps_internal_tooling():
+    """Self-hosted/internal MCP surface keeps the broader tool contract."""
+    assert "schedule_research" in FULL_MCP_TOOL_NAMES
+    assert "get_git_file_history" in FULL_MCP_TOOL_NAMES
+    assert "brave_search" in FULL_MCP_TOOL_NAMES
 
 
 def test_search_conversations_temporal_results_keep_shape(client, auth_headers):
@@ -959,6 +1310,64 @@ def test_openclaw_project_endpoints_can_infer_session_id(client, auth_headers, m
     assert body["binding"]["session_id"] == "session-inferred"
 
 
+def test_openclaw_project_status_uses_cache_until_project_change(client, auth_headers, monkeypatch):
+    """Repeated status lookups reuse the cached binding until mutation invalidates it."""
+
+    fake_store = _FakeOpenClawStore()
+    fake_store.upsert_integration(
+        surface="openclaw",
+        target="workspace-1:device-a:agent-x",
+        status="connected",
+        config={
+            "workspace_id": "workspace-1",
+            "device_id": "device-a",
+            "agent_id": "agent-x",
+            "session_id": "session-1",
+        },
+    )
+    fake_store.activate_project_for_openclaw_identity(
+        workspace_id="workspace-1",
+        agent_id="agent-x",
+        session_id="session-1",
+        device_id="device-a",
+        project_id="project-1",
+    )
+
+    lookup_count = {"count": 0}
+    original_lookup = fake_store.get_active_project_for_openclaw_identity
+
+    def counting_lookup(**kwargs):
+        lookup_count["count"] += 1
+        return original_lookup(**kwargs)
+
+    fake_store.get_active_project_for_openclaw_identity = counting_lookup  # type: ignore[method-assign]
+    monkeypatch.setattr(openclaw, "get_product_store", lambda: fake_store)
+
+    payload = {
+        "workspace_id": "workspace-1",
+        "device_id": "device-a",
+        "agent_id": "agent-x",
+        "session_id": "session-1",
+    }
+
+    first = client.post("/openclaw/project/status", headers=auth_headers, json=payload)
+    second = client.post("/openclaw/project/status", headers=auth_headers, json=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["active_project"]["project_id"] == "project-1"
+    assert second.json()["active_project"]["project_id"] == "project-1"
+    assert lookup_count["count"] == 1
+
+    deactivate = client.post("/openclaw/project/deactivate", headers=auth_headers, json=payload)
+    assert deactivate.status_code == 200
+
+    third = client.post("/openclaw/project/status", headers=auth_headers, json=payload)
+    assert third.status_code == 200
+    assert third.json()["active_project"] is None
+    assert lookup_count["count"] == 2
+
+
 def test_dashboard_metrics_summary_returns_cards_and_counts(client, auth_headers, monkeypatch):
     """Dashboard summary exposes operator-friendly counters from state + metrics."""
 
@@ -1227,6 +1636,86 @@ def test_openclaw_memory_search_uses_unified_search_contract(client, auth_header
     assert captured["query"] == "where did we leave off?"
     assert captured["limit"] == 7
     assert captured["project_id"] == "project-server-side"
+
+
+def test_openclaw_memory_search_reuses_cache_until_turn_ingest_invalidates(
+    client, auth_headers, monkeypatch
+):
+    """Identical OpenClaw searches reuse the TTL cache until new memory arrives."""
+
+    fake_store = _FakeOpenClawStore()
+    fake_store.activate_project_for_openclaw_identity(
+        workspace_id="workspace-1",
+        agent_id="agent-x",
+        session_id="session-1",
+        device_id="device-a",
+        project_id="project-cache",
+    )
+    monkeypatch.setattr(openclaw, "get_product_store", lambda: fake_store)
+    monkeypatch.setattr(openclaw, "get_graph", lambda: object())
+    monkeypatch.setattr(openclaw, "get_pipeline", lambda: "research-pipeline")
+
+    pipeline = dependencies.get_conversation_pipeline()
+    pipeline.ingest.return_value = {"stored": True}
+    monkeypatch.setattr(openclaw, "get_conversation_pipeline", lambda: pipeline)
+
+    search_call_count = {"count": 0}
+
+    def fake_search_all_memory_sync(**kwargs):
+        search_call_count["count"] += 1
+        return {
+            "results": [
+                {
+                    "module": "conversation",
+                    "source_id": "session-1:4",
+                    "source_kind": "conversation_turn",
+                    "title": "Relevant turn",
+                    "score": 0.91,
+                    "excerpt": "workspace memory hit",
+                    "metadata": {"turn_index": 4},
+                }
+            ]
+        }
+
+    monkeypatch.setattr(openclaw, "search_all_memory_sync", fake_search_all_memory_sync)
+
+    search_payload = {
+        "workspace_id": "workspace-1",
+        "device_id": "device-a",
+        "agent_id": "agent-x",
+        "session_id": "session-1",
+        "query": "where did we leave off?",
+        "limit": 7,
+    }
+
+    first = client.post("/openclaw/memory/search", headers=auth_headers, json=search_payload)
+    second = client.post("/openclaw/memory/search", headers=auth_headers, json=search_payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["cache_hit"] is False
+    assert second.json()["cache_hit"] is True
+    assert search_call_count["count"] == 1
+
+    ingest = client.post(
+        "/openclaw/memory/ingest-turn",
+        headers=auth_headers,
+        json={
+            "workspace_id": "workspace-1",
+            "device_id": "device-a",
+            "agent_id": "agent-x",
+            "session_id": "session-1",
+            "turn_index": 5,
+            "role": "assistant",
+            "content": "new memory arrived",
+        },
+    )
+    assert ingest.status_code == 202
+
+    third = client.post("/openclaw/memory/search", headers=auth_headers, json=search_payload)
+    assert third.status_code == 200
+    assert third.json()["cache_hit"] is False
+    assert search_call_count["count"] == 2
 
 
 def test_openclaw_context_resolve_formats_context_blocks(client, auth_headers, monkeypatch):

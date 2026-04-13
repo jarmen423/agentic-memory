@@ -62,6 +62,9 @@ def client(monkeypatch, tmp_path):
     dependencies.get_pipeline.cache_clear()
     dependencies.get_conversation_pipeline.cache_clear()
     dependencies.get_product_store.cache_clear()
+    with openclaw._CACHE_LOCK:  # type: ignore[attr-defined]
+        openclaw._PROJECT_STATUS_CACHE.clear()  # type: ignore[attr-defined]
+        openclaw._SEARCH_CACHE.clear()  # type: ignore[attr-defined]
 
     app = create_app()
     with TestClient(app, raise_server_exceptions=False) as test_client:
@@ -189,6 +192,80 @@ def test_openclaw_contract_metrics_include_openclaw_route_labels(client):
     assert metrics_response.status_code == 200
     assert 'path="/openclaw/session/register"' in metrics_response.text
     assert "am_http_requests_total" in metrics_response.text
+
+
+def test_openclaw_contract_metrics_include_domain_series(client, monkeypatch):
+    """Authenticated `/metrics` should expose the Phase 14 OpenClaw domain metrics."""
+
+    mock_conversation_pipeline = dependencies.get_conversation_pipeline()
+    mock_conversation_pipeline.ingest.return_value = {"stored": True}
+    monkeypatch.setattr(openclaw, "get_graph", lambda: object())
+    monkeypatch.setattr(openclaw, "get_pipeline", lambda: "research")
+    monkeypatch.setattr(openclaw, "get_conversation_pipeline", lambda: mock_conversation_pipeline)
+    monkeypatch.setattr(
+        openclaw,
+        "search_all_memory_sync",
+        lambda **kwargs: {"results": []},
+    )
+
+    headers = {"Authorization": "Bearer new-key"}
+    identity = {
+        "workspace_id": "workspace-1",
+        "device_id": "device-1",
+        "agent_id": "agent-1",
+        "session_id": "session-1",
+    }
+
+    register_response = client.post("/openclaw/session/register", headers=headers, json=identity)
+    assert register_response.status_code == 200
+
+    ingest_response = client.post(
+        "/openclaw/memory/ingest-turn",
+        headers=headers,
+        json={
+            **identity,
+            "turn_index": 0,
+            "role": "assistant",
+            "content": "hello from the domain metrics test",
+            "source_key": "chat_openclaw",
+        },
+    )
+    assert ingest_response.status_code == 202
+
+    search_response = client.post(
+        "/openclaw/memory/search",
+        headers=headers,
+        json={
+            **identity,
+            "query": "hello",
+            "modules": ["conversation"],
+        },
+    )
+    assert search_response.status_code == 200
+
+    context_response = client.post(
+        "/openclaw/context/resolve",
+        headers=headers,
+        json={
+            **identity,
+            "query": "hello",
+            "context_engine": "agentic-memory",
+        },
+    )
+    assert context_response.status_code == 200
+
+    metrics_response = client.get("/metrics", headers=headers)
+
+    assert metrics_response.status_code == 200
+    assert "am_ingest_turns_total" in metrics_response.text
+    assert 'workspace_id="workspace-1"' in metrics_response.text
+    assert 'agent_id="agent-1"' in metrics_response.text
+    assert 'source_key="chat_openclaw"' in metrics_response.text
+    assert "am_search_requests_total" in metrics_response.text
+    assert 'module="conversation"' in metrics_response.text
+    assert "am_search_latency_seconds_count" in metrics_response.text
+    assert "am_context_resolve_latency_seconds_count" in metrics_response.text
+    assert "am_active_sessions" in metrics_response.text
 
 
 def test_openclaw_dashboard_summary_is_authenticated_and_machine_readable(client):

@@ -34,6 +34,15 @@ def _reset_metrics() -> None:
         server_metrics._REQUEST_DURATION_SUMS.clear()  # type: ignore[attr-defined]
         server_metrics._REQUEST_DURATION_COUNTS.clear()  # type: ignore[attr-defined]
         server_metrics._ERROR_COUNTS.clear()  # type: ignore[attr-defined]
+        server_metrics._MCP_SURFACE_COUNTS.clear()  # type: ignore[attr-defined]
+        server_metrics._OPENCLAW_INGEST_COUNTS.clear()  # type: ignore[attr-defined]
+        server_metrics._OPENCLAW_INGEST_ERROR_COUNTS.clear()  # type: ignore[attr-defined]
+        server_metrics._OPENCLAW_SEARCH_COUNTS.clear()  # type: ignore[attr-defined]
+        server_metrics._OPENCLAW_SEARCH_LATENCY_SUMS.clear()  # type: ignore[attr-defined]
+        server_metrics._OPENCLAW_SEARCH_LATENCY_COUNTS.clear()  # type: ignore[attr-defined]
+        server_metrics._OPENCLAW_CONTEXT_RESOLVE_SUMS.clear()  # type: ignore[attr-defined]
+        server_metrics._OPENCLAW_CONTEXT_RESOLVE_COUNTS.clear()  # type: ignore[attr-defined]
+        server_metrics._OPENCLAW_ACTIVE_SESSIONS.clear()  # type: ignore[attr-defined]
 
 
 @pytest.fixture()
@@ -64,6 +73,9 @@ def openclaw_e2e_harness(monkeypatch, tmp_path):
     dependencies.get_pipeline.cache_clear()
     dependencies.get_conversation_pipeline.cache_clear()
     dependencies.get_product_store.cache_clear()
+    with openclaw._CACHE_LOCK:  # type: ignore[attr-defined]
+        openclaw._PROJECT_STATUS_CACHE.clear()  # type: ignore[attr-defined]
+        openclaw._SEARCH_CACHE.clear()  # type: ignore[attr-defined]
 
     stored_turns: list[dict[str, object]] = []
     turns_by_source_id: dict[str, dict[str, object]] = {}

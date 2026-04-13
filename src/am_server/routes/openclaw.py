@@ -1,25 +1,57 @@
-"""OpenClaw-facing endpoints for shared memory, project state, and context.
+"""HTTP API for the OpenClaw (Claude Code plugin) integration.
 
-This router now models the product split explicitly:
+Exposes session registration, project activation lifecycle, conversation turn
+ingest, unified memory search/read, and optional context-block assembly for the
+plugin. The design splits concerns so **memory** (ingest/search/read) can run
+even when the client is in capture-only mode, while **project state** (active
+``project_id`` per workspace/agent/session) is resolved server-side from the
+product store when the request omits it.
 
-- memory owns session registration, turn capture, search, and canonical reads
-- project state decides whether a given session currently has an active
-  ``project_id`` label
-- context resolution is optional and sits downstream of memory capture
+**Router-level contract**
 
-The OpenClaw plugin can therefore send turn-ingest events through a
-memory-specific route even when it is running in "capture only" mode.
+- Every route on this ``APIRouter`` depends on ``require_auth`` (API key or
+  equivalent as configured in ``am_server.auth``).
+
+**Major dependencies**
+
+- ``am_server.dependencies.get_product_store`` — OpenClaw identity, project
+  bindings, automation records, audit events.
+- ``am_server.dependencies.get_conversation_pipeline`` — Turn ingest and Neo4j
+  reads for conversation memory.
+- ``am_server.dependencies.get_pipeline`` — Research/code paths inside unified
+  search.
+- ``agentic_memory.server.app.get_graph`` — Graph handle for code memory in
+  search.
+- ``agentic_memory.server.unified_search.search_all_memory_sync`` — Single entry
+  for cross-domain search.
+- ``am_server.metrics`` — Counters/histograms for OpenClaw operations.
+
+**Caching**
+
+- In-process TTL caches reduce load for project status and search; keys are
+  scoped by workspace/device/agent/session (and search parameters) so tenants
+  do not leak results across identities.
 """
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Iterable
+from threading import Lock
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from am_server.auth import require_auth
 from am_server.dependencies import get_conversation_pipeline, get_pipeline, get_product_store
+from am_server.metrics import (
+    record_openclaw_context_resolve,
+    record_openclaw_ingest_error,
+    record_openclaw_search,
+    record_openclaw_session_registration,
+    record_openclaw_turn_ingest,
+)
 from am_server.models import (
     ConversationIngestRequest,
     OpenClawProjectActivationRequest,
@@ -37,6 +69,12 @@ from agentic_memory.server.unified_search import search_all_memory_sync
 from agentic_memory.temporal.seeds import parse_conversation_source_id
 
 router = APIRouter(dependencies=[Depends(require_auth)])
+PROJECT_STATUS_CACHE_TTL_SECONDS = 60.0
+SEARCH_CACHE_TTL_SECONDS = 30.0
+_CACHE_LOCK = Lock()
+_PROJECT_STATUS_CACHE: dict[tuple[str, str, str, str], tuple[float, dict[str, Any] | None]] = {}
+_SEARCH_CACHE: dict[tuple[str, str, str, str, str | None, str, int, str | None, tuple[str, ...]], tuple[float, dict[str, Any]]] = {}
+_CACHE_MISS = object()
 
 
 def _serialize(value: object) -> object:
@@ -48,6 +86,229 @@ def _serialize(value: object) -> object:
     if isinstance(value, dict):
         return {key: _serialize(item) for key, item in value.items()}
     return value
+
+
+def _monotonic_now() -> float:
+    """Return the monotonic clock used for TTL caches."""
+
+    return time.monotonic()
+
+
+def _project_status_cache_key(
+    *,
+    workspace_id: str,
+    device_id: str,
+    agent_id: str,
+    session_id: str,
+) -> tuple[str, str, str, str]:
+    """Return the cache key for one resolved OpenClaw project-status lookup."""
+
+    return (
+        workspace_id,
+        device_id,
+        agent_id,
+        session_id,
+    )
+
+
+def _search_cache_key(
+    *,
+    workspace_id: str,
+    device_id: str,
+    agent_id: str,
+    session_id: str,
+    project_id: str | None,
+    query: str,
+    limit: int,
+    as_of: str | None,
+    modules: list[str] | None,
+) -> tuple[str, str, str, str, str | None, str, int, str | None, tuple[str, ...]]:
+    """Return the cache key for one OpenClaw search request.
+
+    The cache key stays fully identity-scoped so one agent or workspace never
+    receives another agent's cached search results.
+    """
+
+    normalized_modules = tuple(sorted({module.strip() for module in (modules or []) if module.strip()}))
+    return (
+        workspace_id,
+        device_id,
+        agent_id,
+        session_id,
+        project_id,
+        query,
+        limit,
+        as_of,
+        normalized_modules,
+    )
+
+
+def _read_cached_project_status(
+    *,
+    workspace_id: str,
+    device_id: str,
+    agent_id: str,
+    session_id: str,
+) -> object:
+    """Return the cached active-project binding for one OpenClaw session.
+
+    Returns the binding value, `None` when a cached lookup found no project,
+    or `_CACHE_MISS` when the cache has no fresh entry.
+    """
+
+    key = _project_status_cache_key(
+        workspace_id=workspace_id,
+        device_id=device_id,
+        agent_id=agent_id,
+        session_id=session_id,
+    )
+    now = _monotonic_now()
+    with _CACHE_LOCK:
+        cached = _PROJECT_STATUS_CACHE.get(key)
+        if cached is None:
+            return _CACHE_MISS
+        expires_at, binding = cached
+        if expires_at <= now:
+            _PROJECT_STATUS_CACHE.pop(key, None)
+            return _CACHE_MISS
+        return copy.deepcopy(binding)
+
+
+def _write_cached_project_status(
+    *,
+    workspace_id: str,
+    device_id: str,
+    agent_id: str,
+    session_id: str,
+    binding: dict[str, Any] | None,
+) -> None:
+    """Store one resolved project-status lookup in the in-process TTL cache."""
+
+    key = _project_status_cache_key(
+        workspace_id=workspace_id,
+        device_id=device_id,
+        agent_id=agent_id,
+        session_id=session_id,
+    )
+    with _CACHE_LOCK:
+        _PROJECT_STATUS_CACHE[key] = (
+            _monotonic_now() + PROJECT_STATUS_CACHE_TTL_SECONDS,
+            copy.deepcopy(binding),
+        )
+
+
+def _read_cached_search_response(
+    *,
+    workspace_id: str,
+    device_id: str,
+    agent_id: str,
+    session_id: str,
+    project_id: str | None,
+    query: str,
+    limit: int,
+    as_of: str | None,
+    modules: list[str] | None,
+) -> dict[str, Any] | None:
+    """Return a cached OpenClaw search response when one is still fresh."""
+
+    key = _search_cache_key(
+        workspace_id=workspace_id,
+        device_id=device_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        project_id=project_id,
+        query=query,
+        limit=limit,
+        as_of=as_of,
+        modules=modules,
+    )
+    now = _monotonic_now()
+    with _CACHE_LOCK:
+        cached = _SEARCH_CACHE.get(key)
+        if cached is None:
+            return None
+        expires_at, payload = cached
+        if expires_at <= now:
+            _SEARCH_CACHE.pop(key, None)
+            return None
+        return copy.deepcopy(payload)
+
+
+def _write_cached_search_response(
+    *,
+    workspace_id: str,
+    device_id: str,
+    agent_id: str,
+    session_id: str,
+    project_id: str | None,
+    query: str,
+    limit: int,
+    as_of: str | None,
+    modules: list[str] | None,
+    payload: dict[str, Any],
+) -> None:
+    """Store one successful OpenClaw search response in the TTL cache."""
+
+    key = _search_cache_key(
+        workspace_id=workspace_id,
+        device_id=device_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        project_id=project_id,
+        query=query,
+        limit=limit,
+        as_of=as_of,
+        modules=modules,
+    )
+    with _CACHE_LOCK:
+        _SEARCH_CACHE[key] = (
+            _monotonic_now() + SEARCH_CACHE_TTL_SECONDS,
+            copy.deepcopy(payload),
+        )
+
+
+def _invalidate_project_status_cache(
+    *,
+    workspace_id: str,
+    agent_id: str,
+    session_id: str | None = None,
+    device_id: str | None = None,
+) -> None:
+    """Invalidate cached project-status lookups for one OpenClaw identity scope."""
+
+    with _CACHE_LOCK:
+        keys_to_delete = [
+            key
+            for key in _PROJECT_STATUS_CACHE
+            if key[0] == workspace_id
+            and key[2] == agent_id
+            and (session_id is None or key[3] == session_id)
+            and (device_id is None or key[1] == device_id)
+        ]
+        for key in keys_to_delete:
+            _PROJECT_STATUS_CACHE.pop(key, None)
+
+
+def _invalidate_search_cache(
+    *,
+    workspace_id: str,
+    agent_id: str,
+    session_id: str | None = None,
+    device_id: str | None = None,
+) -> None:
+    """Invalidate cached OpenClaw search results for one identity scope."""
+
+    with _CACHE_LOCK:
+        keys_to_delete = [
+            key
+            for key in _SEARCH_CACHE
+            if key[0] == workspace_id
+            and key[2] == agent_id
+            and (session_id is None or key[3] == session_id)
+            and (device_id is None or key[1] == device_id)
+        ]
+        for key in keys_to_delete:
+            _SEARCH_CACHE.pop(key, None)
 
 
 def _resolve_active_project_id(
@@ -261,7 +522,23 @@ def _format_conversation_read_document(
 
 @router.post("/openclaw/session/register")
 async def register_openclaw_session(body: OpenClawSessionRegisterRequest) -> dict:
-    """Register an OpenClaw agent session in the local control plane."""
+    """Register or refresh an OpenClaw session in the local product store.
+
+    Persists workspace/device/agent/session metadata and records an audit event.
+    Invalidates in-process project-status and search caches for this identity so
+    subsequent reads reflect the new registration.
+
+    Args:
+        body: OpenClaw identity, session id, optional project/context fields, and
+            opaque metadata from the plugin.
+
+    Returns:
+        JSON with ``status`` ``"ok"``, echoed ``identity``, updated
+        ``integration`` record, and ``event`` audit entry.
+
+    Dependencies:
+        ``get_product_store`` (implicit via ``get_product_store()``).
+    """
     store = get_product_store()
     integration = store.upsert_integration(
         surface="openclaw",
@@ -292,6 +569,22 @@ async def register_openclaw_session(body: OpenClawSessionRegisterRequest) -> dic
             "metadata": body.metadata,
         },
     )
+    record_openclaw_session_registration(
+        workspace_id=body.workspace_id,
+        session_id=body.session_id,
+    )
+    _invalidate_project_status_cache(
+        workspace_id=body.workspace_id,
+        agent_id=body.agent_id,
+        session_id=body.session_id,
+        device_id=body.device_id,
+    )
+    _invalidate_search_cache(
+        workspace_id=body.workspace_id,
+        agent_id=body.agent_id,
+        session_id=body.session_id,
+        device_id=body.device_id,
+    )
     return {
         "status": "ok",
         "identity": body.model_dump(),
@@ -302,7 +595,23 @@ async def register_openclaw_session(body: OpenClawSessionRegisterRequest) -> dic
 
 @router.post("/openclaw/project/activate")
 async def activate_openclaw_project(body: OpenClawProjectActivationRequest) -> dict:
-    """Activate a reusable project label for one OpenClaw session."""
+    """Bind an active ``project_id`` to the resolved OpenClaw session.
+
+    If ``body.session_id`` is omitted, the backend infers the current session
+    from the latest registration for the workspace/agent/device tuple (see
+    ``_resolve_openclaw_session_id``).
+
+    Args:
+        body: Workspace, device, agent, optional session, project id, title, and
+            metadata.
+
+    Returns:
+        JSON with ``status`` ``"ok"``, ``identity`` including the resolved
+        ``session_id``, ``binding`` from the store, and ``event``.
+
+    Raises:
+        HTTPException: 422 when no session can be inferred for the identity.
+    """
 
     session_id = _resolve_openclaw_session_id(
         workspace_id=body.workspace_id,
@@ -331,6 +640,18 @@ async def activate_openclaw_project(body: OpenClawProjectActivationRequest) -> d
             "project_id": body.project_id,
         },
     )
+    _invalidate_project_status_cache(
+        workspace_id=body.workspace_id,
+        agent_id=body.agent_id,
+        session_id=session_id,
+        device_id=body.device_id,
+    )
+    _invalidate_search_cache(
+        workspace_id=body.workspace_id,
+        agent_id=body.agent_id,
+        session_id=session_id,
+        device_id=body.device_id,
+    )
     return {
         "status": "ok",
         "identity": {**body.model_dump(), "session_id": session_id},
@@ -341,7 +662,20 @@ async def activate_openclaw_project(body: OpenClawProjectActivationRequest) -> d
 
 @router.post("/openclaw/project/deactivate")
 async def deactivate_openclaw_project(body: OpenClawProjectDeactivationRequest) -> dict:
-    """Clear the active project for one OpenClaw session."""
+    """Remove the active project binding for the resolved OpenClaw session.
+
+    Session resolution matches ``activate_openclaw_project``.
+
+    Args:
+        body: Workspace, device, agent, and optional session id.
+
+    Returns:
+        JSON with ``status`` ``"ok"``, ``identity`` with resolved ``session_id``,
+        ``binding`` (removed record, if any), and ``event``.
+
+    Raises:
+        HTTPException: 422 when session id cannot be resolved.
+    """
 
     session_id = _resolve_openclaw_session_id(
         workspace_id=body.workspace_id,
@@ -366,6 +700,18 @@ async def deactivate_openclaw_project(body: OpenClawProjectDeactivationRequest) 
             "project_id": removed["project_id"] if removed else None,
         },
     )
+    _invalidate_project_status_cache(
+        workspace_id=body.workspace_id,
+        agent_id=body.agent_id,
+        session_id=session_id,
+        device_id=body.device_id,
+    )
+    _invalidate_search_cache(
+        workspace_id=body.workspace_id,
+        agent_id=body.agent_id,
+        session_id=session_id,
+        device_id=body.device_id,
+    )
     return {
         "status": "ok",
         "identity": {**body.model_dump(), "session_id": session_id},
@@ -376,7 +722,21 @@ async def deactivate_openclaw_project(body: OpenClawProjectDeactivationRequest) 
 
 @router.post("/openclaw/project/status")
 async def status_openclaw_project(body: OpenClawProjectStatusRequest) -> dict:
-    """Return the current active project binding for one OpenClaw session."""
+    """Return the active project binding for the resolved OpenClaw session.
+
+    Uses a short TTL in-process cache keyed by workspace/device/agent/session
+    to reduce repeated store reads.
+
+    Args:
+        body: Workspace, device, agent, and optional session id.
+
+    Returns:
+        JSON with ``status`` ``"ok"``, ``identity`` including resolved
+        ``session_id``, and ``active_project`` (store binding or null).
+
+    Raises:
+        HTTPException: 422 when session id cannot be resolved.
+    """
 
     session_id = _resolve_openclaw_session_id(
         workspace_id=body.workspace_id,
@@ -384,12 +744,28 @@ async def status_openclaw_project(body: OpenClawProjectStatusRequest) -> dict:
         agent_id=body.agent_id,
         explicit_session_id=body.session_id,
     )
-    store = get_product_store()
-    binding = store.get_active_project_for_openclaw_identity(
+    cached_binding = _read_cached_project_status(
         workspace_id=body.workspace_id,
+        device_id=body.device_id,
         agent_id=body.agent_id,
         session_id=session_id,
     )
+    if cached_binding is _CACHE_MISS:
+        store = get_product_store()
+        binding = store.get_active_project_for_openclaw_identity(
+            workspace_id=body.workspace_id,
+            agent_id=body.agent_id,
+            session_id=session_id,
+        )
+        _write_cached_project_status(
+            workspace_id=body.workspace_id,
+            device_id=body.device_id,
+            agent_id=body.agent_id,
+            session_id=session_id,
+            binding=binding,
+        )
+    else:
+        binding = cached_binding
     return {
         "status": "ok",
         "identity": {**body.model_dump(), "session_id": session_id},
@@ -399,7 +775,15 @@ async def status_openclaw_project(body: OpenClawProjectStatusRequest) -> dict:
 
 @router.post("/openclaw/project/automation")
 async def automate_openclaw_project(body: OpenClawProjectAutomationRequest) -> dict:
-    """Create or update a workspace-scoped project automation record."""
+    """Upsert automation settings for a project within a workspace.
+
+    Args:
+        body: Workspace id, project id, automation kind, enabled flag, and
+            optional metadata.
+
+    Returns:
+        JSON with ``status`` ``"ok"``, persisted ``automation``, and ``event``.
+    """
 
     store = get_product_store()
     automation = store.upsert_project_automation(
@@ -419,11 +803,28 @@ async def automate_openclaw_project(body: OpenClawProjectAutomationRequest) -> d
 
 @router.post("/openclaw/memory/ingest-turn", status_code=202)
 async def ingest_openclaw_turn(body: OpenClawTurnIngestRequest) -> dict:
-    """Ingest one OpenClaw conversation turn through the memory contract.
+    """Accept one conversation turn and persist it via the conversation pipeline.
 
-    This route keeps project resolution on the server side. The plugin can
-    therefore capture memory continuously without baking a static project tag
-    into install-time config.
+    Effective ``project_id`` is resolved server-side (explicit body value wins;
+    otherwise the product store's active binding for the session). That lets
+    the plugin stream turns without embedding a fixed project id in config.
+
+    Args:
+        body: Turn content, indices, workspace/agent/device/session ids, model
+            metadata, and ingestion mode fields matching
+            ``ConversationIngestRequest``.
+
+    Returns:
+        JSON with ``status`` ``"ok"``, request ``identity``, resolved
+        ``effective_project_id``, and pipeline ``result`` (shape defined by the
+        conversation pipeline).
+
+    Raises:
+        HTTPException: 422 when the pipeline rejects the payload (e.g. invalid
+            combination of fields); error is logged to OpenClaw ingest metrics.
+
+    Note:
+        Responds with HTTP 202 Accepted (see route ``status_code``).
     """
 
     effective_project_id = _resolve_active_project_id(
@@ -457,7 +858,24 @@ async def ingest_openclaw_turn(body: OpenClawTurnIngestRequest) -> dict:
     try:
         result = pipeline.ingest(conversation_payload.model_dump())
     except ValueError as exc:
+        # Pipeline validation uses ValueError; map to 422 for consistent client handling.
+        record_openclaw_ingest_error(
+            workspace_id=body.workspace_id,
+            error_code="validation_error",
+        )
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    record_openclaw_turn_ingest(
+        workspace_id=body.workspace_id,
+        agent_id=body.agent_id,
+        source_key=body.source_key,
+    )
+    _invalidate_search_cache(
+        workspace_id=body.workspace_id,
+        agent_id=body.agent_id,
+        session_id=body.session_id,
+        device_id=body.device_id,
+    )
 
     return {
         "status": "ok",
@@ -469,27 +887,81 @@ async def ingest_openclaw_turn(body: OpenClawTurnIngestRequest) -> dict:
 
 @router.post("/openclaw/memory/search")
 async def search_openclaw_memory(body: OpenClawMemorySearchRequest) -> dict:
-    """Search shared memory for an OpenClaw workspace/session."""
+    """Run unified memory search scoped to the effective project and identity.
+
+    Results pass through ``search_all_memory_sync`` (code graph + research +
+    conversation backends). Responses are cached briefly per identity and query
+    parameters to reduce duplicate work.
+
+    Args:
+        body: Query string, limit, optional ``as_of``, optional module filter,
+            workspace/device/agent/session, and optional explicit ``project_id``.
+
+    Returns:
+        JSON with ``status`` ``"ok"``, ``identity`` including resolved
+        ``project_id``, ``cache_hit`` boolean, ``results`` (OpenClaw-normalized
+        hits), and raw ``response`` from unified search (serialized).
+
+    Dependencies:
+        ``get_graph``, ``get_pipeline``, ``get_conversation_pipeline`` for the
+        search call; product store for events.
+    """
     effective_project_id = _resolve_active_project_id(
         workspace_id=body.workspace_id,
         agent_id=body.agent_id,
         session_id=body.session_id,
         explicit_project_id=body.project_id,
     )
-    graph = get_graph()
-    research_pipeline = get_pipeline()
-    conversation_pipeline = get_conversation_pipeline()
-    response = search_all_memory_sync(
+    started = time.perf_counter()
+    cache_hit = False
+    cached_payload = _read_cached_search_response(
+        workspace_id=body.workspace_id,
+        device_id=body.device_id,
+        agent_id=body.agent_id,
+        session_id=body.session_id,
+        project_id=effective_project_id,
         query=body.query,
         limit=body.limit,
-        project_id=effective_project_id,
         as_of=body.as_of,
         modules=body.modules,
-        graph=graph,
-        research_pipeline=research_pipeline,
-        conversation_pipeline=conversation_pipeline,
     )
-    payload = _serialize(response)
+    if cached_payload is None:
+        graph = get_graph()
+        research_pipeline = get_pipeline()
+        conversation_pipeline = get_conversation_pipeline()
+        response = search_all_memory_sync(
+            query=body.query,
+            limit=body.limit,
+            project_id=effective_project_id,
+            as_of=body.as_of,
+            modules=body.modules,
+            graph=graph,
+            research_pipeline=research_pipeline,
+            conversation_pipeline=conversation_pipeline,
+        )
+        payload = _serialize(response)
+        _write_cached_search_response(
+            workspace_id=body.workspace_id,
+            device_id=body.device_id,
+            agent_id=body.agent_id,
+            session_id=body.session_id,
+            project_id=effective_project_id,
+            query=body.query,
+            limit=body.limit,
+            as_of=body.as_of,
+            modules=body.modules,
+            payload=payload,
+        )
+    else:
+        payload = cached_payload
+        cache_hit = True
+
+    duration = time.perf_counter() - started
+    record_openclaw_search(
+        workspace_id=body.workspace_id,
+        modules=body.modules,
+        duration_seconds=duration,
+    )
     get_product_store().record_event(
         event_type="openclaw_memory_search",
         actor="openclaw",
@@ -503,11 +975,13 @@ async def search_openclaw_memory(body: OpenClawMemorySearchRequest) -> dict:
             "limit": body.limit,
             "result_count": len(payload.get("results", [])),
             "modules": body.modules or [],
+            "cache_hit": cache_hit,
         },
     )
     return {
         "status": "ok",
         "identity": {**body.model_dump(), "project_id": effective_project_id},
+        "cache_hit": cache_hit,
         "results": [
             _normalize_openclaw_hit(hit) for hit in payload.get("results", [])
         ],
@@ -517,19 +991,34 @@ async def search_openclaw_memory(body: OpenClawMemorySearchRequest) -> dict:
 
 @router.post("/openclaw/memory/read")
 async def read_openclaw_memory(body: OpenClawMemoryReadRequest) -> dict:
-    """Read canonical memory content for a previously returned OpenClaw search hit.
+    """Fetch full text for a hit previously returned by search (v1: turns only).
 
-    v1 intentionally supports canonical reads for conversation turns first.
-    Other hit types still rely on the plugin's cached snippet fallback until
-    we add dedicated read contracts for code and research memory.
+    Only conversation-turn source ids (``session_id:turn_index`` form after
+    stripping URL fragments) are supported. Code and research hits still depend
+    on client-side snippets until dedicated read contracts exist.
+
+    Args:
+        body: ``rel_path`` from the plugin — may include a ``#L`` fragment; the
+            fragment is ignored for Neo4j lookup.
+
+    Returns:
+        JSON with ``status`` ``"ok"``, ``identity``, normalized ``path``, ``text``
+        assembled with neighbor turns for context, ``matched_turn``, and
+        ``neighbors``.
+
+    Raises:
+        HTTPException: 404 when the path is not a valid conversation source id
+            or no turn exists in the graph.
     """
 
+    # Search hits may cite "#L{line}" — canonical id is the path before the fragment.
     canonical_path = body.rel_path.split("#", 1)[0].strip()
     conversation_pipeline = get_conversation_pipeline()
 
     try:
         session_id, turn_index = parse_conversation_source_id(canonical_path)
     except ValueError as exc:
+        # Unsupported path shape for v1 read contract (not a conversation source id).
         raise HTTPException(
             status_code=404,
             detail=(
@@ -566,13 +1055,33 @@ async def read_openclaw_memory(body: OpenClawMemoryReadRequest) -> dict:
 
 @router.post("/openclaw/context/resolve")
 async def resolve_openclaw_context(body: OpenClawContextResolveRequest) -> dict:
-    """Resolve context blocks for OpenClaw using current shared memory search."""
+    """Build LLM-oriented context blocks from a memory search for this session.
+
+    Internally reuses ``search_openclaw_memory`` with the same identity and
+    search fields, then formats hits into ``context_blocks``. Optionally appends
+    a short system-prompt hint when ``include_system_prompt`` is true.
+
+    Args:
+        body: Same search scoping as memory search, plus ``context_engine``,
+            optional ``context_budget_tokens`` (advisory), and
+            ``include_system_prompt``.
+
+    Returns:
+        JSON with ``status`` ``"ok"``, ``identity`` with resolved ``project_id``,
+        ``context_engine``, ``context_budget_tokens``, optional
+        ``system_prompt_addition``, ``context_blocks``, and embedded ``search``
+        payload from the inner search call.
+
+    Dependencies:
+        Product store for audit event; OpenClaw context-resolve metric.
+    """
     effective_project_id = _resolve_active_project_id(
         workspace_id=body.workspace_id,
         agent_id=body.agent_id,
         session_id=body.session_id,
         explicit_project_id=body.project_id,
     )
+    started = time.perf_counter()
     search_response = await search_openclaw_memory(
         OpenClawMemorySearchRequest(
             workspace_id=body.workspace_id,
@@ -587,6 +1096,7 @@ async def resolve_openclaw_context(body: OpenClawContextResolveRequest) -> dict:
             modules=body.modules,
         )
     )
+    record_openclaw_context_resolve(duration_seconds=time.perf_counter() - started)
     blocks = _format_context_blocks(search_response.get("results", []))
     prompt_addition = None
     if body.include_system_prompt:

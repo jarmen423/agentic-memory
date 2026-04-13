@@ -1,5 +1,7 @@
 """Tests for the MCP server and tools."""
 
+import asyncio
+
 import pytest
 from unittest.mock import Mock, patch
 
@@ -189,6 +191,21 @@ class TestMCPServerTools:
         # This would test that the @mcp.tool() decorator was applied
         # In a real test, we'd inspect the mcp object's tools
         pass
+
+    def test_public_tool_registration_matches_frozen_contract(self):
+        """The public MCP surface exposes the frozen tool list with annotations."""
+
+        from am_server.mcp_profiles import PUBLIC_MCP_TOOL_NAMES, public_tool_annotations
+        from agentic_memory.server.public_mcp import public_mcp
+
+        tools = asyncio.run(public_mcp.list_tools())
+
+        assert tuple(tool.name for tool in tools) == PUBLIC_MCP_TOOL_NAMES
+        for tool in tools:
+            assert tool.annotations is not None
+            assert tool.annotations.model_dump(exclude_none=True) == public_tool_annotations(
+                tool.name
+            ).model_dump(exclude_none=True)
 
     def test_search_all_memory_formats_unified_results(self, monkeypatch):
         """search_all_memory formats normalized service output for MCP callers."""

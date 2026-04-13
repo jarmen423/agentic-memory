@@ -1,23 +1,33 @@
-"""Route subpackage — one APIRouter module per logical domain of the am_server API.
+"""FastAPI route subpackage for ``am_server``.
 
-Each module in this subpackage defines a FastAPI ``APIRouter`` that is registered
-onto the main application in ``am_server.app.create_app``. Grouping routes by
-domain keeps individual files focused and makes it easy to add, version, or toggle
-feature areas independently.
+This package holds one ``APIRouter`` module per logical API domain. Routers are
+mounted from ``am_server.app.create_app`` so feature areas stay isolated and can
+be versioned or toggled without tangling the main app.
 
-Route modules:
-    - ``health``    — unauthenticated liveness probe (GET /health).
-    - ``search``    — vector + graph hybrid memory search.
-    - ``research``  — multi-step research pipeline endpoints.
-    - ``conversation`` — conversation memory storage and retrieval.
-    - ``product``   — product/project memory endpoints.
-    - ``ext``       — browser-extension–facing endpoints.
-    - ``openclaw``  — Claude Code plugin (openclaw) memory read/write endpoints.
-    - ``dashboard`` — OpenClaw dashboard read endpoints.
+**Role in the stack**
 
-Dependencies:
-    - fastapi — ``APIRouter``, ``Depends``, HTTP exception helpers.
-    - am_server.dependencies — shared pipeline dependency-injection helpers.
-    - am_server.auth — API-key authentication dependency.
-    - am_server.models — shared Pydantic request/response models.
+- Keeps HTTP surface area organized by product/feature boundaries.
+- Shares cross-cutting pieces (auth ``Depends``, pipeline getters, Pydantic
+  models) with the rest of ``am_server`` rather than re-implementing them here.
+
+**Route modules (by concern)**
+
+- ``health`` — Liveness and operator metrics; minimal public surface.
+- ``search`` — Vector + graph hybrid memory search.
+- ``research`` — Multi-step research pipeline endpoints.
+- ``conversation`` — Conversation memory storage and retrieval.
+- ``product`` — Product/project memory endpoints.
+- ``ext`` — Browser-extension–facing endpoints.
+- ``openclaw`` — Claude Code (OpenClaw) plugin memory read/write and project
+  lifecycle.
+- ``dashboard`` — OpenClaw dashboard read endpoints.
+- ``publication`` — Public HTML pages for legal/support and directory reviews
+  (no API-key auth on these routes).
+
+**Typical dependencies (imported by individual routers, not this package)**
+
+- ``fastapi`` — ``APIRouter``, ``Depends``, HTTP exceptions and responses.
+- ``am_server.dependencies`` — Shared pipeline and store dependency injection.
+- ``am_server.auth`` — API-key (and related) authentication dependencies.
+- ``am_server.models`` — Shared Pydantic request/response bodies.
 """

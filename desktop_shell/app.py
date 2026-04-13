@@ -88,6 +88,78 @@ def _proxy_json_response(
     return response.json()
 
 
+def _fetch_backend_onboarding_contract(settings: ShellSettings) -> dict:
+    """Probe backend onboarding readiness for the shell bootstrap payload.
+
+    The shell should stay useful even before the backend is fully healthy. This
+    helper therefore converts transport and HTTP failures into structured data
+    instead of letting them abort the bootstrap route itself.
+
+    Args:
+        settings: Current shell settings, including backend URL and optional API
+            key for authenticated upstream requests.
+
+    Returns:
+        Dict containing:
+
+        - ``reachable``: whether the backend answered at all
+        - ``status``: ``healthy``, ``degraded``, ``contract_unavailable``, or
+          ``unreachable``
+        - ``onboarding_contract``: backend-provided contract when available
+        - ``error``: operator-facing explanation when probing failed
+    """
+
+    headers = {}
+    if settings.backend_api_key:
+        headers["Authorization"] = f"Bearer {settings.backend_api_key}"
+
+    try:
+        with httpx.Client(base_url=settings.backend_url, headers=headers, timeout=5.0) as client:
+            response = client.get("/health/onboarding")
+    except httpx.RequestError as exc:
+        return {
+            "reachable": False,
+            "status": "unreachable",
+            "onboarding_contract": None,
+            "error": (
+                f"Backend onboarding contract unavailable at {settings.backend_url}. "
+                "Start the backend or update the configured backend URL."
+            ),
+            "exception_type": exc.__class__.__name__,
+        }
+
+    if response.status_code == 404:
+        return {
+            "reachable": True,
+            "status": "contract_unavailable",
+            "onboarding_contract": None,
+            "error": (
+                "The backend is reachable but does not expose /health/onboarding yet. "
+                "Upgrade am-server to a build that supports the whole-stack onboarding contract."
+            ),
+        }
+
+    if response.status_code >= 400:
+        return {
+            "reachable": True,
+            "status": "degraded",
+            "onboarding_contract": None,
+            "error": (
+                f"Backend onboarding contract returned {response.status_code}: "
+                f"{response.text.strip() or 'no response body'}"
+            ),
+        }
+
+    payload = response.json()
+    readiness = payload.get("readiness", {}) if isinstance(payload, dict) else {}
+    return {
+        "reachable": True,
+        "status": "healthy" if readiness.get("capture_only_ready") else "degraded",
+        "onboarding_contract": payload,
+        "error": None,
+    }
+
+
 def create_app() -> FastAPI:
     """Create the desktop shell app."""
     app = FastAPI(title="Agentic Memory Desktop Shell", version="0.1.0")
@@ -100,6 +172,15 @@ def create_app() -> FastAPI:
 
     @app.get("/api/bootstrap")
     def bootstrap(settings: ShellSettings = Depends(get_settings)) -> dict:
+        """Return shell configuration plus backend onboarding readiness.
+
+        The shell uses this payload as its first contact point with the rest of
+        the stack. It therefore includes both static shell settings and a
+        best-effort probe of the backend's onboarding contract so the UI can say
+        whether the stack is merely reachable or actually ready for OpenClaw.
+        """
+
+        backend_probe = _fetch_backend_onboarding_contract(settings)
         return {
             "shell": {
                 "name": "Agentic Memory Desktop Shell",
@@ -109,7 +190,12 @@ def create_app() -> FastAPI:
             "backend": {
                 "url": settings.backend_url,
                 "auth_configured": bool(settings.backend_api_key),
+                "reachable": backend_probe["reachable"],
+                "status": backend_probe["status"],
+                "error": backend_probe["error"],
+                "health_path": "/health/onboarding",
             },
+            "onboarding": backend_probe["onboarding_contract"],
         }
 
     @app.get("/api/product/status")

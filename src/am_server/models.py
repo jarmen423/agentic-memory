@@ -53,6 +53,85 @@ class ApiErrorEnvelopeModel(BaseModel):
     error: ApiErrorModel
 
 
+class OpenClawOnboardingServiceModel(BaseModel):
+    """One service or capability reported in the onboarding readiness contract.
+
+    This model exists to make the onboarding contract machine-readable for the
+    desktop shell, future plugin doctor commands, and any support tooling that
+    needs to answer a practical question:
+
+    *What exactly is blocked right now, and is it truly required?*
+
+    Attributes:
+        service_id: Stable machine-readable identifier for the dependency.
+        label: Operator-facing label suitable for UI cards or CLI output.
+        required: Whether this dependency must be healthy for the basic
+            supported OpenClaw onboarding path.
+        status: Normalized health state such as ``healthy``, ``degraded``,
+            ``missing_config``, or ``unknown``.
+        summary: Short human-readable explanation of what the service does.
+        component: Optional backing product-state runtime component id when the
+            service is derived from ``ProductStateStore.runtime.components``.
+        depends_on: Other ``service_id`` values that this service builds on.
+        details: Structured diagnostics safe to expose in health/bootstrap
+            payloads.
+    """
+
+    service_id: str
+    label: str
+    required: bool
+    status: str
+    summary: str
+    component: str | None = None
+    depends_on: list[str] = Field(default_factory=list)
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class OpenClawOnboardingReadinessModel(BaseModel):
+    """High-level booleans derived from the per-service onboarding contract.
+
+    We separate these rollups from the individual service rows so the shell and
+    future plugin-side doctor command can tell users quickly whether they are
+    ready for:
+
+    - saving a supported setup configuration at all,
+    - basic ``capture_only`` memory capture,
+    - richer ``augment_context`` behavior.
+    """
+
+    setup_ready: bool
+    capture_only_ready: bool
+    augment_context_ready: bool
+    required_healthy: int
+    required_total: int
+    optional_healthy: int
+    optional_total: int
+    blocking_services: list[str] = Field(default_factory=list)
+    degraded_optional_services: list[str] = Field(default_factory=list)
+
+
+class OpenClawOnboardingContractModel(BaseModel):
+    """Whole-stack onboarding contract exposed by the backend health surface.
+
+    The contract deliberately mixes three layers in one payload:
+
+    - install/setup commands the product currently supports,
+    - required vs optional services for that path,
+    - computed readiness booleans that the shell and plugin can act on.
+    """
+
+    status: str
+    plugin_package_name: str
+    plugin_id: str
+    install_command: str
+    setup_command: str
+    doctor_command: str
+    required_services: list[OpenClawOnboardingServiceModel] = Field(default_factory=list)
+    optional_services: list[OpenClawOnboardingServiceModel] = Field(default_factory=list)
+    readiness: OpenClawOnboardingReadinessModel
+    notes: list[str] = Field(default_factory=list)
+
+
 class CitationModel(BaseModel):
     """A citation reference for a research finding."""
 

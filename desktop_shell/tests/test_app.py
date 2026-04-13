@@ -103,6 +103,36 @@ def test_bootstrap_reports_backend_configuration(monkeypatch):
     client = TestClient(app)
     monkeypatch.setenv("DESKTOP_SHELL_BACKEND_URL", "http://127.0.0.1:8765")
     monkeypatch.setenv("DESKTOP_SHELL_API_KEY", "secret")
+    monkeypatch.setattr(
+        "desktop_shell.app._fetch_backend_onboarding_contract",
+        lambda settings: {
+            "reachable": True,
+            "status": "healthy",
+            "error": None,
+            "onboarding_contract": {
+                "status": "ok",
+                "plugin_package_name": "agentic-memory-openclaw",
+                "plugin_id": "agentic-memory",
+                "install_command": "openclaw plugin install agentic-memory-openclaw",
+                "setup_command": "openclaw agentic-memory setup",
+                "doctor_command": "openclaw agentic-memory doctor",
+                "readiness": {
+                    "setup_ready": True,
+                    "capture_only_ready": True,
+                    "augment_context_ready": False,
+                    "required_healthy": 3,
+                    "required_total": 3,
+                    "optional_healthy": 1,
+                    "optional_total": 5,
+                    "blocking_services": [],
+                    "degraded_optional_services": [],
+                },
+                "required_services": [],
+                "optional_services": [],
+                "notes": [],
+            },
+        },
+    )
 
     response = client.get("/api/bootstrap")
 
@@ -110,6 +140,35 @@ def test_bootstrap_reports_backend_configuration(monkeypatch):
     body = response.json()
     assert body["backend"]["url"] == "http://127.0.0.1:8765"
     assert body["backend"]["auth_configured"] is True
+    assert body["backend"]["reachable"] is True
+    assert body["backend"]["status"] == "healthy"
+    assert body["onboarding"]["plugin_package_name"] == "agentic-memory-openclaw"
+    assert body["onboarding"]["readiness"]["capture_only_ready"] is True
+
+
+def test_bootstrap_reports_backend_probe_failure_without_crashing(monkeypatch):
+    client = TestClient(app)
+    monkeypatch.setenv("DESKTOP_SHELL_BACKEND_URL", "http://127.0.0.1:9999")
+    monkeypatch.delenv("DESKTOP_SHELL_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "desktop_shell.app._fetch_backend_onboarding_contract",
+        lambda settings: {
+            "reachable": False,
+            "status": "unreachable",
+            "error": "Backend onboarding contract unavailable at http://127.0.0.1:9999.",
+            "onboarding_contract": None,
+        },
+    )
+
+    response = client.get("/api/bootstrap")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["backend"]["auth_configured"] is False
+    assert body["backend"]["reachable"] is False
+    assert body["backend"]["status"] == "unreachable"
+    assert "Backend onboarding contract unavailable" in body["backend"]["error"]
+    assert body["onboarding"] is None
 
 
 def test_product_status_proxies_backend_response(monkeypatch):

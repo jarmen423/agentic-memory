@@ -26,7 +26,7 @@
     {
       "id": "W16-OC-01",
       "title": "Lock the onboarding contract for plugin setup, backend health, shell bootstrap, and required versus optional local services",
-      "status": "in_progress",
+      "status": "completed",
       "owner": "contract",
       "depends_on": [
         "W16-OC-00"

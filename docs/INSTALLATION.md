@@ -17,7 +17,8 @@ This guide covers installing and configuring Agentic Memory for local developmen
 ## OpenClaw Private Beta
 
 If you are installing Agentic Memory specifically for the OpenClaw beta, use
-the OpenClaw plugin flow instead of the Python CLI install paths below.
+the OpenClaw plugin flow instead of the Python CLI install paths below. This is
+separate from the public publication path used for OpenAI, Codex, and Claude.
 
 The operator path is:
 
@@ -44,6 +45,32 @@ Use these docs for the beta flow:
 
 The rest of this guide covers the Python/CLI install surface for the broader
 Agentic Memory product.
+
+## Public Plugin Publication
+
+If you are preparing the hosted/public plugin surfaces, use the publication
+packets instead of the local install flow:
+
+- OpenAI / ChatGPT: app review and publish
+- Codex: distribution derived from the approved OpenAI app, with `.codex-plugin/plugin.json` as the local preflight package
+- Claude: Anthropic directory submission
+
+Canonical publication/legal URLs:
+
+- `https://api.agenticmemory.com/publication/agentic-memory`
+- `https://api.agenticmemory.com/publication/privacy`
+- `https://api.agenticmemory.com/publication/terms`
+- `https://api.agenticmemory.com/publication/support`
+- `https://api.agenticmemory.com/publication/dpa`
+
+Reference packets:
+
+- `docs/publication/openai`
+- `docs/publication/anthropic`
+- `docs/publication/shared`
+
+For the public surface contract and auth model, see
+[docs/PUBLIC_PLUGIN_SURFACES.md](docs/PUBLIC_PLUGIN_SURFACES.md).
 
 ---
 

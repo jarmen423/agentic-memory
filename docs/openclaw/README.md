@@ -1,46 +1,95 @@
-# OpenClaw Beta Operations
+# OpenClaw Private Beta Docs
 
-This directory contains the operator-facing artifacts added during Phase 14 for
-the OpenClaw scaling and packaging wave.
+This directory is the operator-facing documentation bundle for the current
+OpenClaw private beta.
 
-These docs focus on the pieces that make the OpenClaw integration releasable as
-a controlled beta:
+Use this index when you need to answer one of these questions quickly:
 
-- deployment shape for the backend that OpenClaw talks to
-- release workflow expectations for the npm plugin package
-- rollout checkpoints for inviting beta operators without pretending GA exists
+- how do I install and configure the OpenClaw plugin?
+- how do I deploy the Agentic Memory backend that the plugin talks to?
+- where is the committed API contract for the OpenClaw beta surface?
+- how do we onboard, support, and track the first design partners?
 
-## Files In This Directory
+## Locked Product Identity
 
-- `docs/openclaw/DEPLOYMENT_RUNBOOK.md`
-  - step-by-step backend deployment and smoke-test flow
-- `docs/openclaw/BETA_ROLLOUT.md`
-  - release gates, operator checklist, and rollout sequencing
+- npm package name: `agentic-memory-openclaw`
+- install command: `openclaw plugin install agentic-memory-openclaw`
+- runtime OpenClaw plugin id: `agentic-memory`
+- setup command: `openclaw agentic-memory setup`
 
-## Package Identity
+The npm artifact is the OpenClaw plugin package. Operators still provision or
+connect to a separate Agentic Memory backend.
 
-The OpenClaw npm package name is now locked to:
+## Recommended Reading Order
 
-- `agentic-memory-openclaw`
+1. `docs/openclaw/guides/PRIVATE_BETA_QUICKSTART.md`
+   - shortest supported path from install to first validation
+2. `docs/openclaw/DEPLOYMENT_RUNBOOK.md`
+   - backend deployment, health checks, and rollback steps
+3. `docs/openclaw/openapi/README.md`
+   - committed REST contract for the OpenClaw beta routes
+4. `docs/openclaw/beta/README.md`
+   - onboarding and partner-operations docs for the first design partners
+5. `docs/openclaw/support/README.md`
+   - support runbooks for the most likely beta failures
+6. `docs/openclaw/marketplace/PUBLISHING_CHECKLIST.md`
+   - listing and publish prerequisites for the plugin package
 
-The runtime plugin id inside OpenClaw still remains:
+## Directory Map
 
-- `agentic-memory`
+### `docs/openclaw/guides/`
 
-That means operators install:
+- `PRIVATE_BETA_QUICKSTART.md`
+  - install, setup, verification, and rollback for beta operators
 
-- `openclaw plugin install agentic-memory-openclaw`
+### `docs/openclaw/openapi/`
 
-but they configure and use the plugin through:
+- `README.md`
+  - explains the OpenClaw-filtered API artifact
+- `agentic-memory-openclaw.openapi.json`
+  - committed OpenAPI export for `/health`, `/metrics`, and `/openclaw/*`
 
-- `openclaw agentic-memory setup`
+### `docs/openclaw/beta/`
 
-## Expected User-Facing Install Pattern
+- `README.md`
+  - overview of the private beta program
+- `ONBOARDING_RUNBOOK.md`
+  - intake, provisioning, install, and first-session checklist
+- `PARTNER_OPERATIONS.md`
+  - design-partner tracking, cadence, and success criteria
 
-```bash
-openclaw plugin install agentic-memory-openclaw
-openclaw agentic-memory setup
-```
+### `docs/openclaw/support/`
 
-The goal is that the OpenClaw operator installs one plugin package while your
-beta backend remains separately managed through the production compose stack.
+- `README.md`
+  - support index
+- `SUPPORT_RUNBOOK.md`
+  - triage routing for the top beta failure modes
+- `RB-001_PROVISION_ENVIRONMENT.md`
+- `RB-002_ROTATE_API_KEYS.md`
+- `RB-003_NEO4J_BACKUP_RESTORE.md`
+- `RB-004_CAPACITY_AND_BACKLOG.md`
+- `RB-005_API_ERRORS_AND_EMPTY_RESULTS.md`
+- `RB-006_EMBEDDING_PROVIDER_OUTAGE.md`
+
+### `docs/openclaw/marketplace/`
+
+- `OPENCLAW_PLUGIN_LISTING.md`
+  - listing copy draft for the plugin package
+- `PUBLISHING_CHECKLIST.md`
+  - publish-time readiness checklist
+
+## Current Beta Boundaries
+
+This doc set assumes:
+
+- self-hosted or operator-managed backend deployment
+- authenticated `/metrics` and `/openclaw/*` routes already exist
+- the plugin package is ready for controlled beta distribution
+- the runtime plugin id remains stable as `agentic-memory`
+
+This doc set does not claim:
+
+- hosted multi-tenant control plane
+- public beta or GA rollout
+- marketplace approval already completed
+- one-click local backend provisioning from the plugin package alone

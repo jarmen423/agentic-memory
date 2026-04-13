@@ -117,6 +117,42 @@ The older repo-wide analyzer-backed `CALLS` flow is still available explicitly:
 Detailed explanation:
 
 - `docs/JIT_TRACING.md`
+- `docs/PUBLIC_PLUGIN_SURFACES.md`
+
+### Public plugin surfaces
+
+Agentic Memory now supports a hosted remote-MCP plugin architecture for public AI surfaces. The publication model is:
+
+- OpenAI / ChatGPT: OpenAI app review and publish, backed by the hosted OpenAI MCP surface
+- Codex: distribution derived from the approved OpenAI app; `.codex-plugin/plugin.json` is the local preflight package
+- Claude: Anthropic directory submission backed by the hosted Claude MCP surface
+
+Default hosted/public MCP mounts:
+
+- `/mcp`
+- `/mcp-openai`
+- `/mcp-codex`
+- `/mcp-claude`
+
+Internal/self-hosted full MCP mount:
+
+- `/mcp-full`
+
+Canonical publication/legal URLs:
+
+- `https://api.agenticmemory.com/publication/agentic-memory`
+- `https://api.agenticmemory.com/publication/privacy`
+- `https://api.agenticmemory.com/publication/terms`
+- `https://api.agenticmemory.com/publication/support`
+- `https://api.agenticmemory.com/publication/dpa`
+
+Publication packets:
+
+- `docs/publication/openai`
+- `docs/publication/anthropic`
+- `docs/publication/shared`
+
+For the public surface contract and auth details, see [docs/PUBLIC_PLUGIN_SURFACES.md](docs/PUBLIC_PLUGIN_SURFACES.md).
 
 ### Web & research memory
 
@@ -305,6 +341,9 @@ Reference docs:
 - [docs/SETUP_FULL_STACK.md](docs/SETUP_FULL_STACK.md)
 - [docs/MCP_TOOL_REFERENCE.md](docs/MCP_TOOL_REFERENCE.md)
 - [docs/PROVIDER_CONFIGURATION.md](docs/PROVIDER_CONFIGURATION.md)
+- [docs/research/RERANKERS_PRIMER.md](docs/research/RERANKERS_PRIMER.md)
+- [docs/research/RERANKERS_CROSS_DOMAIN_USE_CASES.md](docs/research/RERANKERS_CROSS_DOMAIN_USE_CASES.md)
+- [docs/research/RERANKING_DECISION_MEMO.md](docs/research/RERANKING_DECISION_MEMO.md)
 - [docs/SPACETIMEDB_OPERATIONS.md](docs/SPACETIMEDB_OPERATIONS.md)
 - [docs/PRODUCT_DOGFOODING.md](docs/PRODUCT_DOGFOODING.md)
 

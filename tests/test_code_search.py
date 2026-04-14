@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import Mock
 
 from agentic_memory.server import code_search
+from agentic_memory.server.reranking import RerankResponse, RerankScore
 
 
 def _row(*, sig: str, path: str, score: float) -> dict[str, object]:
@@ -173,6 +174,45 @@ def test_search_code_safe_policy_ignores_graph_reranking():
     assert rows[0]["retrieval_provenance"]["policy"] == "safe"
     assert rows[0]["retrieval_provenance"]["graph_reranking_applied"] is False
     graph.semantic_search.assert_called_once_with("login flow", limit=1)
+
+
+def test_search_code_applies_learned_reranking(monkeypatch):
+    """Learned reranking should be able to reorder code candidates."""
+    graph = Mock()
+    graph.repo_id = "repo-alpha"
+    graph.semantic_search.return_value = [
+        _row(sig="pkg/auth.py::login", path="pkg/auth.py", score=0.91),
+        _row(sig="pkg/token.py::encrypt", path="pkg/token.py", score=0.72),
+    ]
+
+    monkeypatch.setattr(
+        code_search,
+        "rerank_documents",
+        lambda query, documents, high_stakes=False: RerankResponse(
+            applied=True,
+            provider="cohere",
+            model="rerank-v4.0-fast",
+            scores=[
+                RerankScore(index=1, relevance_score=0.99),
+                RerankScore(index=0, relevance_score=0.23),
+            ],
+        ),
+    )
+
+    rows = code_search.search_code(
+        graph,
+        query="encrypt auth token",
+        limit=2,
+        use_ppr=False,
+    )
+
+    assert [row["sig"] for row in rows] == [
+        "pkg/token.py::encrypt",
+        "pkg/auth.py::login",
+    ]
+    assert rows[0]["rerank_score"] == 0.99
+    assert rows[0]["retrieval_provenance"]["reranker_applied"] is True
+    assert rows[0]["retrieval_provenance"]["reranker_provider"] == "cohere"
 
 
 def test_run_personalized_page_rank_biases_toward_seed_nodes():

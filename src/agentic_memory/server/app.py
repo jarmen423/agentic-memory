@@ -739,6 +739,202 @@ def get_file_dependencies(file_path: str, repo_id: str | None = None) -> str:
 @mcp.tool()
 @rate_limit
 @log_tool_call
+def create_memory_entities(entities: List[Dict[str, Any]]) -> str:
+    """Create or update agent-authored memory entities."""
+    current_graph = get_graph()
+    if not current_graph:
+        return "❌ Graph not initialized. Check Neo4j connection."
+
+    try:
+        result = current_graph.create_memory_entities(entities)
+        return validate_tool_output(_format_memory_write_result("Memory entities stored.", result))
+    except ValueError as e:
+        return f"❌ Invalid memory entity payload: {str(e)}"
+    except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
+        logger.error(f"Create memory entities error: {e}")
+        return f"❌ Failed to create memory entities: {str(e)}"
+    except Exception as e:
+        logger.error(f"Unexpected create memory entities error: {e}")
+        return f"❌ Failed to create memory entities: {str(e)}"
+
+
+@mcp.tool()
+@rate_limit
+@log_tool_call
+def create_memory_relations(relations: List[Dict[str, Any]]) -> str:
+    """Create typed relations between memory entities."""
+    current_graph = get_graph()
+    if not current_graph:
+        return "❌ Graph not initialized. Check Neo4j connection."
+
+    try:
+        result = current_graph.create_memory_relations(relations)
+        return validate_tool_output(_format_memory_write_result("Memory relations stored.", result))
+    except ValueError as e:
+        return f"❌ Invalid memory relation payload: {str(e)}"
+    except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
+        logger.error(f"Create memory relations error: {e}")
+        return f"❌ Failed to create memory relations: {str(e)}"
+    except Exception as e:
+        logger.error(f"Unexpected create memory relations error: {e}")
+        return f"❌ Failed to create memory relations: {str(e)}"
+
+
+@mcp.tool()
+@rate_limit
+@log_tool_call
+def add_memory_observations(observations: List[Dict[str, Any]]) -> str:
+    """Append observations to existing memory entities."""
+    current_graph = get_graph()
+    if not current_graph:
+        return "❌ Graph not initialized. Check Neo4j connection."
+
+    try:
+        result = current_graph.add_memory_observations(observations)
+        return validate_tool_output(_format_memory_write_result("Memory observations added.", result))
+    except ValueError as e:
+        return f"❌ Invalid memory observation payload: {str(e)}"
+    except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
+        logger.error(f"Add memory observations error: {e}")
+        return f"❌ Failed to add memory observations: {str(e)}"
+    except Exception as e:
+        logger.error(f"Unexpected add memory observations error: {e}")
+        return f"❌ Failed to add memory observations: {str(e)}"
+
+
+@mcp.tool()
+@rate_limit
+@log_tool_call
+def delete_memory_entities(entity_names: List[str]) -> str:
+    """Delete memory entities by name."""
+    current_graph = get_graph()
+    if not current_graph:
+        return "❌ Graph not initialized. Check Neo4j connection."
+
+    try:
+        result = current_graph.delete_memory_entities(entity_names)
+        return validate_tool_output(_format_memory_write_result("Memory entities deleted.", result))
+    except ValueError as e:
+        return f"❌ Invalid memory delete payload: {str(e)}"
+    except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
+        logger.error(f"Delete memory entities error: {e}")
+        return f"❌ Failed to delete memory entities: {str(e)}"
+    except Exception as e:
+        logger.error(f"Unexpected delete memory entities error: {e}")
+        return f"❌ Failed to delete memory entities: {str(e)}"
+
+
+@mcp.tool()
+@rate_limit
+@log_tool_call
+def delete_memory_relations(relations: List[Dict[str, Any]]) -> str:
+    """Delete typed relations between memory entities."""
+    current_graph = get_graph()
+    if not current_graph:
+        return "❌ Graph not initialized. Check Neo4j connection."
+
+    try:
+        result = current_graph.delete_memory_relations(relations)
+        return validate_tool_output(_format_memory_write_result("Memory relations deleted.", result))
+    except ValueError as e:
+        return f"❌ Invalid memory relation delete payload: {str(e)}"
+    except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
+        logger.error(f"Delete memory relations error: {e}")
+        return f"❌ Failed to delete memory relations: {str(e)}"
+    except Exception as e:
+        logger.error(f"Unexpected delete memory relations error: {e}")
+        return f"❌ Failed to delete memory relations: {str(e)}"
+
+
+@mcp.tool()
+@rate_limit
+@log_tool_call
+def delete_memory_observations(observations: List[Dict[str, Any]]) -> str:
+    """Delete observations from memory entities."""
+    current_graph = get_graph()
+    if not current_graph:
+        return "❌ Graph not initialized. Check Neo4j connection."
+
+    try:
+        result = current_graph.delete_memory_observations(observations)
+        return validate_tool_output(_format_memory_write_result("Memory observations deleted.", result))
+    except ValueError as e:
+        return f"❌ Invalid memory observation delete payload: {str(e)}"
+    except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
+        logger.error(f"Delete memory observations error: {e}")
+        return f"❌ Failed to delete memory observations: {str(e)}"
+    except Exception as e:
+        logger.error(f"Unexpected delete memory observations error: {e}")
+        return f"❌ Failed to delete memory observations: {str(e)}"
+
+
+@mcp.tool()
+@rate_limit
+@log_tool_call
+def search_memory_nodes(query: str, limit: int = 5) -> str:
+    """Search agent-authored memory entities."""
+    current_graph = get_graph()
+    if not current_graph:
+        return "❌ Graph not initialized. Check Neo4j connection."
+
+    try:
+        results = current_graph.search_memory_nodes(query, limit=limit)
+        if not results:
+            return "No relevant memory nodes found."
+        return validate_tool_output(_format_memory_entity_results(results))
+    except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
+        logger.error(f"Search memory nodes error: {e}")
+        return f"❌ Failed to search memory nodes: {str(e)}"
+    except Exception as e:
+        logger.error(f"Unexpected search memory nodes error: {e}")
+        return f"❌ Failed to search memory nodes: {str(e)}"
+
+
+@mcp.tool()
+@rate_limit
+@log_tool_call
+def read_memory_graph() -> str:
+    """Return a summary of the current memory graph."""
+    current_graph = get_graph()
+    if not current_graph:
+        return "❌ Graph not initialized. Check Neo4j connection."
+
+    try:
+        graph_snapshot = current_graph.read_memory_graph()
+        return validate_tool_output(_format_memory_graph_output(graph_snapshot))
+    except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
+        logger.error(f"Read memory graph error: {e}")
+        return f"❌ Failed to read memory graph: {str(e)}"
+    except Exception as e:
+        logger.error(f"Unexpected read memory graph error: {e}")
+        return f"❌ Failed to read memory graph: {str(e)}"
+
+
+@mcp.tool()
+@rate_limit
+@log_tool_call
+def backfill_memory_embeddings(limit: int = 100, only_missing: bool = True) -> str:
+    """Backfill vector embeddings for existing memory entities."""
+    current_graph = get_graph()
+    if not current_graph:
+        return "❌ Graph not initialized. Check Neo4j connection."
+
+    try:
+        result = current_graph.backfill_memory_embeddings(limit=limit, only_missing=only_missing)
+        return validate_tool_output(_format_memory_write_result("Memory embeddings backfilled.", result))
+    except ValueError as e:
+        return f"❌ Invalid memory embedding backfill request: {str(e)}"
+    except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
+        logger.error(f"Backfill memory embeddings error: {e}")
+        return f"❌ Failed to backfill memory embeddings: {str(e)}"
+    except Exception as e:
+        logger.error(f"Unexpected backfill memory embeddings error: {e}")
+        return f"❌ Failed to backfill memory embeddings: {str(e)}"
+
+
+@mcp.tool()
+@rate_limit
+@log_tool_call
 def get_git_file_history(file_path: str, limit: int = 20) -> str:
     """
     Return commit history for a file from the git graph domain.
@@ -1232,6 +1428,118 @@ def _format_research_results(results: list[dict[str, Any]]) -> str:
         if row.get("rerank_score") is not None:
             output += f"   Rerank: {float(row['rerank_score']):.2f}\n"
         output += f"   ```\n{text}...\n   ```\n\n"
+
+    return output.strip()
+
+
+def _format_memory_entity_results(results: List[Dict[str, Any]]) -> str:
+    """Format memory-entity search hits for MCP responses."""
+    output = f"Found {len(results)} relevant memory node(s):\n\n"
+    for index, result in enumerate(results, 1):
+        name = result.get("name", "Unknown")
+        entity_type = result.get("entity_type", "concept")
+        score = float(result.get("score", 0.0) or 0.0)
+        observations = result.get("observations", []) or []
+        sources = result.get("sources", []) or []
+        outgoing_relations = result.get("outgoing_relations", []) or []
+        incoming_relations = result.get("incoming_relations", []) or []
+
+        output += f"{index}. **{name}** [{entity_type}] (Score: {score:.2f})\n"
+        if sources:
+            output += f"   Sources: {', '.join(f'`{source}`' for source in sources)}\n"
+        if observations:
+            output += "   Observations:\n"
+            for observation in observations[:6]:
+                output += f"   - {observation}\n"
+        if outgoing_relations:
+            output += "   Outgoing Relations:\n"
+            for relation in outgoing_relations[:6]:
+                output += f"   - {relation.get('relation_type', 'RELATED_TO')} -> {relation.get('target', 'Unknown')}\n"
+        if incoming_relations:
+            output += "   Incoming Relations:\n"
+            for relation in incoming_relations[:6]:
+                output += f"   - {relation.get('source', 'Unknown')} -> {relation.get('relation_type', 'RELATED_TO')}\n"
+        output += "\n"
+
+    return output.strip()
+
+
+def _format_memory_graph_output(graph_snapshot: Dict[str, Any]) -> str:
+    """Format a memory graph snapshot for MCP responses."""
+    entities = graph_snapshot.get("entities", []) or []
+    entity_count = graph_snapshot.get("entity_count", len(entities))
+    relation_count = graph_snapshot.get("relation_count", 0)
+
+    output = "## Memory Graph\n\n"
+    output += f"Entities: {entity_count}\n"
+    output += f"Relations: {relation_count}\n\n"
+
+    for entity in entities:
+        output += f"- **{entity.get('name', 'Unknown')}** [{entity.get('entity_type', 'concept')}]\n"
+        observations = entity.get("observations", []) or []
+        for observation in observations[:5]:
+            output += f"  - Observation: {observation}\n"
+        relations = entity.get("outgoing_relations", []) or []
+        for relation in relations[:5]:
+            output += (
+                f"  - Relation: {relation.get('relation_type', 'RELATED_TO')} -> "
+                f"{relation.get('target', 'Unknown')}\n"
+            )
+    return output.strip()
+
+
+def _format_memory_write_result(prefix: str, result: Dict[str, Any]) -> str:
+    """Format a memory-graph mutation result for MCP responses."""
+    output = f"## {prefix}\n\n"
+    count = result.get("count", 0)
+    output += f"Count: {count}\n"
+
+    if result.get("entity_names"):
+        output += "\nEntities:\n"
+        for name in result["entity_names"]:
+            output += f"- {name}\n"
+
+    if result.get("deleted_names"):
+        output += "\nDeleted Entities:\n"
+        for name in result["deleted_names"]:
+            output += f"- {name}\n"
+
+    if result.get("missing_names"):
+        output += "\nMissing Entities:\n"
+        for name in result["missing_names"]:
+            output += f"- {name}\n"
+
+    if result.get("relations"):
+        output += "\nRelations:\n"
+        for relation in result["relations"]:
+            source = relation.get("from") or relation.get("source") or "Unknown"
+            target = relation.get("to") or relation.get("target") or "Unknown"
+            relation_type = relation.get("relation_type", "RELATED_TO")
+            output += f"- {source} -[{relation_type}]-> {target}\n"
+
+    if result.get("entities"):
+        output += "\nUpdated Entities:\n"
+        for entity in result["entities"]:
+            name = entity.get("name", "Unknown")
+            if "added_count" in entity:
+                output += f"- {name}: added {entity['added_count']} observation(s)\n"
+            elif "remaining_count" in entity:
+                output += f"- {name}: {entity['remaining_count']} observation(s) remain\n"
+
+    if result.get("remaining_without_embeddings") is not None:
+        output += (
+            "\nRemaining Without Embeddings: "
+            f"{result['remaining_without_embeddings']}\n"
+        )
+
+    if result.get("missing"):
+        output += "\nMissing Relations:\n"
+        for relation in result["missing"]:
+            output += (
+                f"- {relation.get('from', 'Unknown')} -"
+                f"[{relation.get('relation_type', 'RELATED_TO')}]-> "
+                f"{relation.get('to', 'Unknown')}\n"
+            )
 
     return output.strip()
 

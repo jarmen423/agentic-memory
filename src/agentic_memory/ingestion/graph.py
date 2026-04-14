@@ -227,6 +227,9 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
     EMBEDDING_MODEL = "gemini-embedding-2-preview"
     VECTOR_DIMENSIONS = 3072
     DOMAIN_LABEL = "Code"
+    MEMORY_ENTITY_LABEL = "MemoryEntity"
+    MEMORY_VECTOR_INDEX = "memory_entity_embeddings"
+    MEMORY_FULLTEXT_INDEX = "memory_entity_search"
 
     def __init__(
         self,
@@ -607,6 +610,41 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                 except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
                     logger.warning(f"Constraint/Index check: {e}")
         logger.info("✅ Database configured.")
+
+    def setup_memory_schema(self) -> None:
+        """Ensure indexes and constraints for agent-authored memory entities exist.
+
+        This concept graph is intentionally separate from research and
+        conversation memory. We store agent-authored concepts under a dedicated
+        ``:MemoryEntity`` label so CRUD/search operations do not sweep in
+        ``:Memory:Research:*`` or ``:Memory:Conversation:*`` nodes.
+        """
+        logger.info("🧠 Ensuring memory-entity schema exists.")
+        queries = [
+            (
+                "CREATE CONSTRAINT memory_entity_repo_name_unique IF NOT EXISTS "
+                f"FOR (m:{self.MEMORY_ENTITY_LABEL}) REQUIRE (m.repo_id, m.name) IS UNIQUE"
+            ),
+            (
+                f"CREATE VECTOR INDEX {self.MEMORY_VECTOR_INDEX} IF NOT EXISTS "
+                f"FOR (m:{self.MEMORY_ENTITY_LABEL}) ON (m.embedding) "
+                f"OPTIONS {{indexConfig: {{"
+                f"`vector.dimensions`: {self.VECTOR_DIMENSIONS}, "
+                f"`vector.similarity_function`: 'cosine'"
+                f"}} }}"
+            ),
+            (
+                f"CREATE FULLTEXT INDEX {self.MEMORY_FULLTEXT_INDEX} IF NOT EXISTS "
+                f"FOR (m:{self.MEMORY_ENTITY_LABEL}) ON EACH "
+                "[m.name, m.entity_type, m.observation_text]"
+            ),
+        ]
+        with self.driver.session() as session:
+            for query in queries:
+                try:
+                    session.run(query)
+                except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as exc:
+                    logger.warning("Memory schema check failed: %s", exc)
 
     # =========================================================================
     # EMBEDDING GENERATION
@@ -2929,6 +2967,661 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             }
 
         return self.circuit_breaker.call(_execute_call_diagnostics)
+
+    # =========================================================================
+    # AGENT-AUTHORED MEMORY GRAPH QUERIES (for MCP Server)
+    # =========================================================================
+
+    def _with_repo(self, **kwargs: Any) -> Dict[str, Any]:
+        """Return Cypher parameters with the active repo_id attached when set."""
+        params = dict(kwargs)
+        if self.repo_id is not None:
+            params.setdefault("repo_id", self.repo_id)
+        return params
+
+    @staticmethod
+    def _serialize_memory_observations(observations: List[str]) -> str:
+        """Join observations for search-friendly storage."""
+        return "\n".join(
+            obs.strip() for obs in observations if isinstance(obs, str) and obs.strip()
+        )
+
+    @staticmethod
+    def _normalize_memory_label(value: str) -> str:
+        """Normalize a user-provided memory type into a safe Neo4j label."""
+        cleaned = re.sub(r"[^0-9A-Za-z_]", "_", str(value or "").strip())
+        cleaned = re.sub(r"_+", "_", cleaned).strip("_")
+        if not cleaned:
+            return "concept"
+        if cleaned[0].isdigit():
+            cleaned = f"Type_{cleaned}"
+        return cleaned
+
+    @staticmethod
+    def _normalize_memory_relation_type(value: str) -> str:
+        """Normalize a relation type into a safe Neo4j relationship type."""
+        cleaned = re.sub(r"[^0-9A-Za-z_]", "_", str(value or "").strip().upper())
+        cleaned = re.sub(r"_+", "_", cleaned).strip("_")
+        if not cleaned:
+            raise ValueError("Relation type cannot be empty.")
+        if cleaned[0].isdigit():
+            cleaned = f"REL_{cleaned}"
+        return cleaned
+
+    @staticmethod
+    def _build_memory_embedding_text(
+        name: str, entity_type: str, observations: List[str]
+    ) -> str:
+        """Build the canonical text used for memory embeddings."""
+        lines = [f"Name: {name}", f"Type: {entity_type}"]
+        if observations:
+            lines.append("Observations:")
+            lines.extend(f"- {observation}" for observation in observations)
+        return "\n".join(lines)
+
+    def _get_memory_embedding_or_none(self, text: str) -> Optional[List[float]]:
+        """Return an embedding for memory-entity text when a provider is configured."""
+        if self.embedding_service is None:
+            return None
+        return self.get_embedding(text)
+
+    @staticmethod
+    def _normalize_memory_entity(entity: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate and normalize one memory-entity payload."""
+        if not isinstance(entity, dict):
+            raise ValueError("Each entity must be an object.")
+
+        name = str(entity.get("name", "")).strip()
+        if not name:
+            raise ValueError("Each entity requires a non-empty 'name'.")
+
+        entity_type = str(
+            entity.get("entityType") or entity.get("entity_type") or "concept"
+        ).strip()
+        observations = entity.get("observations") or []
+        if not isinstance(observations, list):
+            raise ValueError(f"Entity '{name}' observations must be a list of strings.")
+
+        normalized_observations: List[str] = []
+        for observation in observations:
+            text = str(observation).strip()
+            if text:
+                normalized_observations.append(text)
+
+        metadata = entity.get("metadata") or {}
+        if metadata and not isinstance(metadata, dict):
+            raise ValueError(f"Entity '{name}' metadata must be an object.")
+
+        return {
+            "name": name,
+            "entity_type": entity_type or "concept",
+            "entity_label": KnowledgeGraphBuilder._normalize_memory_label(entity_type or "concept"),
+            "observations": normalized_observations,
+            "observation_text": KnowledgeGraphBuilder._serialize_memory_observations(
+                normalized_observations
+            ),
+            "embedding_text": KnowledgeGraphBuilder._build_memory_embedding_text(
+                name, entity_type or "concept", normalized_observations
+            ),
+            "metadata_json": json.dumps(metadata, sort_keys=True) if metadata else "{}",
+        }
+
+    @staticmethod
+    def _normalize_memory_relation(relation: Dict[str, Any]) -> Dict[str, str]:
+        """Validate and normalize one memory-relation payload."""
+        if not isinstance(relation, dict):
+            raise ValueError("Each relation must be an object.")
+
+        source = str(
+            relation.get("from")
+            or relation.get("from_entity")
+            or relation.get("source")
+            or ""
+        ).strip()
+        target = str(
+            relation.get("to")
+            or relation.get("to_entity")
+            or relation.get("target")
+            or ""
+        ).strip()
+        relation_type = str(
+            relation.get("relationType")
+            or relation.get("relation_type")
+            or relation.get("type")
+            or ""
+        ).strip()
+
+        if not source or not target or not relation_type:
+            raise ValueError("Each relation requires 'from', 'to', and 'relationType'.")
+
+        return {
+            "from": source,
+            "to": target,
+            "relation_type": KnowledgeGraphBuilder._normalize_memory_relation_type(
+                relation_type
+            ),
+        }
+
+    @staticmethod
+    def _normalize_memory_observation_update(item: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate and normalize one observation update payload."""
+        if not isinstance(item, dict):
+            raise ValueError("Each observation update must be an object.")
+
+        entity_name = str(
+            item.get("entityName") or item.get("entity_name") or item.get("name") or ""
+        ).strip()
+        if not entity_name:
+            raise ValueError("Each observation update requires 'entityName'.")
+
+        contents = item.get("contents") or item.get("observations") or item.get("content") or []
+        if isinstance(contents, str):
+            contents = [contents]
+        if not isinstance(contents, list):
+            raise ValueError(
+                f"Observation update for '{entity_name}' must provide a list of strings."
+            )
+
+        normalized_contents = [str(content).strip() for content in contents if str(content).strip()]
+        if not normalized_contents:
+            raise ValueError(
+                f"Observation update for '{entity_name}' must include at least one string."
+            )
+
+        return {"entity_name": entity_name, "contents": normalized_contents}
+
+    def create_memory_entities(self, entities: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Create or update agent-authored memory entities for the active repo."""
+        normalized_entities = [self._normalize_memory_entity(entity) for entity in entities]
+        if not normalized_entities:
+            raise ValueError("At least one entity is required.")
+        if self.repo_id is None:
+            raise ValueError("repo_id is required for memory entity creation.")
+
+        self.setup_memory_schema()
+
+        def _execute_create() -> Dict[str, Any]:
+            entity_names: List[str] = []
+            with self.driver.session() as session:
+                for entity in normalized_entities:
+                    embedding = self._get_memory_embedding_or_none(entity["embedding_text"])
+                    params = self._with_repo(**entity)
+                    session.run(
+                        f"""
+                        MERGE (m:{self.MEMORY_ENTITY_LABEL} {{repo_id: $repo_id, name: $name}})
+                        ON CREATE SET
+                            m.type = $entity_type,
+                            m.entity_type = $entity_type,
+                            m.observations = $observations,
+                            m.observation_text = $observation_text,
+                            m.metadata_json = $metadata_json,
+                            m.created_at = datetime(),
+                            m.updated_at = datetime()
+                        ON MATCH SET
+                            m.type = $entity_type,
+                            m.entity_type = $entity_type,
+                            m.observations = CASE
+                                WHEN size($observations) = 0 THEN coalesce(m.observations, [])
+                                ELSE $observations
+                            END,
+                            m.observation_text = CASE
+                                WHEN size($observations) = 0 THEN coalesce(m.observation_text, '')
+                                ELSE $observation_text
+                            END,
+                            m.metadata_json = $metadata_json,
+                            m.updated_at = datetime()
+                        """,
+                        **params,
+                    )
+                    if embedding is not None:
+                        session.run(
+                            f"""
+                            MATCH (m:{self.MEMORY_ENTITY_LABEL} {{repo_id: $repo_id, name: $name}})
+                            SET m.embedding = $embedding
+                            """,
+                            **self._with_repo(name=entity["name"], embedding=embedding),
+                        )
+                    session.run(
+                        f"""
+                        MATCH (m:{self.MEMORY_ENTITY_LABEL} {{repo_id: $repo_id, name: $name}})
+                        SET m:`{entity['entity_label']}`
+                        """,
+                        **self._with_repo(name=entity["name"]),
+                    )
+                    entity_names.append(entity["name"])
+
+            return {"count": len(entity_names), "entity_names": entity_names}
+
+        return self.circuit_breaker.call(_execute_create)
+
+    def delete_memory_entities(self, names: List[str]) -> Dict[str, Any]:
+        """Delete memory entities by name for the active repo."""
+        normalized_names = [str(name).strip() for name in names if str(name).strip()]
+        if not normalized_names:
+            raise ValueError("At least one entity name is required.")
+        if self.repo_id is None:
+            raise ValueError("repo_id is required for memory entity deletion.")
+
+        def _execute_delete() -> Dict[str, Any]:
+            with self.driver.session() as session:
+                result = session.run(
+                    f"""
+                    MATCH (m:{self.MEMORY_ENTITY_LABEL})
+                    WHERE m.repo_id = $repo_id AND m.name IN $names
+                    WITH collect(m.name) as matched_names, collect(m) as matched_nodes
+                    FOREACH (node IN matched_nodes | DETACH DELETE node)
+                    RETURN matched_names as matched_names
+                    """,
+                    **self._with_repo(names=normalized_names),
+                ).single()
+
+            deleted_names = result["matched_names"] if result and result["matched_names"] else []
+            missing_names = [name for name in normalized_names if name not in deleted_names]
+            return {
+                "count": len(deleted_names),
+                "deleted_names": deleted_names,
+                "missing_names": missing_names,
+            }
+
+        return self.circuit_breaker.call(_execute_delete)
+
+    def create_memory_relations(self, relations: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Create typed relations between memory entities in the active repo."""
+        normalized_relations = [self._normalize_memory_relation(relation) for relation in relations]
+        if not normalized_relations:
+            raise ValueError("At least one relation is required.")
+        if self.repo_id is None:
+            raise ValueError("repo_id is required for memory relation creation.")
+
+        self.setup_memory_schema()
+
+        def _execute_create_relations() -> Dict[str, Any]:
+            created: List[Dict[str, Any]] = []
+            missing: List[Dict[str, str]] = []
+            with self.driver.session() as session:
+                for relation in normalized_relations:
+                    result = session.run(
+                        f"""
+                        MATCH (source:{self.MEMORY_ENTITY_LABEL} {{repo_id: $repo_id, name: $source}})
+                        MATCH (target:{self.MEMORY_ENTITY_LABEL} {{repo_id: $repo_id, name: $target}})
+                        MERGE (source)-[r:`{relation['relation_type']}`]->(target)
+                        ON CREATE SET r.created_at = datetime()
+                        ON MATCH SET r.updated_at = datetime()
+                        RETURN source.name as source, target.name as target, type(r) as relation_type
+                        """,
+                        **self._with_repo(source=relation["from"], target=relation["to"]),
+                    ).single()
+
+                    if result:
+                        created.append(dict(result))
+                    else:
+                        missing.append(relation)
+
+            return {"count": len(created), "relations": created, "missing": missing}
+
+        return self.circuit_breaker.call(_execute_create_relations)
+
+    def delete_memory_relations(self, relations: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Delete typed relations between memory entities in the active repo."""
+        normalized_relations = [self._normalize_memory_relation(relation) for relation in relations]
+        if not normalized_relations:
+            raise ValueError("At least one relation is required.")
+        if self.repo_id is None:
+            raise ValueError("repo_id is required for memory relation deletion.")
+
+        def _execute_delete_relations() -> Dict[str, Any]:
+            deleted: List[Dict[str, str]] = []
+            missing: List[Dict[str, str]] = []
+            with self.driver.session() as session:
+                for relation in normalized_relations:
+                    result = session.run(
+                        f"""
+                        MATCH (source:{self.MEMORY_ENTITY_LABEL} {{repo_id: $repo_id, name: $source}})
+                        MATCH (target:{self.MEMORY_ENTITY_LABEL} {{repo_id: $repo_id, name: $target}})
+                        OPTIONAL MATCH (source)-[r:`{relation['relation_type']}`]->(target)
+                        WITH source, target, r
+                        FOREACH (_ IN CASE WHEN r IS NULL THEN [] ELSE [1] END | DELETE r)
+                        RETURN source.name as source, target.name as target, '{relation['relation_type']}' as relation_type, r IS NOT NULL as deleted
+                        """,
+                        **self._with_repo(source=relation["from"], target=relation["to"]),
+                    ).single()
+
+                    if result and result["deleted"]:
+                        deleted.append(
+                            {
+                                "from": result["source"],
+                                "to": result["target"],
+                                "relation_type": result["relation_type"],
+                            }
+                        )
+                    else:
+                        missing.append(relation)
+
+            return {"count": len(deleted), "relations": deleted, "missing": missing}
+
+        return self.circuit_breaker.call(_execute_delete_relations)
+
+    def add_memory_observations(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Append observations to existing memory entities in the active repo."""
+        normalized_items = [self._normalize_memory_observation_update(item) for item in items]
+        if not normalized_items:
+            raise ValueError("At least one observation update is required.")
+        if self.repo_id is None:
+            raise ValueError("repo_id is required for memory observation updates.")
+
+        self.setup_memory_schema()
+
+        def _execute_add_observations() -> Dict[str, Any]:
+            updated: List[Dict[str, Any]] = []
+            missing: List[str] = []
+            with self.driver.session() as session:
+                for item in normalized_items:
+                    result = session.run(
+                        f"""
+                        MATCH (m:{self.MEMORY_ENTITY_LABEL} {{repo_id: $repo_id, name: $name}})
+                        WITH m, [obs IN $contents WHERE NOT obs IN coalesce(m.observations, [])] as new_obs
+                        SET m.observations = coalesce(m.observations, []) + new_obs,
+                            m.observation_text = reduce(acc = '', obs IN (coalesce(m.observations, []) + new_obs) |
+                                CASE WHEN acc = '' THEN obs ELSE acc + '\n' + obs END),
+                            m.updated_at = datetime()
+                        RETURN m.name as name, coalesce(m.type, m.entity_type, 'concept') as entity_type, size(new_obs) as added_count, m.observations as observations
+                        """,
+                        **self._with_repo(name=item["entity_name"], contents=item["contents"]),
+                    ).single()
+
+                    if result:
+                        row = dict(result)
+                        embedding = self._get_memory_embedding_or_none(
+                            self._build_memory_embedding_text(
+                                row["name"], row["entity_type"], row["observations"] or []
+                            )
+                        )
+                        if embedding is not None:
+                            session.run(
+                                f"""
+                                MATCH (m:{self.MEMORY_ENTITY_LABEL} {{repo_id: $repo_id, name: $name}})
+                                SET m.embedding = $embedding
+                                """,
+                                **self._with_repo(name=row["name"], embedding=embedding),
+                            )
+                        updated.append(row)
+                    else:
+                        missing.append(item["entity_name"])
+
+            return {"count": len(updated), "entities": updated, "missing_names": missing}
+
+        return self.circuit_breaker.call(_execute_add_observations)
+
+    def delete_memory_observations(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Delete observations from memory entities in the active repo."""
+        normalized_items = [self._normalize_memory_observation_update(item) for item in items]
+        if not normalized_items:
+            raise ValueError("At least one observation delete request is required.")
+        if self.repo_id is None:
+            raise ValueError("repo_id is required for memory observation deletion.")
+
+        def _execute_delete_observations() -> Dict[str, Any]:
+            updated: List[Dict[str, Any]] = []
+            missing: List[str] = []
+            with self.driver.session() as session:
+                for item in normalized_items:
+                    result = session.run(
+                        f"""
+                        MATCH (m:{self.MEMORY_ENTITY_LABEL} {{repo_id: $repo_id, name: $name}})
+                        WITH m, [obs IN coalesce(m.observations, []) WHERE NOT obs IN $contents] as kept
+                        SET m.observations = kept,
+                            m.observation_text = reduce(acc = '', obs IN kept |
+                                CASE WHEN acc = '' THEN obs ELSE acc + '\n' + obs END),
+                            m.updated_at = datetime()
+                        RETURN m.name as name, coalesce(m.type, m.entity_type, 'concept') as entity_type, size(kept) as remaining_count, m.observations as observations
+                        """,
+                        **self._with_repo(name=item["entity_name"], contents=item["contents"]),
+                    ).single()
+
+                    if result:
+                        row = dict(result)
+                        embedding = self._get_memory_embedding_or_none(
+                            self._build_memory_embedding_text(
+                                row["name"], row["entity_type"], row["observations"] or []
+                            )
+                        )
+                        if embedding is not None:
+                            session.run(
+                                f"""
+                                MATCH (m:{self.MEMORY_ENTITY_LABEL} {{repo_id: $repo_id, name: $name}})
+                                SET m.embedding = $embedding
+                                """,
+                                **self._with_repo(name=row["name"], embedding=embedding),
+                            )
+                        updated.append(row)
+                    else:
+                        missing.append(item["entity_name"])
+
+            return {"count": len(updated), "entities": updated, "missing_names": missing}
+
+        return self.circuit_breaker.call(_execute_delete_observations)
+
+    def backfill_memory_embeddings(
+        self, limit: int = 100, only_missing: bool = True
+    ) -> Dict[str, Any]:
+        """Backfill embeddings for existing memory entities in the active repo."""
+        if self.repo_id is None:
+            raise ValueError("repo_id is required for memory embedding backfill.")
+        self.setup_memory_schema()
+        safe_limit = max(1, int(limit))
+        if self.embedding_service is None:
+            raise ValueError(
+                "An embedding provider is required to backfill memory embeddings."
+            )
+
+        def _execute_backfill() -> Dict[str, Any]:
+            with self.driver.session() as session:
+                filter_parts = ["m.repo_id = $repo_id"]
+                if only_missing:
+                    filter_parts.append("m.embedding IS NULL")
+                filter_clause = f"WHERE {' AND '.join(filter_parts)}"
+                rows = list(
+                    session.run(
+                        f"""
+                        MATCH (m:{self.MEMORY_ENTITY_LABEL})
+                        {filter_clause}
+                        RETURN m.name as name,
+                               coalesce(m.type, m.entity_type, 'concept') as entity_type,
+                               coalesce(m.observations, []) as observations
+                        ORDER BY m.name
+                        LIMIT $limit
+                        """,
+                        **self._with_repo(limit=safe_limit),
+                    )
+                )
+
+                updated_names: List[str] = []
+                for row in rows:
+                    payload = dict(row)
+                    embedding = self.get_embedding(
+                        self._build_memory_embedding_text(
+                            payload["name"],
+                            payload["entity_type"],
+                            payload["observations"] or [],
+                        )
+                    )
+                    session.run(
+                        f"""
+                        MATCH (m:{self.MEMORY_ENTITY_LABEL} {{repo_id: $repo_id, name: $name}})
+                        SET m.embedding = $embedding,
+                            m.updated_at = datetime()
+                        """,
+                        **self._with_repo(name=payload["name"], embedding=embedding),
+                    )
+                    updated_names.append(payload["name"])
+
+                remaining_result = session.run(
+                    f"""
+                    MATCH (m:{self.MEMORY_ENTITY_LABEL})
+                    WHERE m.repo_id = $repo_id AND m.embedding IS NULL
+                    RETURN count(m) as remaining
+                    """,
+                    **self._with_repo(),
+                ).single()
+
+            return {
+                "count": len(updated_names),
+                "entity_names": updated_names,
+                "remaining_without_embeddings": (
+                    remaining_result["remaining"] if remaining_result else 0
+                ),
+            }
+
+        return self.circuit_breaker.call(_execute_backfill)
+
+    def search_memory_nodes(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """Search agent-authored memory entities for the active repo."""
+        normalized_query = str(query).strip()
+        safe_limit = max(1, int(limit))
+        if not normalized_query:
+            return []
+        if self.repo_id is None:
+            raise ValueError("repo_id is required for memory search.")
+
+        self.setup_memory_schema()
+
+        def _execute_search() -> List[Dict[str, Any]]:
+            with self.driver.session() as session:
+                if self.embedding_service is None:
+                    result = session.run(
+                        f"""
+                        CALL db.index.fulltext.queryNodes('{self.MEMORY_FULLTEXT_INDEX}', $query_text)
+                        YIELD node, score
+                        WHERE node.repo_id = $repo_id
+                        OPTIONAL MATCH (node:{self.MEMORY_ENTITY_LABEL})-[r_out]->(target:{self.MEMORY_ENTITY_LABEL} {{repo_id: $repo_id}})
+                        OPTIONAL MATCH (source:{self.MEMORY_ENTITY_LABEL} {{repo_id: $repo_id}})-[r_in]->(node:{self.MEMORY_ENTITY_LABEL})
+                        RETURN
+                            node.name as name,
+                            coalesce(node.type, node.entity_type, 'concept') as entity_type,
+                            coalesce(node.observations, []) as observations,
+                            coalesce(node.metadata_json, '{{}}') as metadata_json,
+                            score,
+                            ['fulltext'] as sources,
+                            collect(DISTINCT CASE
+                                WHEN target IS NULL THEN NULL
+                                ELSE {{target: target.name, relation_type: type(r_out)}}
+                            END) as outgoing_relations,
+                            collect(DISTINCT CASE
+                                WHEN source IS NULL THEN NULL
+                                ELSE {{source: source.name, relation_type: type(r_in)}}
+                            END) as incoming_relations
+                        ORDER BY score DESC
+                        LIMIT $limit
+                        """,
+                        **self._with_repo(query_text=normalized_query, limit=safe_limit),
+                    )
+                else:
+                    vector = self.get_embedding(normalized_query)
+                    result = session.run(
+                        f"""
+                        CALL {{
+                            CALL db.index.vector.queryNodes('{self.MEMORY_VECTOR_INDEX}', $limit, $vector)
+                            YIELD node, score
+                            RETURN node, score, 'vector' as source
+                            UNION
+                            CALL db.index.fulltext.queryNodes('{self.MEMORY_FULLTEXT_INDEX}', $query_text)
+                            YIELD node, score
+                            RETURN node, score, 'fulltext' as source
+                        }}
+                        WITH node, max(score) as score, collect(DISTINCT source) as sources
+                        WHERE node.repo_id = $repo_id
+                        OPTIONAL MATCH (node:{self.MEMORY_ENTITY_LABEL})-[r_out]->(target:{self.MEMORY_ENTITY_LABEL} {{repo_id: $repo_id}})
+                        OPTIONAL MATCH (source:{self.MEMORY_ENTITY_LABEL} {{repo_id: $repo_id}})-[r_in]->(node:{self.MEMORY_ENTITY_LABEL})
+                        RETURN
+                            node.name as name,
+                            coalesce(node.type, node.entity_type, 'concept') as entity_type,
+                            coalesce(node.observations, []) as observations,
+                            coalesce(node.metadata_json, '{{}}') as metadata_json,
+                            score,
+                            sources,
+                            collect(DISTINCT CASE
+                                WHEN target IS NULL THEN NULL
+                                ELSE {{target: target.name, relation_type: type(r_out)}}
+                            END) as outgoing_relations,
+                            collect(DISTINCT CASE
+                                WHEN source IS NULL THEN NULL
+                                ELSE {{source: source.name, relation_type: type(r_in)}}
+                            END) as incoming_relations
+                        ORDER BY score DESC
+                        LIMIT $limit
+                        """,
+                        **self._with_repo(
+                            query_text=normalized_query,
+                            vector=vector,
+                            limit=safe_limit,
+                        ),
+                    )
+
+                rows: List[Dict[str, Any]] = []
+                for record in result:
+                    row = dict(record)
+                    row["outgoing_relations"] = [
+                        rel for rel in row.get("outgoing_relations", []) if rel
+                    ]
+                    row["incoming_relations"] = [
+                        rel for rel in row.get("incoming_relations", []) if rel
+                    ]
+                    rows.append(row)
+                return rows
+
+        return self.circuit_breaker.call(_execute_search)
+
+    def read_memory_graph(self) -> Dict[str, Any]:
+        """Return a summarized view of the current repo-scoped memory graph."""
+        if self.repo_id is None:
+            raise ValueError("repo_id is required for memory graph reads.")
+        self.setup_memory_schema()
+
+        def _execute_read() -> Dict[str, Any]:
+            with self.driver.session() as session:
+                nodes_result = session.run(
+                    f"""
+                    MATCH (m:{self.MEMORY_ENTITY_LABEL} {{repo_id: $repo_id}})
+                    OPTIONAL MATCH (m)-[r]->(target:{self.MEMORY_ENTITY_LABEL} {{repo_id: $repo_id}})
+                    RETURN
+                        m.name as name,
+                        coalesce(m.type, m.entity_type, 'concept') as entity_type,
+                        coalesce(m.observations, []) as observations,
+                        collect(DISTINCT CASE
+                            WHEN target IS NULL THEN NULL
+                            ELSE {{
+                                target: target.name,
+                                relation_type: type(r)
+                            }}
+                        END) as outgoing_relations
+                    ORDER BY m.name
+                    """,
+                    **self._with_repo(),
+                )
+                entities: List[Dict[str, Any]] = []
+                for record in nodes_result:
+                    row = dict(record)
+                    row["outgoing_relations"] = [
+                        rel for rel in row.get("outgoing_relations", []) if rel
+                    ]
+                    entities.append(row)
+
+                relation_count_result = session.run(
+                    f"""
+                    MATCH (source:{self.MEMORY_ENTITY_LABEL} {{repo_id: $repo_id}})-[r]->(target:{self.MEMORY_ENTITY_LABEL} {{repo_id: $repo_id}})
+                    RETURN count(r) as count
+                    """,
+                    **self._with_repo(),
+                ).single()
+                relation_count = relation_count_result["count"] if relation_count_result else 0
+
+            return {
+                "entity_count": len(entities),
+                "relation_count": relation_count,
+                "entities": entities,
+            }
+
+        return self.circuit_breaker.call(_execute_read)
 
     # =========================================================================
     # GIT GRAPH QUERIES (for MCP Server)

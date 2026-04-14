@@ -12,17 +12,21 @@ Why this file matters:
     metadata contract.
 
 Gemini Embedding 2 note:
-    Google's Gemini Embedding 2 preview docs describe "custom task
-    instructions" such as ``task:code retrieval`` and ``task:search result`` as
-    a way to optimize embeddings for a specific retrieval role. The public model
-    page documents the feature, but the exact request wire shape is less
-    explicit than older ``task_type``-based embedding APIs.
+    Google documents a model-specific text formatting pattern for
+    ``gemini-embedding-2-preview`` retrieval tasks. For text-only code
+    retrieval, the recommended query shape is:
 
-    Until Google publishes a clearer dedicated field for this preview model in
-    the Gen AI SDK docs, Agentic Memory treats these task instructions as a
-    Gemini-only input prefix. That keeps the behavior explicit and easy to
-    inspect, and it lets us pair query/document embeddings intentionally for
-    code search.
+    ``task: code retrieval | query: {content}``
+
+    and the recommended document shape is:
+
+    ``title: {title} | text: {content}``
+
+    Agentic Memory therefore treats ``task_instruction`` as a format template
+    for Gemini Embedding 2 preview rather than a bare prefix. Templates can
+    interpolate ``{content}`` and optionally ``{title}``. This keeps the
+    repo-local configuration aligned with the official model guidance while
+    remaining explicit and easy to inspect.
 """
 
 from dataclasses import dataclass
@@ -257,24 +261,26 @@ class EmbeddingService:
 
         Args:
             text: Raw text content to embed.
-            task_instruction: Optional Gemini Embedding 2 task instruction such
-                as ``task:code retrieval`` or ``task:search result``.
+            task_instruction: Optional Gemini Embedding 2 text-format template
+                such as ``task: code retrieval | query: {content}`` or
+                ``title: none | text: {content}``.
 
         Returns:
             Text payload to send to Gemini.
 
         Why this helper exists:
-            Gemini Embedding 2 preview introduces custom task instructions on the
-            model card, but the surrounding SDK examples for this preview do not
-            yet show a dedicated strongly-typed request field for them. We
-            therefore keep the formatting in one place so it is easy to change if
-            Google later documents a more explicit SDK parameter.
+            The Embeddings 2 docs recommend formatting query/document text
+            directly for text-only retrieval tasks. We therefore keep the
+            formatting logic in one place so repo config can store the canonical
+            template string and callers do not have to hand-roll it.
         """
         if not task_instruction:
             return text
         cleaned_instruction = task_instruction.strip()
         if not cleaned_instruction:
             return text
+        if "{content}" in cleaned_instruction or "{title}" in cleaned_instruction:
+            return cleaned_instruction.format(content=text, title="none")
         return f"{cleaned_instruction}\n\n{text}"
 
     def embed_with_metadata(

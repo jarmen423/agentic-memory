@@ -937,17 +937,17 @@ def cmd_serve(args):
         config = Config(repo_root)
         if not config.exists():
             print(
-                f"⚠️  No .agentic-memory/config.json found in {repo_root}, using environment variables"
+                f"WARNING: No .agentic-memory/config.json found in {repo_root}, using environment variables"
             )
     else:
         auto_root = find_repo_root()
         config = Config(auto_root)
         if not config.exists():
-            print(f"⚠️  No local config found, using environment variables")
+            print("WARNING: No local config found, using environment variables")
 
-    print(f"🧠 Starting MCP Interface on port {args.port}")
+    print(f"Starting MCP Interface on port {args.port}")
     if repo_root:
-        print(f"📂 Using repository root: {repo_root}")
+        print(f"Using repository root: {repo_root}")
     run_server(port=args.port, repo_root=repo_root)
 
 

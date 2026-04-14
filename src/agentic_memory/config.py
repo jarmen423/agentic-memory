@@ -83,8 +83,8 @@ DEFAULT_CONFIG = {
             # retrieval-oriented embedding quality. Code chunks are stored as the
             # retrievable corpus, while semantic search queries represent the
             # user's intent to retrieve code from that corpus.
-            "embedding_document_task_instruction": "task:search result",
-            "embedding_query_task_instruction": "task:code retrieval",
+            "embedding_document_task_instruction": "title: none | text: {content}",
+            "embedding_query_task_instruction": "task: code retrieval | query: {content}",
         },
         "web": {
             "embedding_provider": "gemini",

@@ -19,6 +19,7 @@
     "generate:temporal-bindings": "npm run generate:bindings --workspace am-temporal-kg",
     "validate:release-artifacts": "docker compose -f docker-compose.prod.yml config",
     "bench:build-temporal": "tsx bench/build_temporal_kg.ts",
+    "bench:eval": "python bench/run_eval.py",
     "bench:run-queries": "tsx bench/run_queries.ts",
     "bench:tokens": "tsx bench/measure_tokens.ts",
     "bench:report": "tsx bench/report_results.ts"

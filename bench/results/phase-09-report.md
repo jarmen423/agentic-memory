@@ -1,22 +1,29 @@
-# Phase 9 Benchmark Report
+# Retrieval Benchmark Report
 
 Generated from 2 benchmark row(s).
 
-## Summary
+## Global Summary
 
 | Metric | Value |
 | --- | ---: |
-| Mean baseline latency (ms) | 0.31 |
-| P95 baseline latency (ms) | 0.54 |
-| Mean temporal latency (ms) | 281.09 |
-| P95 temporal latency (ms) | 538.36 |
-| Average token reduction (%) | 0 |
-| Fallback rate (%) | 100 |
-| Temporal consistency rate (%) | 0 |
+| High-stakes query count | 0 |
+| Temporal fallback rate (%) | 100 |
+| Mean temporal seed discovery (ms) | 0.15 |
+| Mean temporal bridge time (ms) | 0 |
+| Mean temporal hydration time (ms) | 0.01 |
+
+## Mode Summary
+
+| Mode | Mean Latency (ms) | P95 Latency (ms) | Mean Tokens | Mean Results | MRR@10 | NDCG@10 | Success@5 (%) | Recall@10 (%) | Rerank Applied (%) | Rerank Abstained (%) | Rerank Fallback (%) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Baseline | 0.55 | 0.93 | 42 | 2 | 1 | 1 | 100 | 100 | 0 | 0 | 0 |
+| Temporal / Structural | 0 | 0 | 42 | 2 | 1 | 1 | 100 | 100 | 0 | 0 | 0 |
+| Baseline + Rerank | 0.55 | 0.93 | 42 | 2 | 1 | 1 | 100 | 100 | 0 | 0 | 100 |
+| Temporal + Rerank | 0 | 0 | 42 | 2 | 1 | 1 | 100 | 100 | 0 | 0 | 100 |
 
 ## Query Rows
 
-| Query ID | Domain | Baseline ms | Temporal ms | Token Reduction % | Fallback | Consistent |
-| --- | --- | ---: | ---: | ---: | --- | --- |
-| q-001 | conversation | 0.54 | 538.36 | 0 | yes | no |
-| q-002 | research | 0.07 | 23.82 | 0 | yes | no |
+| Query ID | Domain | High Stakes | Temporal Fallback | Baseline Hit Rank | Temporal Hit Rank | Baseline+Rerank Hit Rank | Temporal+Rerank Hit Rank |
+| --- | --- | --- | --- | ---: | ---: | ---: | ---: |
+| q-001 | conversation | no | yes | 1 | 1 | 1 | 1 |
+| q-002 | research | no | yes | 1 | 1 | 1 | 1 |

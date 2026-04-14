@@ -1,0 +1,21 @@
+# Copy to /etc/systemd/system/am-server.service after replacing the placeholder
+# paths and service user with values that match your VM.
+
+[Unit]
+Description=Agentic Memory am-server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agentic-memory
+Group=agentic-memory
+WorkingDirectory=/srv/agentic-memory
+EnvironmentFile=/etc/agentic-memory/am-server.env
+ExecStart=/srv/agentic-memory/.venv-agentic-memory/bin/python -m am_server.server
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

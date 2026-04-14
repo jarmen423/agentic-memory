@@ -1,0 +1,13 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "agentic-memory-public-edge",
+  "main": "src/index.js",
+  "compatibility_date": "2026-04-13",
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "BACKEND_ORIGIN": "https://backend.agentmemorylabs.com",
+    "PUBLIC_BASE_URL": "https://mcp.agentmemorylabs.com"
+  }
+}

@@ -85,6 +85,11 @@ from agentic_memory.temporal.seeds import (
 from agentic_memory.web.pipeline import ResearchIngestionPipeline
 from agentic_memory.ingestion.graph import KnowledgeGraphBuilder
 from agentic_memory.server.code_search import SAFE_RETRIEVAL_POLICY, search_code
+from agentic_memory.server.reranking import (
+    build_yaml_card,
+    candidate_limit_for_domain,
+    rerank_documents,
+)
 
 logger = logging.getLogger(__name__)
 ToolAnnotationResolver = Callable[[str], ToolAnnotations | None]
@@ -391,6 +396,101 @@ def _hydrate_temporal_conversation_results(
     return hydrated
 
 
+def _serialize_conversation_card(row: dict[str, Any]) -> str:
+    """Serialize one conversation turn candidate for reranking."""
+
+    return build_yaml_card(
+        [
+            ("domain", "conversation"),
+            ("candidate_kind", "conversation_turn"),
+            ("project_id", row.get("project_id")),
+            ("session_id", row.get("session_id")),
+            ("turn_index", row.get("turn_index")),
+            ("role", row.get("role")),
+            ("source_agent", row.get("source_agent")),
+            ("timestamp", row.get("timestamp")),
+            ("entities", row.get("entities") or []),
+            ("content", row.get("content") or ""),
+        ]
+    )
+
+
+def _apply_conversation_rerank(
+    *,
+    query: str,
+    rows: list[dict[str, Any]],
+    limit: int,
+    temporal_applied: bool,
+) -> tuple[list[dict[str, Any]], Any]:
+    """Apply learned reranking to conversation turn rows."""
+
+    if not rows:
+        return [], rerank_documents(query, [])
+
+    serialized = [_serialize_conversation_card(row) for row in rows]
+    response = rerank_documents(query, serialized, high_stakes=False)
+    if not response.applied or response.abstained or not response.scores:
+        return rows[:limit], response
+
+    rerank_scores = {score.index: score.relevance_score for score in response.scores}
+    reranked_rows: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        if index not in rerank_scores:
+            continue
+        enriched = dict(row)
+        if temporal_applied:
+            enriched.setdefault("temporal_score", float(row.get("score", 0.0) or 0.0))
+            enriched.setdefault("baseline_score", None)
+        else:
+            enriched.setdefault("baseline_score", float(row.get("score", 0.0) or 0.0))
+            enriched.setdefault("temporal_score", None)
+        enriched["rerank_score"] = rerank_scores[index]
+        enriched["score"] = rerank_scores[index]
+        reranked_rows.append(enriched)
+
+    ordered = sorted(
+        reranked_rows,
+        key=lambda row: (
+            -float(row.get("rerank_score", 0.0) or 0.0),
+            -float(row.get("temporal_score", 0.0) or 0.0),
+            -float(row.get("baseline_score", 0.0) or 0.0),
+            str(row.get("session_id") or ""),
+            int(row.get("turn_index") or 0),
+        ),
+    )
+    return ordered[:limit], response
+
+
+def _annotate_conversation_rows(
+    rows: list[dict[str, Any]],
+    *,
+    mode: str,
+    temporal_applied: bool,
+    candidate_sources: list[str],
+    rerank_response: Any,
+    notes: list[str],
+) -> list[dict[str, Any]]:
+    """Attach retrieval provenance to conversation rows."""
+
+    annotated: list[dict[str, Any]] = []
+    for row in rows:
+        enriched = dict(row)
+        enriched["retrieval_provenance"] = {
+            "module": "conversation",
+            "mode": mode,
+            "temporal_applied": temporal_applied,
+            "candidate_sources": list(candidate_sources),
+            "reranker_applied": bool(rerank_response.applied),
+            "reranker_provider": getattr(rerank_response, "provider", None),
+            "reranker_model": getattr(rerank_response, "model", None),
+            "reranker_fallback_reason": getattr(rerank_response, "fallback_reason", None),
+            "reranker_abstained": bool(getattr(rerank_response, "abstained", False)),
+            "notes": list(notes),
+        }
+        annotated.append(enriched)
+    return annotated
+
+
 def search_conversation_turns_sync(
     pipeline: ConversationIngestionPipeline,
     *,
@@ -442,6 +542,7 @@ def search_conversation_turns_sync(
     embedder = pipeline._embedder  # type: ignore[attr-defined]
     extractor = pipeline._extractor  # type: ignore[attr-defined]
     bridge = pipeline.__dict__.get("_temporal_bridge") if hasattr(pipeline, "__dict__") else None
+    candidate_limit = candidate_limit_for_domain("conversation", default=limit)
 
     try:
         baseline_rows = _vector_conversation_search(
@@ -450,7 +551,7 @@ def search_conversation_turns_sync(
             query=query,
             project_id=project_id,
             role=role,
-            limit=limit,
+            limit=candidate_limit,
         )
     except Exception as exc:
         # Embedding or vector index failure: deterministic text search still works.
@@ -465,20 +566,47 @@ def search_conversation_turns_sync(
                 "error_type": type(exc).__name__,
             },
         )
-        return _filter_rows_as_of(
+        text_rows = _filter_rows_as_of(
             _text_conversation_search(
                 conn,
                 query=query,
                 project_id=project_id,
                 role=role,
-                limit=limit,
+                limit=candidate_limit,
             ),
             as_of,
+        )
+        reranked_rows, rerank_response = _apply_conversation_rerank(
+            query=query,
+            rows=text_rows,
+            limit=limit,
+            temporal_applied=False,
+        )
+        return _annotate_conversation_rows(
+            reranked_rows,
+            mode="text_fallback",
+            temporal_applied=False,
+            candidate_sources=["text"],
+            rerank_response=rerank_response,
+            notes=["Vector retrieval failed; deterministic text search was used."],
         )
 
     filtered_baseline = _filter_rows_as_of(baseline_rows, as_of)
     if project_id is None:
-        return filtered_baseline
+        reranked_rows, rerank_response = _apply_conversation_rerank(
+            query=query,
+            rows=filtered_baseline,
+            limit=limit,
+            temporal_applied=False,
+        )
+        return _annotate_conversation_rows(
+            reranked_rows,
+            mode="dense_only",
+            temporal_applied=False,
+            candidate_sources=["dense"],
+            rerank_response=rerank_response,
+            notes=["Project scope missing; temporal enrichment was skipped."],
+        )
     if bridge is None or not bridge.is_available():
         logger.info(
             "conversation_search_fallback",
@@ -491,7 +619,20 @@ def search_conversation_turns_sync(
                 "error_type": None,
             },
         )
-        return filtered_baseline
+        reranked_rows, rerank_response = _apply_conversation_rerank(
+            query=query,
+            rows=filtered_baseline,
+            limit=limit,
+            temporal_applied=False,
+        )
+        return _annotate_conversation_rows(
+            reranked_rows,
+            mode="dense_only",
+            temporal_applied=False,
+            candidate_sources=["dense"],
+            rerank_response=rerank_response,
+            notes=["Temporal bridge unavailable; dense baseline was used."],
+        )
 
     seeds = collect_seed_entities(filtered_baseline, limit=5)
     if not seeds:
@@ -513,7 +654,20 @@ def search_conversation_turns_sync(
                 "error_type": None,
             },
         )
-        return filtered_baseline
+        reranked_rows, rerank_response = _apply_conversation_rerank(
+            query=query,
+            rows=filtered_baseline,
+            limit=limit,
+            temporal_applied=False,
+        )
+        return _annotate_conversation_rows(
+            reranked_rows,
+            mode="dense_only",
+            temporal_applied=False,
+            candidate_sources=["dense"],
+            rerank_response=rerank_response,
+            notes=["No temporal seeds were available; dense baseline was used."],
+        )
 
     try:
         temporal_payload = retry_transient(
@@ -536,17 +690,43 @@ def search_conversation_turns_sync(
                 "error_type": type(exc).__name__,
             },
         )
-        return filtered_baseline
+        reranked_rows, rerank_response = _apply_conversation_rerank(
+            query=query,
+            rows=filtered_baseline,
+            limit=limit,
+            temporal_applied=False,
+        )
+        return _annotate_conversation_rows(
+            reranked_rows,
+            mode="dense_only",
+            temporal_applied=False,
+            candidate_sources=["dense"],
+            rerank_response=rerank_response,
+            notes=["Temporal retrieval failed; dense baseline was used."],
+        )
 
     temporal_hits = _hydrate_temporal_conversation_results(
         conn,
         temporal_payload.get("results") or [],
-        limit=limit,
+        limit=candidate_limit,
         role=role,
         as_of=as_of,
     )
     if temporal_hits:
-        return temporal_hits
+        reranked_rows, rerank_response = _apply_conversation_rerank(
+            query=query,
+            rows=temporal_hits,
+            limit=limit,
+            temporal_applied=True,
+        )
+        return _annotate_conversation_rows(
+            reranked_rows,
+            mode="temporal_graph",
+            temporal_applied=True,
+            candidate_sources=["temporal_graph"],
+            rerank_response=rerank_response,
+            notes=["Temporal graph enrichment supplied the candidate set."],
+        )
 
     logger.info(
         "conversation_search_fallback",
@@ -559,7 +739,20 @@ def search_conversation_turns_sync(
             "error_type": None,
         },
     )
-    return filtered_baseline
+    reranked_rows, rerank_response = _apply_conversation_rerank(
+        query=query,
+        rows=filtered_baseline,
+        limit=limit,
+        temporal_applied=False,
+    )
+    return _annotate_conversation_rows(
+        reranked_rows,
+        mode="dense_only",
+        temporal_applied=False,
+        candidate_sources=["dense"],
+        rerank_response=rerank_response,
+        notes=["Temporal graph returned no results; dense baseline was used."],
+    )
 
 
 @lru_cache(maxsize=1)

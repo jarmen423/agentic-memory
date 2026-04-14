@@ -32,6 +32,11 @@ from collections import defaultdict
 from typing import Any, Iterable
 
 from agentic_memory.ingestion.graph import KnowledgeGraphBuilder
+from agentic_memory.server.reranking import (
+    build_yaml_card,
+    candidate_limit_for_domain,
+    rerank_documents,
+)
 
 PPR_EDGE_WEIGHTS: dict[str, float] = {
     "IMPORTS": 1.0,
@@ -117,8 +122,10 @@ def search_code(
         use_ppr=use_ppr,
     )
     ppr_enabled = ppr_requested and resolved_repo_id is not None
-    # Widen the ANN pool when PPR may rerank: seeds need coverage beyond final k.
-    baseline_limit = max(limit * 3, limit) if ppr_enabled else limit
+    baseline_limit = limit
+    if ppr_enabled:
+        baseline_limit = max(limit * 3, baseline_limit)
+    baseline_limit = candidate_limit_for_domain("code", default=baseline_limit)
     baseline_rows = _run_baseline_search(
         graph,
         query=query,
@@ -132,6 +139,11 @@ def search_code(
         notes = ["CALLS edges are excluded from ranking in safe retrieval."]
         if ppr_requested and resolved_repo_id is None:
             notes.append("Graph reranking was requested but no repo scope was available.")
+        baseline_rows, rerank_response = _apply_code_rerank(
+            query=query,
+            rows=baseline_rows,
+            limit=limit,
+        )
         return _annotate_rows(
             baseline_rows[:limit],
             retrieval_policy=normalized_policy,
@@ -139,10 +151,16 @@ def search_code(
             graph_reranking_applied=False,
             graph_edge_types_used=[],
             notes=notes,
+            rerank_response=rerank_response,
         )
 
     seed_refs = _seed_refs_from_baseline(baseline_rows)
     if not seed_refs:
+        baseline_rows, rerank_response = _apply_code_rerank(
+            query=query,
+            rows=baseline_rows,
+            limit=limit,
+        )
         return _annotate_rows(
             baseline_rows[:limit],
             retrieval_policy=normalized_policy,
@@ -153,6 +171,7 @@ def search_code(
                 "Graph reranking was requested, but the semantic hits did not map to graph seeds.",
                 "CALLS edges remain excluded from ranking.",
             ],
+            rerank_response=rerank_response,
         )
 
     neighborhood = _load_code_neighborhood(
@@ -165,6 +184,11 @@ def search_code(
     adjacency = neighborhood["adjacency"]
     node_meta = neighborhood["node_meta"]
     if not seed_ids or not adjacency:
+        baseline_rows, rerank_response = _apply_code_rerank(
+            query=query,
+            rows=baseline_rows,
+            limit=limit,
+        )
         return _annotate_rows(
             baseline_rows[:limit],
             retrieval_policy=normalized_policy,
@@ -175,6 +199,7 @@ def search_code(
                 "Graph reranking was requested, but no structural neighborhood was available.",
                 "CALLS edges remain excluded from ranking.",
             ],
+            rerank_response=rerank_response,
         )
 
     ppr_scores = _run_personalized_page_rank(
@@ -192,6 +217,11 @@ def search_code(
         limit=limit,
     )
     if reranked_rows:
+        reranked_rows, rerank_response = _apply_code_rerank(
+            query=query,
+            rows=reranked_rows,
+            limit=limit,
+        )
         return _annotate_rows(
             reranked_rows,
             retrieval_policy=normalized_policy,
@@ -202,7 +232,13 @@ def search_code(
                 "Graph reranking used only high-confidence structural edges.",
                 "CALLS edges are excluded from ranking until analyzer-backed coverage improves.",
             ],
+            rerank_response=rerank_response,
         )
+    baseline_rows, rerank_response = _apply_code_rerank(
+        query=query,
+        rows=baseline_rows,
+        limit=limit,
+    )
     return _annotate_rows(
         baseline_rows[:limit],
         retrieval_policy=normalized_policy,
@@ -213,6 +249,7 @@ def search_code(
             "Graph reranking produced no ranked rows, so semantic fallback was used.",
             "CALLS edges remain excluded from ranking.",
         ],
+        rerank_response=rerank_response,
     )
 
 
@@ -239,6 +276,7 @@ def _annotate_rows(
     graph_reranking_applied: bool,
     graph_edge_types_used: list[str],
     notes: list[str],
+    rerank_response: Any,
 ) -> list[dict[str, Any]]:
     """Attach retrieval provenance to every row for agent-facing inspection."""
     annotated_rows: list[dict[str, Any]] = []
@@ -249,13 +287,87 @@ def _annotate_rows(
         "graph_edge_types_used": list(graph_edge_types_used),
         "call_edges_used": False,
         "call_edge_policy": "excluded_from_ranking",
+        "reranker_applied": bool(getattr(rerank_response, "applied", False)),
+        "reranker_provider": getattr(rerank_response, "provider", None),
+        "reranker_model": getattr(rerank_response, "model", None),
+        "reranker_fallback_reason": getattr(rerank_response, "fallback_reason", None),
+        "reranker_abstained": bool(getattr(rerank_response, "abstained", False)),
         "notes": list(notes),
     }
     for row in rows:
         enriched_row = dict(row)
-        enriched_row["retrieval_provenance"] = dict(provenance)
+        row_provenance = dict(provenance)
+        candidate_sources = list(enriched_row.pop("_candidate_sources", []) or [])
+        if candidate_sources:
+            row_provenance["candidate_sources"] = candidate_sources
+        if enriched_row.get("_dense_score") is not None:
+            row_provenance["dense_score"] = float(enriched_row.get("_dense_score", 0.0) or 0.0)
+        if enriched_row.get("_lexical_score") is not None:
+            row_provenance["lexical_score"] = float(enriched_row.get("_lexical_score", 0.0) or 0.0)
+        if enriched_row.get("rerank_score") is not None:
+            row_provenance["rerank_score"] = float(enriched_row.get("rerank_score", 0.0) or 0.0)
+        for hidden_key in ("_dense_rank", "_dense_rrf", "_lexical_rank", "_lexical_rrf", "_dense_score", "_lexical_score"):
+            enriched_row.pop(hidden_key, None)
+        enriched_row["retrieval_provenance"] = row_provenance
         annotated_rows.append(enriched_row)
     return annotated_rows
+
+
+def _serialize_code_card(row: dict[str, Any]) -> str:
+    """Serialize one code candidate into a compact YAML-like card."""
+
+    labels = [str(label) for label in (row.get("labels") or [])]
+    candidate_kind = labels[0] if labels else "Code"
+    return build_yaml_card(
+        [
+            ("domain", "code"),
+            ("candidate_kind", candidate_kind),
+            ("name", row.get("name")),
+            ("signature", row.get("sig")),
+            ("path", row.get("path")),
+            ("labels", labels),
+            ("snippet", str(row.get("text") or "")[:800]),
+        ]
+    )
+
+
+def _apply_code_rerank(
+    *,
+    query: str,
+    rows: list[dict[str, Any]],
+    limit: int,
+) -> tuple[list[dict[str, Any]], Any]:
+    """Apply learned reranking to code rows while preserving baseline fields."""
+
+    if not rows:
+        return [], rerank_documents(query, [])
+
+    serialized = [_serialize_code_card(row) for row in rows]
+    response = rerank_documents(query, serialized, high_stakes=False)
+    if not response.applied or response.abstained or not response.scores:
+        return rows[:limit], response
+
+    rerank_scores = {score.index: score.relevance_score for score in response.scores}
+    reranked_rows: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        if index not in rerank_scores:
+            continue
+        enriched = dict(row)
+        enriched.setdefault("baseline_score", float(row.get("score", 0.0) or 0.0))
+        enriched["rerank_score"] = rerank_scores[index]
+        enriched["score"] = rerank_scores[index]
+        reranked_rows.append(enriched)
+
+    ordered = sorted(
+        reranked_rows,
+        key=lambda row: (
+            -float(row.get("rerank_score", 0.0) or 0.0),
+            -float(row.get("ppr_score", 0.0) or 0.0),
+            -float(row.get("baseline_score", row.get("score", 0.0)) or 0.0),
+            str(row.get("sig") or row.get("path") or ""),
+        ),
+    )
+    return ordered[:limit], response
 
 
 def _seed_refs_from_baseline(rows: Iterable[dict[str, Any]]) -> dict[str, list[str]]:

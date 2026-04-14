@@ -38,7 +38,10 @@ class UnifiedMemoryHit:
         baseline_score: Vector or primary retrieval score when applicable.
         temporal_score: Temporal graph contribution when temporal rerank ran.
         temporal_applied: Whether temporal retrieval influenced this hit.
-        metadata: Opaque per-module details (paths, labels, provenance dicts).
+        rerank_score: Learned rerank score when a second-stage reranker ran.
+        retrieval_provenance: Structured explanation of filters, graph/temporal
+            enrichment, reranker usage, and fallback behavior.
+        metadata: Opaque per-module details (paths, labels, extra source data).
     """
 
     module: str
@@ -50,6 +53,8 @@ class UnifiedMemoryHit:
     baseline_score: float | None = None
     temporal_score: float | None = None
     temporal_applied: bool = False
+    rerank_score: float | None = None
+    retrieval_provenance: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:

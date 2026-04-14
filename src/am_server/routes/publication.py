@@ -26,14 +26,20 @@ from __future__ import annotations
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-router = APIRouter(tags=["publication"])
+from am_server.publication_config import (
+    MCP_CLAUDE_PATH,
+    MCP_CODEX_PATH,
+    MCP_OPENAI_PATH,
+    PUBLICATION_DPA_PATH,
+    PUBLICATION_PRIVACY_PATH,
+    PUBLICATION_ROOT,
+    PUBLICATION_SUPPORT_PATH,
+    PUBLICATION_TERMS_PATH,
+    PUBLICATION_WEBSITE_PATH,
+    absolute_public_url,
+)
 
-PUBLICATION_ROOT = "/publication"
-PUBLICATION_WEBSITE_PATH = f"{PUBLICATION_ROOT}/agentic-memory"
-PUBLICATION_PRIVACY_PATH = f"{PUBLICATION_ROOT}/privacy"
-PUBLICATION_TERMS_PATH = f"{PUBLICATION_ROOT}/terms"
-PUBLICATION_SUPPORT_PATH = f"{PUBLICATION_ROOT}/support"
-PUBLICATION_DPA_PATH = f"{PUBLICATION_ROOT}/dpa"
+router = APIRouter(tags=["publication"])
 
 REPOSITORY_URL = "https://github.com/jarmen423/agentic-memory"
 ISSUES_URL = f"{REPOSITORY_URL}/issues"
@@ -214,6 +220,14 @@ def publication_website() -> HTMLResponse:
         and high-level public tool policy bullets.
     """
 
+    openai_url = absolute_public_url(MCP_OPENAI_PATH)
+    claude_url = absolute_public_url(MCP_CLAUDE_PATH)
+    codex_url = absolute_public_url(MCP_CODEX_PATH)
+    privacy_url = absolute_public_url(PUBLICATION_PRIVACY_PATH)
+    terms_url = absolute_public_url(PUBLICATION_TERMS_PATH)
+    support_url = absolute_public_url(PUBLICATION_SUPPORT_PATH)
+    dpa_url = absolute_public_url(PUBLICATION_DPA_PATH)
+
     body = f"""
 <h2>What Agentic Memory does</h2>
 <p>
@@ -226,15 +240,15 @@ def publication_website() -> HTMLResponse:
 <div class="grid">
   <section class="card">
     <h3>OpenAI</h3>
-    <p>Canonical reviewer endpoint: <code>/mcp-openai</code></p>
+    <p>Canonical reviewer endpoint: <code>{openai_url}</code></p>
   </section>
   <section class="card">
     <h3>Anthropic</h3>
-    <p>Canonical reviewer endpoint: <code>/mcp-claude</code></p>
+    <p>Canonical reviewer endpoint: <code>{claude_url}</code></p>
   </section>
   <section class="card">
     <h3>Codex Preflight</h3>
-    <p>Local plugin bundle targets the hosted MCP surface at <code>/mcp-codex</code>.</p>
+    <p>Local plugin bundle targets the hosted MCP surface at <code>{codex_url}</code>.</p>
   </section>
 </div>
 <h2>Public contract summary</h2>
@@ -247,10 +261,10 @@ def publication_website() -> HTMLResponse:
 </ul>
 <h2>Operational links</h2>
 <ul>
-  <li><a href="{PUBLICATION_PRIVACY_PATH}">Privacy Policy</a></li>
-  <li><a href="{PUBLICATION_TERMS_PATH}">Terms of Service</a></li>
-  <li><a href="{PUBLICATION_SUPPORT_PATH}">Support</a></li>
-  <li><a href="{PUBLICATION_DPA_PATH}">Data Processing Addendum</a></li>
+  <li><a href="{privacy_url}">Privacy Policy</a></li>
+  <li><a href="{terms_url}">Terms of Service</a></li>
+  <li><a href="{support_url}">Support</a></li>
+  <li><a href="{dpa_url}">Data Processing Addendum</a></li>
   <li><a href="{ISSUES_URL}">Issue Tracker</a></li>
 </ul>
 <p class="muted">

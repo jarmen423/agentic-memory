@@ -55,7 +55,6 @@ from mcp.server.fastmcp import FastMCP
 import neo4j
 from agentic_memory.core.extraction_llm import resolve_extraction_llm_config
 from agentic_memory.core.request_context import get_request_id
-from agentic_memory.core.retry import retry_transient
 from agentic_memory.core.runtime_embedding import resolve_embedding_runtime
 from agentic_memory.ingestion.graph import KnowledgeGraphBuilder
 from agentic_memory.server.code_search import (
@@ -63,12 +62,8 @@ from agentic_memory.server.code_search import (
     normalize_retrieval_policy,
     search_code,
 )
+from agentic_memory.server.research_search import search_research
 from agentic_memory.server.unified_search import search_all_memory_sync
-from agentic_memory.temporal.seeds import (
-    collect_seed_entities,
-    extract_query_seed_entities,
-    parse_as_of_to_micros,
-)
 from agentic_memory.telemetry import TelemetryStore, resolve_telemetry_db_path
 from agentic_memory.trace.service import TraceExecutionService
 
@@ -399,6 +394,16 @@ def _format_code_results(results: List[Dict[str, Any]]) -> str:
             f"`{bool(provenance.get('graph_reranking_applied', False))}`\n"
         )
         output += (
+            f"- Learned reranking applied: "
+            f"`{bool(provenance.get('reranker_applied', False))}`\n"
+        )
+        if provenance.get("reranker_provider"):
+            output += f"- Reranker provider: `{provenance.get('reranker_provider')}`\n"
+        if provenance.get("reranker_model"):
+            output += f"- Reranker model: `{provenance.get('reranker_model')}`\n"
+        if provenance.get("reranker_fallback_reason"):
+            output += f"- Reranker fallback: `{provenance.get('reranker_fallback_reason')}`\n"
+        output += (
             f"- Structural edges used: "
             f"{', '.join(f'`{edge}`' for edge in graph_edges) if graph_edges else '`none`'}\n"
         )
@@ -423,10 +428,24 @@ def _format_code_results(results: List[Dict[str, Any]]) -> str:
             output += f"   Path: `{path}`\n"
         if labels:
             output += f"   Labels: {', '.join(f'`{label}`' for label in labels)}\n"
-        if r.get("baseline_score") is not None and r.get("ppr_score") is not None:
+        if (
+            r.get("baseline_score") is not None
+            and r.get("ppr_score") is not None
+            and r.get("rerank_score") is not None
+        ):
+            output += (
+                f"   Rank components: baseline={float(r['baseline_score']):.2f}, "
+                f"graph={float(r['ppr_score']):.2f}, rerank={float(r['rerank_score']):.2f}\n"
+            )
+        elif r.get("baseline_score") is not None and r.get("ppr_score") is not None:
             output += (
                 f"   Rank components: baseline={float(r['baseline_score']):.2f}, "
                 f"graph={float(r['ppr_score']):.2f}\n"
+            )
+        elif r.get("baseline_score") is not None and r.get("rerank_score") is not None:
+            output += (
+                f"   Rank components: baseline={float(r['baseline_score']):.2f}, "
+                f"rerank={float(r['rerank_score']):.2f}\n"
             )
         output += f"   ```\n{text}...\n   ```\n\n"
 
@@ -1164,23 +1183,54 @@ def memory_ingest_research(
         return f"Error: Research ingestion failed: {str(e)}"
 
 
-def _format_baseline_research_results(results: list[dict[str, Any]]) -> str:
-    """Format vector-index research rows when temporal retrieval is skipped or empty."""
+def _format_research_results(results: list[dict[str, Any]]) -> str:
+    """Format research rows from dense or temporal retrieval."""
     output = f"Found {len(results)} relevant research result(s):\n\n"
+    provenance = dict((results[0].get("retrieval_provenance") or {})) if results else {}
+    if provenance:
+        output += "Retrieval provenance:\n"
+        output += f"- Mode: `{provenance.get('mode', 'unknown')}`\n"
+        output += f"- Temporal applied: `{bool(provenance.get('temporal_applied', False))}`\n"
+        output += (
+            f"- Learned reranking applied: "
+            f"`{bool(provenance.get('reranker_applied', False))}`\n"
+        )
+        if provenance.get("reranker_provider"):
+            output += f"- Reranker provider: `{provenance.get('reranker_provider')}`\n"
+        if provenance.get("reranker_model"):
+            output += f"- Reranker model: `{provenance.get('reranker_model')}`\n"
+        if provenance.get("reranker_fallback_reason"):
+            output += f"- Reranker fallback: `{provenance.get('reranker_fallback_reason')}`\n"
+        for note in provenance.get("notes") or []:
+            output += f"- Note: {note}\n"
+        output += "\n"
     for i, row in enumerate(results, 1):
         text = (row.get("text") or "")[:300]
-        score = row.get("score", 0)
-        source_agent = row.get("source_agent", "unknown")
-        labels = row.get("node_labels", [])
-        node_type = "Finding" if "Finding" in labels else "Chunk" if "Chunk" in labels else "Research"
-        question = row.get("research_question") or ""
-        confidence = row.get("confidence") or ""
-
-        output += f"{i}. [{node_type}] [Score: {score:.2f}] (by {source_agent})\n"
-        if question:
-            output += f"   Question: {question}\n"
-        if confidence:
-            output += f"   Confidence: {confidence}\n"
+        score = float(row.get("score", 0.0) or 0.0)
+        if row.get("temporal_applied"):
+            subject = (row.get("subject") or {}).get("name", "unknown")
+            predicate = row.get("predicate", "RELATED_TO")
+            obj = (row.get("object") or {}).get("name", "unknown")
+            source_kind = row.get("source_kind", "research")
+            output += (
+                f"{i}. [Temporal] [Score: {score:.2f}] "
+                f"[{source_kind}] {subject} -[{predicate}]-> {obj}\n"
+            )
+        else:
+            source_agent = row.get("source_agent", "unknown")
+            labels = row.get("node_labels", [])
+            node_type = (
+                "Finding" if "Finding" in labels else "Chunk" if "Chunk" in labels else "Research"
+            )
+            question = row.get("research_question") or ""
+            confidence = row.get("confidence") or ""
+            output += f"{i}. [{node_type}] [Score: {score:.2f}] (by {source_agent})\n"
+            if question:
+                output += f"   Question: {question}\n"
+            if confidence:
+                output += f"   Confidence: {confidence}\n"
+        if row.get("rerank_score") is not None:
+            output += f"   Rerank: {float(row['rerank_score']):.2f}\n"
         output += f"   ```\n{text}...\n   ```\n\n"
 
     return output.strip()
@@ -1211,11 +1261,14 @@ def _format_unified_search_results(payload: dict[str, Any]) -> str:
         score = float(hit.get("score", 0.0) or 0.0)
         source_kind = hit.get("source_kind", "unknown")
         temporal_tag = " temporal" if hit.get("temporal_applied") else ""
+        rerank_tag = " reranked" if hit.get("rerank_score") is not None else ""
         excerpt = str(hit.get("excerpt") or "")[:300]
         output += (
-            f"{index}. [{module}{temporal_tag}] {title} "
+            f"{index}. [{module}{temporal_tag}{rerank_tag}] {title} "
             f"[{source_kind}] [Score: {score:.2f}]\n"
         )
+        if hit.get("rerank_score") is not None:
+            output += f"   Rerank: {float(hit['rerank_score']):.2f}\n"
         if excerpt:
             output += f"   ```\n{excerpt}...\n   ```\n\n"
         else:
@@ -1227,53 +1280,6 @@ def _format_unified_search_results(payload: dict[str, Any]) -> str:
             output += f"- {error['module']}: {error['message']}\n"
 
     return output.strip()
-
-
-def _format_temporal_research_results(results: list[dict[str, Any]]) -> str:
-    """Format temporal graph rows (subject/predicate/object + evidence) for MCP text."""
-    output = f"Found {len(results)} relevant research result(s):\n\n"
-    for i, row in enumerate(results, 1):
-        subject = (row.get("subject") or {}).get("name", "unknown")
-        predicate = row.get("predicate", "RELATED_TO")
-        obj = (row.get("object") or {}).get("name", "unknown")
-        confidence = float(row.get("confidence", 0.0) or 0.0)
-        relevance = float(row.get("relevance", 0.0) or 0.0)
-        evidence = (row.get("evidence") or [{}])[0]
-        source_kind = evidence.get("sourceKind", "unknown")
-        snippet = (evidence.get("rawExcerpt") or "")[:300]
-
-        output += (
-            f"{i}. [Temporal] [Score: {(confidence * relevance):.2f}] "
-            f"[{source_kind}] {subject} -[{predicate}]-> {obj}\n"
-        )
-        if snippet:
-            output += f"   ```\n{snippet}...\n   ```\n\n"
-        else:
-            output += "\n"
-
-    return output.strip()
-
-
-def _filter_rows_as_of(rows: list[dict[str, Any]], as_of: str | None) -> list[dict[str, Any]]:
-    """Filter research rows by string compare on ``ingested_at`` (inclusive cutoff)."""
-    if as_of is None:
-        return rows
-    return [row for row in rows if (row.get("ingested_at") or "") <= as_of]
-
-
-def _dominant_project_id(rows: list[dict[str, Any]]) -> str | None:
-    """Pick the ``project_id`` with the highest summed baseline score (temporal seeding)."""
-    project_scores: dict[str, float] = {}
-    for row in rows:
-        project_id = row.get("project_id")
-        if not project_id:
-            continue
-        project_scores[project_id] = project_scores.get(project_id, 0.0) + float(
-            row.get("score", 1.0) or 1.0
-        )
-    if not project_scores:
-        return None
-    return max(project_scores.items(), key=lambda item: item[1])[0]
 
 
 @mcp.tool()
@@ -1304,98 +1310,15 @@ def search_web_memory(query: str, limit: int = 5, as_of: str | None = None) -> s
     safe_limit = max(1, int(limit))
 
     try:
-        embedding = pipeline._embedder.embed(query)
-        with pipeline._conn.session() as session:
-            baseline_results = session.run(
-                """
-                CALL db.index.vector.queryNodes('research_embeddings', $limit, $embedding)
-                YIELD node, score
-                RETURN
-                    node.text AS text,
-                    node.source_agent AS source_agent,
-                    node.research_question AS research_question,
-                    node.confidence AS confidence,
-                    node.source_key AS source_key,
-                    node.content_hash AS content_hash,
-                    node.project_id AS project_id,
-                    node.ingested_at AS ingested_at,
-                    node.entities AS entities,
-                    node.entity_types AS entity_types,
-                    labels(node) AS node_labels,
-                    score
-                ORDER BY score DESC
-                """,
-                limit=safe_limit,
-                embedding=embedding,
-            ).data()
-        baseline_results = _filter_rows_as_of(baseline_results, as_of)
-
-        if not baseline_results:
+        results = search_research(
+            pipeline,
+            query=query,
+            limit=safe_limit,
+            as_of=as_of,
+        )
+        if not results:
             return "No relevant research found."
-
-        bridge = pipeline.__dict__.get("_temporal_bridge") if hasattr(pipeline, "__dict__") else None
-        project_id = _dominant_project_id(baseline_results)
-        if bridge is not None and bridge.is_available() and project_id is not None:
-            seeds = collect_seed_entities(baseline_results, limit=5)
-            if not seeds:
-                try:
-                    seeds = extract_query_seed_entities(query, pipeline._extractor)  # type: ignore[attr-defined]
-                except Exception as exc:
-                    logger.warning("search_web_memory query seed extraction failed: %s", exc)
-                    seeds = []
-
-            if seeds:
-                try:
-                    temporal_payload = retry_transient(
-                        lambda: bridge.retrieve(
-                            project_id=project_id,
-                            seed_entities=seeds,
-                            as_of_us=parse_as_of_to_micros(as_of),
-                            max_edges=max(safe_limit * 2, safe_limit),
-                        )
-                    )
-                    temporal_results = temporal_payload.get("results") or []
-                    if temporal_results:
-                        return validate_tool_output(
-                            _format_temporal_research_results(temporal_results)
-                        )
-                    logger.info(
-                        "web_search_fallback",
-                        extra={
-                            "event": "temporal_fallback",
-                            "request_id": get_request_id(),
-                                "memory_module": "web",
-                            "provider": getattr(pipeline._embedder, "provider", None),
-                            "fallback": "empty_temporal_result",
-                            "error_type": None,
-                        },
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "web_search_fallback",
-                        extra={
-                            "event": "temporal_fallback",
-                            "request_id": get_request_id(),
-                                "memory_module": "web",
-                            "provider": getattr(pipeline._embedder, "provider", None),
-                            "fallback": "temporal_retrieve_failed",
-                            "error_type": type(exc).__name__,
-                        },
-                    )
-            else:
-                logger.info(
-                    "web_search_fallback",
-                    extra={
-                        "event": "temporal_fallback",
-                        "request_id": get_request_id(),
-                            "memory_module": "web",
-                        "provider": getattr(pipeline._embedder, "provider", None),
-                        "fallback": "temporal_bridge_unavailable",
-                        "error_type": None,
-                    },
-                )
-
-        return validate_tool_output(_format_baseline_research_results(baseline_results))
+        return validate_tool_output(_format_research_results(results))
     except Exception as e:
         logger.error("Research search failed: %s", e)
         return f"Error: Research search failed: {str(e)}"

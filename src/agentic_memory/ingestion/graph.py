@@ -2466,6 +2466,16 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         Returns:
             List of dicts with name, signature, score, and text
         """
+        def _env_int(name: str, default: int) -> int:
+            raw = os.getenv(name)
+            if raw is None:
+                return default
+            try:
+                return max(1, int(raw))
+            except ValueError:
+                logger.warning("Invalid integer for %s=%r; using default %s", name, raw, default)
+                return default
+
         def _is_valid_vector(vec: List[float]) -> bool:
             if not vec:
                 return False
@@ -2476,7 +2486,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                 norm_sq += float(v) * float(v)
             return math.isfinite(norm_sq) and norm_sq > 0.0
 
-        def _fallback_fulltext_search() -> List[Dict]:
+        def _lexical_candidate_search(search_limit: int) -> List[Dict]:
             cypher = """
             CALL db.index.fulltext.queryNodes('entity_text_search', $search_query)
             YIELD node, score
@@ -2497,23 +2507,19 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                 res = session.run(
                     cypher,
                     search_query=query,
-                    limit=limit,
+                    limit=search_limit,
                     repo_id=resolved_repo_id,
                 )
-                return [dict(r) for r in res]
+                rows = []
+                for rank, record in enumerate(res, start=1):
+                    row = dict(record)
+                    row["_lexical_rank"] = rank
+                    row["_lexical_score"] = float(row.get("score", 0.0) or 0.0)
+                    row["_candidate_sources"] = ["lexical"]
+                    rows.append(row)
+                return rows
 
-        def _execute_search():
-            if resolved_repo_id is None:
-                raise ValueError("repo_id is required for code semantic_search")
-
-            vector = self.get_query_embedding(query)
-            if not _is_valid_vector(vector):
-                logger.warning(
-                    "Semantic query vector invalid (likely missing code embedding API key or zero-vector); "
-                    "falling back to full-text search."
-                )
-                return _fallback_fulltext_search()
-
+        def _vector_candidate_search(vector: List[float], search_limit: int) -> List[Dict]:
             cypher = """
             CALL db.index.vector.queryNodes('code_embeddings', $candidate_limit, $vec)
             YIELD node, score
@@ -2534,12 +2540,101 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             with self.driver.session() as session:
                 res = session.run(
                     cypher,
-                    limit=limit,
-                    candidate_limit=max(limit * 8, limit),
+                    limit=search_limit,
+                    candidate_limit=search_limit,
                     vec=vector,
                     repo_id=resolved_repo_id,
                 )
-                return [dict(r) for r in res]
+                rows = []
+                for rank, record in enumerate(res, start=1):
+                    row = dict(record)
+                    row["_dense_rank"] = rank
+                    row["_dense_score"] = float(row.get("score", 0.0) or 0.0)
+                    row["_candidate_sources"] = ["dense"]
+                    rows.append(row)
+                return rows
+
+        def _merge_candidate_rows(
+            dense_rows: List[Dict],
+            lexical_rows: List[Dict],
+        ) -> List[Dict]:
+            rrf_constant = 60.0
+            merged: dict[str, Dict] = {}
+
+            def _row_key(row: Dict) -> str:
+                return str(row.get("sig") or row.get("path") or row.get("name") or "").strip()
+
+            def _rrf(rank: int | None) -> float:
+                if rank is None:
+                    return 0.0
+                return 1.0 / (rrf_constant + float(rank))
+
+            for row in dense_rows:
+                key = _row_key(row)
+                if not key:
+                    continue
+                merged[key] = dict(row)
+
+            for row in lexical_rows:
+                key = _row_key(row)
+                if not key:
+                    continue
+                existing = merged.get(key)
+                if existing is None:
+                    merged[key] = dict(row)
+                    continue
+                sources = list(existing.get("_candidate_sources") or [])
+                if "lexical" not in sources:
+                    sources.append("lexical")
+                existing["_candidate_sources"] = sources
+                existing["_lexical_rank"] = row.get("_lexical_rank")
+                existing["_lexical_score"] = row.get("_lexical_score")
+                if len(str(existing.get("text") or "")) < len(str(row.get("text") or "")):
+                    existing["text"] = row.get("text")
+
+            ranked_rows: list[Dict] = []
+            for row in merged.values():
+                dense_rank = row.get("_dense_rank")
+                lexical_rank = row.get("_lexical_rank")
+                dense_rrf = _rrf(int(dense_rank)) if dense_rank is not None else 0.0
+                lexical_rrf = _rrf(int(lexical_rank)) if lexical_rank is not None else 0.0
+                row["_dense_rrf"] = dense_rrf
+                row["_lexical_rrf"] = lexical_rrf
+                row["score"] = dense_rrf + lexical_rrf
+                ranked_rows.append(row)
+
+            return sorted(
+                ranked_rows,
+                key=lambda row: (
+                    -float(row.get("score", 0.0) or 0.0),
+                    -float(row.get("_dense_score", 0.0) or 0.0),
+                    -float(row.get("_lexical_score", 0.0) or 0.0),
+                    str(row.get("sig") or row.get("path") or ""),
+                ),
+            )
+
+        def _execute_search():
+            if resolved_repo_id is None:
+                raise ValueError("repo_id is required for code semantic_search")
+
+            dense_limit = _env_int("AM_CODE_DENSE_TOP_K", max(limit * 8, limit))
+            lexical_limit = _env_int("AM_CODE_LEXICAL_TOP_K", max(limit * 4, limit))
+            vector = self.get_query_embedding(query)
+
+            dense_rows: List[Dict] = []
+            if _is_valid_vector(vector):
+                dense_rows = _vector_candidate_search(vector, dense_limit)
+            else:
+                logger.warning(
+                    "Semantic query vector invalid (likely missing code embedding API key or zero-vector); "
+                    "dense retrieval skipped, lexical retrieval only."
+                )
+
+            lexical_rows = _lexical_candidate_search(lexical_limit)
+            merged_rows = _merge_candidate_rows(dense_rows, lexical_rows)
+            if not merged_rows and lexical_rows:
+                return lexical_rows[:limit]
+            return merged_rows[:limit]
 
         resolved_repo_id = repo_id or self.repo_id
         return self.circuit_breaker.call(_execute_search)

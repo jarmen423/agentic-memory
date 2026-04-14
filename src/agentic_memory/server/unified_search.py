@@ -32,13 +32,9 @@ from typing import Any, Iterable
 from agentic_memory.chat.pipeline import ConversationIngestionPipeline
 from agentic_memory.ingestion.graph import KnowledgeGraphBuilder
 from agentic_memory.server.code_search import SAFE_RETRIEVAL_POLICY, search_code
+from agentic_memory.server.research_search import search_research
 from agentic_memory.server.result_types import UnifiedMemoryHit, UnifiedSearchResponse
 from agentic_memory.server.tools import search_conversation_turns_sync
-from agentic_memory.temporal.seeds import (
-    collect_seed_entities,
-    extract_query_seed_entities,
-    parse_as_of_to_micros,
-)
 from agentic_memory.web.pipeline import ResearchIngestionPipeline
 
 logger = logging.getLogger(__name__)
@@ -62,28 +58,6 @@ def _normalize_modules(modules: Iterable[str] | None) -> list[str]:
         if lowered in VALID_MODULES and lowered not in normalized:
             normalized.append(lowered)
     return normalized or ["code", "web", "conversation"]
-
-
-def _filter_rows_as_of(rows: list[dict[str, Any]], as_of: str | None) -> list[dict[str, Any]]:
-    """Apply current string-based ingested_at cutoff when present."""
-    if as_of is None:
-        return rows
-    return [row for row in rows if (row.get("ingested_at") or "") <= as_of]
-
-
-def _dominant_project_id(rows: list[dict[str, Any]]) -> str | None:
-    """Pick the project_id with the strongest cumulative baseline score."""
-    project_scores: dict[str, float] = {}
-    for row in rows:
-        project_id = row.get("project_id")
-        if not project_id:
-            continue
-        project_scores[str(project_id)] = project_scores.get(str(project_id), 0.0) + float(
-            row.get("score", 1.0) or 1.0
-        )
-    if not project_scores:
-        return None
-    return max(project_scores.items(), key=lambda item: item[1])[0]
 
 
 def _normalize_code_results(
@@ -115,6 +89,12 @@ def _normalize_code_results(
                 score=score,
                 baseline_score=score,
                 temporal_applied=False,
+                rerank_score=(
+                    float(row.get("rerank_score", 0.0))
+                    if row.get("rerank_score") is not None
+                    else None
+                ),
+                retrieval_provenance=dict(row.get("retrieval_provenance") or {}),
                 metadata={
                     "signature": row.get("sig"),
                     "name": row.get("name"),
@@ -136,27 +116,35 @@ def _normalize_research_temporal_results(
     for row in rows:
         confidence = float(row.get("confidence", 0.0) or 0.0)
         relevance = float(row.get("relevance", 0.0) or 0.0)
-        evidence = (row.get("evidence") or [{}])[0]
         subject = (row.get("subject") or {}).get("name", "unknown")
         predicate = row.get("predicate", "RELATED_TO")
         obj = (row.get("object") or {}).get("name", "unknown")
+        source_kind = str(row.get("source_kind") or "research")
+        source_id = str(row.get("source_id") or f"{subject}:{predicate}:{obj}")
         hits.append(
             UnifiedMemoryHit(
                 module="web",
-                source_kind=str(evidence.get("sourceKind") or "research"),
-                source_id=str(evidence.get("sourceId") or f"{subject}:{predicate}:{obj}"),
+                source_kind=source_kind,
+                source_id=source_id,
                 title=f"{subject} -[{predicate}]-> {obj}",
-                excerpt=_clip_excerpt(str(evidence.get("rawExcerpt") or "")),
+                excerpt=_clip_excerpt(str(row.get("text") or "")),
                 score=confidence * relevance,
                 temporal_score=confidence * relevance,
                 temporal_applied=True,
+                rerank_score=(
+                    float(row.get("rerank_score", 0.0))
+                    if row.get("rerank_score") is not None
+                    else None
+                ),
+                retrieval_provenance=dict(row.get("retrieval_provenance") or {}),
                 metadata={
                     "subject": row.get("subject"),
                     "predicate": predicate,
                     "object": row.get("object"),
                     "confidence": confidence,
                     "relevance": relevance,
-                    "evidence": row.get("evidence") or [],
+                    "source_id": source_id,
+                    "source_kind": source_kind,
                 },
             )
         )
@@ -174,7 +162,9 @@ def _normalize_research_baseline_results(
             "research_finding" if "Finding" in labels else "research_chunk" if "Chunk" in labels else "research"
         )
         score = float(row.get("score", 0.0) or 0.0)
-        source_id = str(row.get("content_hash") or row.get("text") or row.get("research_question") or "")
+        source_id = str(
+            row.get("source_id") or row.get("content_hash") or row.get("text") or row.get("research_question") or ""
+        )
         hits.append(
             UnifiedMemoryHit(
                 module="web",
@@ -185,6 +175,12 @@ def _normalize_research_baseline_results(
                 score=score,
                 baseline_score=score,
                 temporal_applied=False,
+                rerank_score=(
+                    float(row.get("rerank_score", 0.0))
+                    if row.get("rerank_score") is not None
+                    else None
+                ),
+                retrieval_provenance=dict(row.get("retrieval_provenance") or {}),
                 metadata={
                     "source_agent": row.get("source_agent"),
                     "confidence": row.get("confidence"),
@@ -219,6 +215,12 @@ def _normalize_conversation_results(
                 baseline_score=None if temporal_applied else score,
                 temporal_score=score if temporal_applied else None,
                 temporal_applied=temporal_applied,
+                rerank_score=(
+                    float(row.get("rerank_score", 0.0))
+                    if row.get("rerank_score") is not None
+                    else None
+                ),
+                retrieval_provenance=dict(row.get("retrieval_provenance") or {}),
                 metadata={
                     "session_id": session_id,
                     "turn_index": turn_index,
@@ -241,62 +243,19 @@ def _search_research_structured(
     limit: int,
     as_of: str | None,
 ) -> list[UnifiedMemoryHit]:
-    """Run structured research search with temporal-first fallback behavior."""
-    embedding = pipeline._embedder.embed(query)
-    with pipeline._conn.session() as session:  # type: ignore[attr-defined]
-        baseline_results = session.run(
-            """
-            CALL db.index.vector.queryNodes('research_embeddings', $limit, $embedding)
-            YIELD node, score
-            RETURN
-                node.text AS text,
-                node.source_agent AS source_agent,
-                node.research_question AS research_question,
-                node.confidence AS confidence,
-                node.source_key AS source_key,
-                node.content_hash AS content_hash,
-                node.project_id AS project_id,
-                node.ingested_at AS ingested_at,
-                node.entities AS entities,
-                node.entity_types AS entity_types,
-                labels(node) AS node_labels,
-                score
-            ORDER BY score DESC
-            """,
-            limit=max(1, int(limit)),
-            embedding=embedding,
-        ).data()
+    """Run structured research search with temporal/rerank behavior."""
 
-    baseline_results = _filter_rows_as_of(baseline_results, as_of)
-    if not baseline_results:
+    rows = search_research(
+        pipeline,
+        query=query,
+        limit=limit,
+        as_of=as_of,
+    )
+    if not rows:
         return []
-
-    # Same temporal bridge pattern as app.search_web_memory: baseline seeds the graph walk.
-    bridge = pipeline.__dict__.get("_temporal_bridge") if hasattr(pipeline, "__dict__") else None
-    project_id = _dominant_project_id(baseline_results)
-    if bridge is not None and bridge.is_available() and project_id is not None:
-        seeds = collect_seed_entities(baseline_results, limit=5)
-        if not seeds:
-            try:
-                seeds = extract_query_seed_entities(query, pipeline._extractor)  # type: ignore[attr-defined]
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("search_all_memory web query seed extraction failed: %s", exc)
-                seeds = []
-        if seeds:
-            try:
-                temporal_payload = bridge.retrieve(
-                    project_id=project_id,
-                    seed_entities=seeds,
-                    as_of_us=parse_as_of_to_micros(as_of),
-                    max_edges=max(limit * 2, limit),
-                )
-                temporal_results = temporal_payload.get("results") or []
-                if temporal_results:
-                    return _normalize_research_temporal_results(temporal_results)[:limit]
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("search_all_memory web module falling back after temporal failure: %s", exc)
-
-    return _normalize_research_baseline_results(baseline_results)[:limit]
+    if rows[0].get("temporal_applied"):
+        return _normalize_research_temporal_results(rows)[:limit]
+    return _normalize_research_baseline_results(rows)[:limit]
 
 
 def _search_conversation_structured(
@@ -317,8 +276,8 @@ def _search_conversation_structured(
         as_of=as_of,
         log_prefix="search_all_memory.conversation",
     )
-    bridge = pipeline.__dict__.get("_temporal_bridge") if hasattr(pipeline, "__dict__") else None
-    temporal_applied = bool(project_id and bridge is not None and bridge.is_available())
+    provenance = dict((results[0].get("retrieval_provenance") or {})) if results else {}
+    temporal_applied = bool(provenance.get("temporal_applied", False))
     return _normalize_conversation_results(results, temporal_applied=temporal_applied)
 
 

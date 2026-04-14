@@ -33,8 +33,8 @@ Managed hosted beta path:
 
 ```bash
 openclaw plugin install agentic-memory-openclaw
-openclaw agentic-memory doctor --hosted --backend-url https://your-managed-hostname.example.com
-openclaw agentic-memory setup --hosted --backend-url https://your-managed-hostname.example.com
+openclaw agentic-memory doctor --hosted --backend-url https://backend.agentmemorylabs.com
+openclaw agentic-memory setup --hosted --backend-url https://backend.agentmemorylabs.com
 openclaw agentic-memory project status
 ```
 
@@ -113,11 +113,11 @@ packets instead of the local install flow:
 
 Canonical publication/legal URLs:
 
-- `https://api.agenticmemory.com/publication/agentic-memory`
-- `https://api.agenticmemory.com/publication/privacy`
-- `https://api.agenticmemory.com/publication/terms`
-- `https://api.agenticmemory.com/publication/support`
-- `https://api.agenticmemory.com/publication/dpa`
+- `https://mcp.agentmemorylabs.com/publication/agentic-memory`
+- `https://mcp.agentmemorylabs.com/publication/privacy`
+- `https://mcp.agentmemorylabs.com/publication/terms`
+- `https://mcp.agentmemorylabs.com/publication/support`
+- `https://mcp.agentmemorylabs.com/publication/dpa`
 
 Reference packets:
 

@@ -20,10 +20,10 @@ Official task:
 - `W15-PUB-03` Codex preflight bundle: complete
 - `W15-PUB-06` top-level integration: complete
 - Stable publication URLs:
-  - implemented in code
-  - deployment not yet confirmed live
+  - confirmed live on `https://mcp.agentmemorylabs.com`
 - Public auth posture:
-  - chosen: `OAuth 2.0 authorization code flow`
+  - live reviewer path: bearer API key via `AM_SERVER_PUBLIC_MCP_API_KEYS`
+  - marketplace target: `OAuth 2.0 authorization code flow`
   - implementation: pending
 
 ## Submission Metadata
@@ -31,7 +31,7 @@ Official task:
 - Submission owner: `TBD`
 - Verified publisher identity: `TBD`
 - OpenAI project/data residency: `TBD`
-- Canonical MCP endpoint: `https://api.agenticmemory.com/mcp-openai`
+- Canonical MCP endpoint: `https://mcp.agentmemorylabs.com/mcp-openai`
 - Case ID: `TBD`
 - Submission date: `TBD`
 - Review URL: `TBD`
@@ -42,6 +42,10 @@ Official task:
 
 - 2026-04-12: tracker created for `W15-PUB-07`
 - 2026-04-12: packet dependencies confirmed complete (`W15-PUB-02`, `W15-PUB-03`, `W15-PUB-06`)
+- 2026-04-14: `backend.agentmemorylabs.com` and `mcp.agentmemorylabs.com`
+  verified live; public legal pages and `/health` reachable
+- 2026-04-14: dedicated public MCP reviewer-key path configured through
+  `AM_SERVER_PUBLIC_MCP_API_KEYS`
 - Next update: replace the placeholders in `Submission Metadata` immediately after submission
 
 ## Evidence Links
@@ -64,13 +68,15 @@ Official task:
 
 ## Blocking Items
 
-- publication URLs not yet confirmed live on public host
 - OAuth not implemented
-- reviewer/demo account provisioning not complete
+- real ChatGPT developer-mode validation and screenshots not complete
+- reviewer/demo packet not finalized
 
 ## Next Action
 
-- Submit the OpenAI app once live URLs, auth, and reviewer credentials are ready
+- Run the real ChatGPT developer-mode validation loop against the live host,
+  capture screenshots, then close the remaining auth and reviewer-packet gaps
+  before submission
 
 ## Notes
 

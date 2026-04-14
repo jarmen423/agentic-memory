@@ -1,6 +1,6 @@
 # Publication Launch Runbook
 
-Current as of April 12, 2026.
+Current as of April 14, 2026.
 
 This runbook is the operator sequence for getting Agentic Memory from submission-ready to publicly published across the current OpenAI and Anthropic paths.
 
@@ -13,6 +13,8 @@ Before any submission:
 - Confirm the public surfaces still expose the frozen nine-tool contract.
 - Confirm public write tools are still limited to private Agentic Memory state.
 - Confirm no internal/admin tools are visible on public mounts.
+- Confirm `AM_SERVER_PUBLIC_MCP_API_KEYS` is set to a dedicated reviewer key
+  rather than reusing `AM_SERVER_API_KEYS`.
 
 ## 2. Confirm public legal and support assets
 
@@ -24,11 +26,14 @@ Before any dashboard or directory submission:
 - Website/company URL is live.
 - All URLs are stable and not GitHub blob links.
 - Canonical target URLs:
-  - `https://api.agenticmemory.com/publication/agentic-memory`
-  - `https://api.agenticmemory.com/publication/privacy`
-  - `https://api.agenticmemory.com/publication/terms`
-  - `https://api.agenticmemory.com/publication/support`
-  - `https://api.agenticmemory.com/publication/dpa`
+  - `https://mcp.agentmemorylabs.com/publication/agentic-memory`
+  - `https://mcp.agentmemorylabs.com/publication/privacy`
+  - `https://mcp.agentmemorylabs.com/publication/terms`
+  - `https://mcp.agentmemorylabs.com/publication/support`
+  - `https://mcp.agentmemorylabs.com/publication/dpa`
+
+These URLs were re-verified live on 2026-04-14. Re-check them immediately
+before submission rather than assuming the prior verification still holds.
 
 Use:
 
@@ -40,6 +45,7 @@ Use:
 ### OpenAI
 
 - Connect ChatGPT developer mode to `/mcp-openai`.
+- Use the dedicated public MCP reviewer key from `REVIEWER_ACCESS_PACKET.md`.
 - Refresh metadata once after a redeploy.
 - Run the prompts in `docs/publication/openai/TEST_PROMPTS.md`.
 - Confirm screenshot capture is from the real connected surface.
@@ -47,6 +53,7 @@ Use:
 ### Anthropic
 
 - Connect the remote MCP surface to `/mcp-claude`.
+- Use the dedicated public MCP reviewer key from `REVIEWER_ACCESS_PACKET.md`.
 - Confirm auth behavior matches the chosen production/reviewer model.
 - Confirm the connector is reachable from the public internet.
 - Prepare the minimum usage examples and reviewer setup path.

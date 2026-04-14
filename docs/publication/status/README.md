@@ -31,9 +31,19 @@ It is the authoritative `W15-PUB-07` tracking surface.
 External submission and approval events still happen after task closure; those
 events update these trackers and close gates `G3`, `G4`, and `G5`.
 
+## Current Live Baseline
+
+- Public publication/legal pages are live on `https://mcp.agentmemorylabs.com`.
+- Public health is live on `https://mcp.agentmemorylabs.com/health`.
+- Managed backend health and onboarding are live on
+  `https://backend.agentmemorylabs.com`.
+- The public MCP mounts are currently auth-gated with a dedicated reviewer key
+  path via `AM_SERVER_PUBLIC_MCP_API_KEYS`.
+
 ## Shared Outstanding Items
 
-- Deploy the publication/legal pages to the live `api.agenticmemory.com` host.
 - Implement OAuth 2.0 authorization code flow in `am-server`.
-- Provision reviewer/demo/test accounts.
+- Run real ChatGPT and Claude validation loops against the live public MCP
+  surfaces and capture screenshots/examples.
+- Finalize reviewer/demo/test packet materials and key-rotation plan.
 - Record real OpenAI and Anthropic submission evidence.

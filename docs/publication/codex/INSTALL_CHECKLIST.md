@@ -13,11 +13,11 @@ This checklist is the operator path for validating the local Codex plugin bundle
 
 - Codex is running with access to the repo-root plugin bundle.
 - The hosted endpoint is reachable:
-  - `https://api.agenticmemory.com/mcp-codex`
+  - `https://mcp.agentmemorylabs.com/mcp-codex`
 - The public publication URLs resolve:
-  - `https://api.agenticmemory.com/publication/agentic-memory`
-  - `https://api.agenticmemory.com/publication/privacy`
-  - `https://api.agenticmemory.com/publication/terms`
+  - `https://mcp.agentmemorylabs.com/publication/agentic-memory`
+  - `https://mcp.agentmemorylabs.com/publication/privacy`
+  - `https://mcp.agentmemorylabs.com/publication/terms`
 
 ## Preflight steps
 

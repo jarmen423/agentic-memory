@@ -63,13 +63,13 @@ This plan targets **public publication**, not just "hosted + installable".
   - canonical company / product publication URL
   - reviewer test credentials or demo data when auth is required
 
-Canonical publication/legal URLs live on the `api.agenticmemory.com/publication/*` surface:
+Canonical publication/legal URLs live on the `mcp.agentmemorylabs.com/publication/*` surface:
 
-- `https://api.agenticmemory.com/publication/agentic-memory`
-- `https://api.agenticmemory.com/publication/privacy`
-- `https://api.agenticmemory.com/publication/terms`
-- `https://api.agenticmemory.com/publication/support`
-- `https://api.agenticmemory.com/publication/dpa`
+- `https://mcp.agentmemorylabs.com/publication/agentic-memory`
+- `https://mcp.agentmemorylabs.com/publication/privacy`
+- `https://mcp.agentmemorylabs.com/publication/terms`
+- `https://mcp.agentmemorylabs.com/publication/support`
+- `https://mcp.agentmemorylabs.com/publication/dpa`
 
 ## Implementation Changes
 
@@ -91,7 +91,7 @@ Canonical publication/legal URLs live on the `api.agenticmemory.com/publication/
   - streamable HTTP transport works
   - CORS and browser/client compatibility are correct where required
   - each mount returns the expected surface headers/labels
-- Add production deployment docs for the current `api.agenticmemory.com` path:
+- Add production deployment docs for the current `mcp.agentmemorylabs.com` path:
   - required env vars
   - secret separation
   - public vs internal auth
@@ -336,7 +336,7 @@ These are mandatory across the cycle but are not the primary public publication 
   - standalone `.codex-plugin` packaging is not sufficient for public Codex publication in this cycle
 - Anthropic public distribution currently runs through remote MCP directory submission and review.
 - Public auth posture for the hosted public surfaces is OAuth 2.0 authorization code flow.
-- Deployment remains on the current `am-server` architecture and existing `api.agenticmemory.com` hosting path; no platform migration is part of this plan.
+- Deployment remains on the current `am-server` architecture and existing `mcp.agentmemorylabs.com` hosting path; no platform migration is part of this plan.
 - ChatGPT primary target is the OpenAI Apps / hosted MCP path, not the browser extension.
 - Claude is treated as two deliverables:
   - public hosted connector path via `/mcp-claude`

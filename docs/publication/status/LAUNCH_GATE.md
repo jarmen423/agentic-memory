@@ -27,9 +27,8 @@ Wave:
 
 ## Shared Blocking Conditions
 
-- publication URLs implemented but not yet confirmed live on the public host
 - OAuth auth posture chosen but not yet implemented
-- reviewer/demo/test accounts not yet provisioned
+- reviewer/demo/test packet, screenshots, and sample data not yet finalized
 - OpenAI submission and publication evidence not yet attached
 - Anthropic submission and listing evidence not yet attached
 
@@ -49,9 +48,9 @@ Wave:
 - Closure date: `TBD`
 - OpenAI evidence attached: no
 - Anthropic evidence attached: no
-- Live publication/legal URLs confirmed: no
+- Live publication/legal URLs confirmed: yes
 - Reviewer/demo/test accounts confirmed: no
-- Notes: close this record only after `G3`, `G4`, and `G5` evidence is attached in `EVIDENCE.md`
+- Notes: close this record only after `G3`, `G4`, and `G5` evidence is attached in `EVIDENCE.md`; live public URLs were re-verified on 2026-04-14
 
 ## Task Closure Note
 

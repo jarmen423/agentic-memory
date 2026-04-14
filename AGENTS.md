@@ -1,3 +1,7 @@
+> TODO: Healthcare public-dataset experiment planning lives in `D:\code\agentic-memory\docs\research\healthcare-experiments\README.md`. Before trying to run any MIMIC-backed work, verify whether PhysioNet / MIMIC access is approved and configured on this machine; as of 2026-04-14, no repo-local or user-home credentials or downloaded dataset directories were found.
+>
+> TODO: Managed hosted publication is now live at `https://backend.agentmemorylabs.com` and `https://mcp.agentmemorylabs.com`. Before claiming publication is complete, run real ChatGPT and Claude validations against the public MCP surfaces, capture reviewer screenshots/examples, keep the auth story truthful (`AM_SERVER_PUBLIC_MCP_API_KEYS` bearer key today, OAuth still pending), and update `docs/publication/status/*` with real submission evidence.
+
 # Agentic Memory Repo Guide For Agents
 
 This file is the repo-local operating guide for coding agents working inside
@@ -250,6 +254,40 @@ docs or onboarding defaults now.
 
 ---
 
+## 7.1 Publication Snapshot (2026-04-14)
+
+Current managed-hosted/publication reality:
+
+- backend origin
+  - `https://backend.agentmemorylabs.com`
+  - published from the existing GCP VM through Cloudflare Tunnel
+- public reviewer host
+  - `https://mcp.agentmemorylabs.com`
+  - fronted by the Cloudflare Worker in `deploy/cloudflare-public-edge`
+- current live runtime shape
+  - `am-server` runs directly on the VM under `systemd`
+  - current live Neo4j target is loopback `bolt://127.0.0.1:7667`
+- current live verification already performed
+  - `https://backend.agentmemorylabs.com/health`
+  - `https://backend.agentmemorylabs.com/health/onboarding`
+  - `https://mcp.agentmemorylabs.com/publication/agentic-memory`
+  - `https://mcp.agentmemorylabs.com/publication/privacy`
+  - `https://mcp.agentmemorylabs.com/health`
+- current live reviewer auth posture
+  - public MCP is bearer-key protected through `AM_SERVER_PUBLIC_MCP_API_KEYS`
+  - this is the truthful dry-run/reviewer state today
+  - OAuth 2.0 authorization code flow is still not implemented
+
+Current publication blockers:
+
+- run a real ChatGPT developer-mode connection against `/mcp-openai`
+- run a real Claude validation against `/mcp-claude`
+- capture final screenshots / usage examples / reviewer evidence
+- implement OAuth before claiming marketplace-ready authenticated publication
+- attach real submission and approval evidence in `docs/publication/status/`
+
+---
+
 ## 8. Common Local Assumptions To Avoid
 
 Avoid these mistakes in code, docs, and testing:
@@ -260,6 +298,7 @@ Avoid these mistakes in code, docs, and testing:
 - assuming saved OpenClaw defaults are the same as the actual intended backend
 - assuming plugin install implies backend readiness
 - assuming managed and self-hosted docs can share one blended quickstart
+- assuming the live public MCP auth story is already OAuth-based
 
 Prefer explicitness:
 
@@ -321,7 +360,7 @@ docker compose up -d neo4j
 ### OpenClaw managed/self-hosted validation
 
 ```bash
-openclaw agentic-memory doctor --hosted --backend-url https://your-managed-host.example.com
+openclaw agentic-memory doctor --hosted --backend-url https://backend.agentmemorylabs.com
 openclaw agentic-memory doctor --self-hosted --backend-url http://127.0.0.1:8765
 ```
 

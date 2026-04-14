@@ -21,6 +21,9 @@ This is the entrypoint for publication work on Agentic Memory.
 
 ## Shared
 
+- [Backend deployment](BACKEND_DEPLOYMENT.md)
+- [Cloudflare public deployment](CLOUDFLARE_DEPLOYMENT.md)
+- [Reviewer access packet](shared/REVIEWER_ACCESS_PACKET.md)
 - [Public policy checklist](shared/PUBLIC_POLICY_CHECKLIST.md)
 - [Support and terms checklist](shared/SUPPORT_AND_TERMS_CHECKLIST.md)
 - [Telemetry evidence checklist](shared/TELEMETRY_EVIDENCE_CHECKLIST.md)
@@ -34,8 +37,8 @@ This is the entrypoint for publication work on Agentic Memory.
 
 ## Canonical Public URLs
 
-- `https://api.agenticmemory.com/publication/agentic-memory`
-- `https://api.agenticmemory.com/publication/privacy`
-- `https://api.agenticmemory.com/publication/terms`
-- `https://api.agenticmemory.com/publication/support`
-- `https://api.agenticmemory.com/publication/dpa`
+- `https://mcp.agentmemorylabs.com/publication/agentic-memory`
+- `https://mcp.agentmemorylabs.com/publication/privacy`
+- `https://mcp.agentmemorylabs.com/publication/terms`
+- `https://mcp.agentmemorylabs.com/publication/support`
+- `https://mcp.agentmemorylabs.com/publication/dpa`

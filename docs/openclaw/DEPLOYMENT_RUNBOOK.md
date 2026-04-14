@@ -21,6 +21,25 @@ The managed deployment shape in this phase is intentionally simple:
 
 This is a bootstrap-stage managed beta scaffold, not a hosted multi-tenant GA architecture.
 
+## Current production shape
+
+Verified on 2026-04-14:
+
+- VM
+  - existing GCP VM (`m26-vm`)
+- `am-server`
+  - direct VM process under `systemd`
+- local backend
+  - `http://127.0.0.1:8765`
+- Neo4j
+  - `bolt://127.0.0.1:7667`
+- Cloudflare Tunnel backend hostname
+  - `https://backend.agentmemorylabs.com`
+- reviewer/public MCP hostname
+  - `https://mcp.agentmemorylabs.com`
+
+Use the Docker path below only if Neo4j is reachable from Docker on the VM.
+
 ## What This Stack Serves
 
 The OpenClaw plugin talks to `am-server` over the `/openclaw/*` routes that
@@ -57,10 +76,12 @@ Minimum example:
 ```dotenv
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=replace-with-real-password
+NEO4J_URI=bolt://127.0.0.1:7667
 
 AM_SERVER_API_KEYS=replace-with-real-rest-key
 AGENTIC_MEMORY_DEPLOYMENT_MODE=managed
-AGENTIC_MEMORY_HOSTED_BASE_URL=https://your-managed-hostname.example.com
+AGENTIC_MEMORY_HOSTED_BASE_URL=https://backend.agentmemorylabs.com
+AM_PUBLIC_BASE_URL=https://mcp.agentmemorylabs.com
 
 # Use at least one provider path that matches the workloads you want.
 GOOGLE_API_KEY=replace-with-real-key
@@ -91,10 +112,17 @@ Why these values matter:
   - makes `/health/onboarding` and auth surfaces identify this backend as the hosted path
 - `AGENTIC_MEMORY_HOSTED_BASE_URL`
   - gives setup/doctor/docs one canonical hosted URL to point at
+- `AM_PUBLIC_BASE_URL`
+  - gives the publication pages and marketplace-facing MCP surfaces one
+    canonical public hostname
 - provider keys
   - search, ingest, and context resolution can depend on them
 - Neo4j credentials
   - `am-server` will not warm its pipelines without a working graph connection
+- `NEO4J_URI`
+  - for the current direct-VM path, use `bolt://127.0.0.1:<bolt-port>`
+  - only switch to `bolt://host.docker.internal:<bolt-port>` if you are using
+    the Docker path and Neo4j is reachable from Docker
 
 ## 2. Render The Compose File Before You Deploy
 
@@ -113,14 +141,48 @@ passwords can appear in the rendered file or terminal output.
 
 ## 3. Start The Backend Stack
 
+Current production path on the GCP VM:
+
 ```bash
-docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+sudo cp deploy/systemd/am-server.env.example /etc/agentic-memory/am-server.env
+sudo cp deploy/systemd/am-server.service.example /etc/systemd/system/am-server.service
+sudo editor /etc/agentic-memory/am-server.env
+sudo editor /etc/systemd/system/am-server.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now am-server
+```
+
+Docker alternative:
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build am-server
 ```
 
 Expected services:
 
-- `neo4j`
 - `am-server`
+
+This managed-hosted path assumes Neo4j is already running on the VM.
+
+If that Neo4j instance is loopback-only on `127.0.0.1` with a custom Bolt port,
+do not use the
+container path. Run `am-server` directly on the VM process instead so the
+backend can use `bolt://127.0.0.1:<bolt-port>`.
+
+For persistent runtime on the current GCP VM, use the checked-in `systemd`
+templates after the first manual bring-up succeeds:
+
+- `deploy/systemd/am-server.service.example`
+- `deploy/systemd/am-server.env.example`
+
+If you ever need the compose file to provision its own graph too, use the
+bundled profile instead:
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env.production --profile bundled-neo4j up -d --build
+```
+
+That bundled path should switch `NEO4J_URI` to `bolt://neo4j:7687`.
 
 ## 4. Check Health
 
@@ -152,6 +214,15 @@ Whole-stack onboarding contract:
 curl http://127.0.0.1:8765/health/onboarding
 ```
 
+Current managed-hosted target shape:
+
+- local VM backend
+  - `http://127.0.0.1:8765`
+- Cloudflare Tunnel backend hostname
+  - `https://backend.agentmemorylabs.com`
+- reviewer/public MCP hostname
+  - `https://mcp.agentmemorylabs.com`
+
 What to look for:
 
 - `server`, `mcp`, `openclaw_memory`, and `openclaw_context_engine` components
@@ -175,8 +246,8 @@ openclaw plugin install agentic-memory-openclaw
 Then configure it against the deployed backend:
 
 ```bash
-openclaw agentic-memory doctor --hosted --backend-url http://127.0.0.1:8765
-openclaw agentic-memory setup --hosted --backend-url http://127.0.0.1:8765
+openclaw agentic-memory doctor --hosted --backend-url https://backend.agentmemorylabs.com
+openclaw agentic-memory setup --hosted --backend-url https://backend.agentmemorylabs.com
 ```
 
 `doctor` should pass before `setup` is considered the supported path. `setup`

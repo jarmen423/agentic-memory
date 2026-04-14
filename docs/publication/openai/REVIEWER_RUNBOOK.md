@@ -1,13 +1,13 @@
 # OpenAI Reviewer Runbook
 
-Current as of April 12, 2026.
+Current as of April 14, 2026.
 
 This runbook is for internal dry runs and for preparing the exact material that will be entered into the OpenAI dashboard submission flow.
 
 ## Review target
 
 - Product: `Agentic Memory`
-- Canonical endpoint: `https://api.agenticmemory.com/mcp-openai`
+- Canonical endpoint: `https://mcp.agentmemorylabs.com/mcp-openai`
 - Transport: streamable HTTP
 - Public tool count: `9`
 - Public internet side effects: none
@@ -20,17 +20,24 @@ This runbook is for internal dry runs and for preparing the exact material that 
 - Submission owner has `Owner` role and verified publisher identity.
 - Hosted endpoint is reachable over public HTTPS.
 - Stable privacy, terms, support, and website URLs are ready.
-- Auth model is fixed to OAuth 2.0 authorization code flow for authenticated publication.
-- Reviewer-ready demo credentials and sample data are provisioned with no MFA.
+- Current live reviewer auth packet is prepared from `../shared/REVIEWER_ACCESS_PACKET.md`.
+- Reviewer-ready credentials and sample data are provisioned with no MFA.
+- Marketplace publication still requires OAuth 2.0 authorization code flow; do
+  not mark that blocker closed until it is actually implemented.
+- The live public MCP host currently uses bearer-key reviewer auth, not OAuth.
 
 ## ChatGPT developer-mode dry run
 
 1. Turn on ChatGPT developer mode in Settings -> Apps & Connectors -> Advanced settings.
 2. Create a connector using the canonical OpenAI endpoint.
-3. Confirm that the advertised tools match the frozen nine-tool contract.
-4. Run the prompts in `TEST_PROMPTS.md`.
-5. Refresh metadata after one redeploy and verify the tool list still matches.
-6. If the app is meant to work on mobile, verify the same connector on ChatGPT mobile after linking it on web.
+3. Use the dedicated reviewer key from `../shared/REVIEWER_ACCESS_PACKET.md`.
+4. Confirm that the advertised tools match the frozen nine-tool contract.
+5. Run the prompts in `TEST_PROMPTS.md`.
+6. Refresh metadata after one redeploy and verify the tool list still matches.
+7. If the app is meant to work on mobile, verify the same connector on ChatGPT mobile after linking it on web.
+
+Raw `curl` checks are only useful for confirming the auth gate. They are not a
+full success signal for the streamable HTTP MCP handshake.
 
 ## Expected tool contract
 
@@ -58,7 +65,8 @@ Annotation expectations:
 
 - Final listing copy from `DASHBOARD_FIELD_INVENTORY.md`
 - Reviewer prompts and acceptance criteria from `TEST_PROMPTS.md`
-- Demo credential packet from `DEMO_ACCOUNT_CHECKLIST.md` if auth is enabled
+- Demo credential packet from `DEMO_ACCOUNT_CHECKLIST.md`
+- Reviewer access packet from `../shared/REVIEWER_ACCESS_PACKET.md`
 - Publish checks from `PUBLISH_CHECKS.md`
 
 ## Failure triage before submission

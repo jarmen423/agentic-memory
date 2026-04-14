@@ -74,11 +74,11 @@ The public privacy policy should explicitly cover:
 
 ## Canonical publication URLs
 
-- Website: `https://api.agenticmemory.com/publication/agentic-memory`
-- Privacy: `https://api.agenticmemory.com/publication/privacy`
-- Terms: `https://api.agenticmemory.com/publication/terms`
-- Support: `https://api.agenticmemory.com/publication/support`
-- DPA: `https://api.agenticmemory.com/publication/dpa`
+- Website: `https://mcp.agentmemorylabs.com/publication/agentic-memory`
+- Privacy: `https://mcp.agentmemorylabs.com/publication/privacy`
+- Terms: `https://mcp.agentmemorylabs.com/publication/terms`
+- Support: `https://mcp.agentmemorylabs.com/publication/support`
+- DPA: `https://mcp.agentmemorylabs.com/publication/dpa`
 
 ## Remaining blockers on April 12, 2026
 

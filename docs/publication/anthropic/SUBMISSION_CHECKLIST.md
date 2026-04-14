@@ -1,6 +1,6 @@
 # Anthropic Submission Checklist
 
-Current as of April 12, 2026.
+Current as of April 14, 2026.
 
 This packet is for the Anthropic public publication path:
 
@@ -12,7 +12,7 @@ This packet is for the Anthropic public publication path:
 ## Current release target
 
 - Product name: `Agentic Memory`
-- Canonical Anthropic reviewer endpoint: `https://api.agenticmemory.com/mcp-claude`
+- Canonical Anthropic reviewer endpoint: `https://mcp.agentmemorylabs.com/mcp-claude`
 - Public tool contract:
   - `search_codebase`
   - `get_file_dependencies`
@@ -41,7 +41,8 @@ This packet is for the Anthropic public publication path:
 
 ## Gate B: Auth, identity, and reachability
 
-- The chosen authenticated publication model is OAuth 2.0 authorization code flow.
+- The current reviewer dry-run auth model is a bearer API key via `AM_SERVER_PUBLIC_MCP_API_KEYS`.
+- The marketplace authenticated publication target is OAuth 2.0 authorization code flow.
 - If OAuth is used, the required callback URLs are allowlisted:
   - `http://localhost:6274/oauth/callback`
   - `http://localhost:6274/oauth/callback/debug`
@@ -91,11 +92,11 @@ This packet is for the Anthropic public publication path:
 - Final directory listing URL is recorded.
 - Post-listing smoke tests are run against the live public connector.
 
-## Remaining blockers on April 12, 2026
+## Remaining blockers on April 14, 2026
 
-- The canonical publication URLs and DPA route are now implemented in `am-server`, but they still need deployment to the live public host.
+- The canonical publication URLs and DPA route are live, but the real Claude-connected validation loop is still outstanding.
 - No Anthropic-specific usage examples were checked into the repo before this packet.
-- OAuth is now the chosen auth posture, but end-to-end implementation, reviewer credentials, and public validation are still outstanding.
+- OAuth remains the marketplace target auth posture, but end-to-end implementation and validation are still outstanding.
 
 ## Exit criteria for W15-PUB-04
 

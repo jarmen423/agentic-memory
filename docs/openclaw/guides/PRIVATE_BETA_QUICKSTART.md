@@ -34,8 +34,8 @@ Choose the mode that matches the backend you are pointing at:
 Managed hosted example:
 
 ```bash
-openclaw agentic-memory doctor --hosted --backend-url https://your-managed-host.example.com
-openclaw agentic-memory setup --hosted --backend-url https://your-managed-host.example.com
+openclaw agentic-memory doctor --hosted --backend-url https://backend.agentmemorylabs.com
+openclaw agentic-memory setup --hosted --backend-url https://backend.agentmemorylabs.com
 ```
 
 Self-hosted example:

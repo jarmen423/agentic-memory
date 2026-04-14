@@ -1,0 +1,43 @@
+{
+  "name": "agentic-memory",
+  "version": "0.1.4",
+  "description": "Persistent code, research, and conversation memory for AI coding agents.",
+  "author": {
+    "name": "Agentic Memory",
+    "url": "https://mcp.agentmemorylabs.com/publication/agentic-memory"
+  },
+  "homepage": "https://mcp.agentmemorylabs.com/publication/agentic-memory",
+  "repository": "https://github.com/jarmen423/agentic-memory",
+  "license": "MIT",
+  "keywords": [
+    "memory",
+    "mcp",
+    "neo4j",
+    "codex",
+    "claude",
+    "chatgpt",
+    "graphrag",
+    "code-search"
+  ],
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Agentic Memory",
+    "shortDescription": "Search and trace code, research, and conversation memory from Codex.",
+    "longDescription": "Connect Codex to Agentic Memory through a hosted MCP surface optimized for public plugin installs. The public surface exposes bounded read and explicit memory-write tools while keeping local indexing and maintenance operations out of the plugin contract.",
+    "developerName": "Agentic Memory",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://mcp.agentmemorylabs.com/publication/agentic-memory",
+    "privacyPolicyURL": "https://mcp.agentmemorylabs.com/publication/privacy",
+    "termsOfServiceURL": "https://mcp.agentmemorylabs.com/publication/terms",
+    "defaultPrompt": [
+      "Search this codebase and related memory for prior work on auth flows",
+      "Trace the likely execution path starting from this function",
+      "Save this research finding to memory for later retrieval"
+    ]
+  }
+}

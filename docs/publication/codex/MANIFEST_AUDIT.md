@@ -12,7 +12,7 @@ This note records the current audit of the local Codex plugin bundle:
 - Plugin name: `agentic-memory`
 - Display name: `Agentic Memory`
 - Version: `0.1.4`
-- Hosted Codex MCP endpoint: `https://api.agenticmemory.com/mcp-codex`
+- Hosted Codex MCP endpoint: `https://mcp.agentmemorylabs.com/mcp-codex`
 - Surface intent: bounded public MCP contract only
 
 ## Metadata present

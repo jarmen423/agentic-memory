@@ -38,8 +38,8 @@ Use this when turning the shared policy requirements into actual publication-rea
 - None of the public URLs depend on a branch name, blob path, or ephemeral doc hosting.
 - URLs are already live before either review submission is created.
 - Current target URL family:
-  - `https://api.agenticmemory.com/publication/agentic-memory`
-  - `https://api.agenticmemory.com/publication/privacy`
-  - `https://api.agenticmemory.com/publication/terms`
-  - `https://api.agenticmemory.com/publication/support`
-  - `https://api.agenticmemory.com/publication/dpa`
+  - `https://mcp.agentmemorylabs.com/publication/agentic-memory`
+  - `https://mcp.agentmemorylabs.com/publication/privacy`
+  - `https://mcp.agentmemorylabs.com/publication/terms`
+  - `https://mcp.agentmemorylabs.com/publication/support`
+  - `https://mcp.agentmemorylabs.com/publication/dpa`

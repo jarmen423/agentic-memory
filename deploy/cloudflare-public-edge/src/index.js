@@ -5,6 +5,18 @@ function normalizeOrigin(value) {
   return value.endsWith("/") ? value.slice(0, -1) : value;
 }
 
+function rewriteRedirectLocation(location, backendOrigin, publicBaseUrl) {
+  if (!location || !publicBaseUrl) {
+    return location;
+  }
+
+  if (location.startsWith(`${backendOrigin}/`) || location === backendOrigin) {
+    return `${publicBaseUrl}${location.slice(backendOrigin.length)}`;
+  }
+
+  return location;
+}
+
 function sanitizeHeaders(request, env) {
   const headers = new Headers(request.headers);
   headers.set("x-forwarded-host", new URL(request.url).host);
@@ -20,6 +32,7 @@ function sanitizeHeaders(request, env) {
 export default {
   async fetch(request, env) {
     const origin = normalizeOrigin(env.BACKEND_ORIGIN);
+    const publicBaseUrl = env.PUBLIC_BASE_URL ? normalizeOrigin(env.PUBLIC_BASE_URL) : "";
     const incomingUrl = new URL(request.url);
     const upstreamUrl = new URL(`${origin}${incomingUrl.pathname}${incomingUrl.search}`);
 
@@ -32,9 +45,18 @@ export default {
 
     const response = await fetch(upstreamRequest);
     const responseHeaders = new Headers(response.headers);
+    const rewrittenLocation = rewriteRedirectLocation(
+      responseHeaders.get("location"),
+      origin,
+      publicBaseUrl,
+    );
 
-    if (env.PUBLIC_BASE_URL) {
-      responseHeaders.set("x-agentic-memory-public-base-url", env.PUBLIC_BASE_URL);
+    if (rewrittenLocation) {
+      responseHeaders.set("location", rewrittenLocation);
+    }
+
+    if (publicBaseUrl) {
+      responseHeaders.set("x-agentic-memory-public-base-url", publicBaseUrl);
     }
 
     return new Response(response.body, {

@@ -2,9 +2,18 @@
 
 This checklist captures the Anthropic-specific network and auth requirements that are easy to get wrong during directory review.
 
+## Current live reviewer dry run
+
+The live public reviewer path today is:
+
+- bearer API key via `AM_SERVER_PUBLIC_MCP_API_KEYS`
+
+That is the truthful current dry-run state. The checklist below still covers the
+remaining publication target and alternative paths.
+
 ## Chosen public auth posture
 
-The publication target for authenticated public surfaces is:
+The marketplace publication target for authenticated public surfaces is:
 
 - `OAuth 2.0 authorization code flow`
 
@@ -56,7 +65,7 @@ Also verify:
 
 ## Public reachability checklist
 
-- `https://api.agenticmemory.com/mcp-claude` is reachable from a network outside VPN/internal corp infrastructure.
+- `https://mcp.agentmemorylabs.com/mcp-claude` is reachable from a network outside VPN/internal corp infrastructure.
 - TLS certificate is valid.
 - CORS is configured for browser/cloud clients.
 - If behind firewall, Anthropic IP ranges are allowlisted for brokered Claude surfaces.

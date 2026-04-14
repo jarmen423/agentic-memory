@@ -1,6 +1,6 @@
 # OpenAI Submission Checklist
 
-Current as of April 12, 2026.
+Current as of April 14, 2026.
 
 This packet is for the OpenAI public publication path:
 
@@ -12,7 +12,7 @@ This packet is for the OpenAI public publication path:
 ## Current release target
 
 - Product name: `Agentic Memory`
-- Canonical OpenAI reviewer endpoint: `https://api.agenticmemory.com/mcp-openai`
+- Canonical OpenAI reviewer endpoint: `https://mcp.agentmemorylabs.com/mcp-openai`
 - Public tool contract:
   - `search_codebase`
   - `get_file_dependencies`
@@ -31,15 +31,17 @@ This packet is for the OpenAI public publication path:
 - Individual or business verification completed for the publication name.
 - Submission project uses global data residency.
 - Hosted MCP endpoint is public HTTPS and not a local tunnel or test host.
-- Public authenticated publication model is fixed:
+- Current reviewer dry-run auth is fixed:
+  - bearer API key through `AM_SERVER_PUBLIC_MCP_API_KEYS`
+- Marketplace authenticated publication target remains:
   - OAuth 2.0 authorization code flow for authenticated review and launch
   - no fallback claim of anonymous multi-tenant access for private memory
 - Exact CSP and remote fetch domain inventory is documented for submission.
 - Canonical public URLs are deployed and reachable:
-  - website: `https://api.agenticmemory.com/publication/agentic-memory`
-  - privacy: `https://api.agenticmemory.com/publication/privacy`
-  - terms: `https://api.agenticmemory.com/publication/terms`
-  - support: `https://api.agenticmemory.com/publication/support`
+  - website: `https://mcp.agentmemorylabs.com/publication/agentic-memory`
+  - privacy: `https://mcp.agentmemorylabs.com/publication/privacy`
+  - terms: `https://mcp.agentmemorylabs.com/publication/terms`
+  - support: `https://mcp.agentmemorylabs.com/publication/support`
 
 ## Gate B: Product and metadata readiness
 
@@ -88,11 +90,11 @@ This packet is for the OpenAI public publication path:
 - Derived Codex distribution is confirmed after publication.
 - Launch owner records the publish date, case id, and approval evidence.
 
-## Remaining blockers on April 12, 2026
+## Remaining blockers on April 14, 2026
 
-- The canonical publication URLs are now implemented in `am-server`, but they still need deployment to the live host before they are truly review-ready.
+- The canonical publication URLs are live, but the real ChatGPT-connected validation and screenshot pass are still outstanding.
 - No reviewer screenshots are checked into `docs/publication/openai/` yet.
-- OAuth is now the chosen auth posture, but reviewer/demo account provisioning and end-to-end OAuth validation are still outstanding.
+- OAuth remains the marketplace target auth posture, but end-to-end implementation and validation are still outstanding.
 - No final CSP/fetch-domain inventory is documented in repo docs yet.
 
 ## Exit criteria for W15-PUB-02

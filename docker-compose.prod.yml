@@ -11,6 +11,8 @@
 
 services:
   neo4j:
+    profiles:
+      - bundled-neo4j
     image: neo4j:5.25-community
     container_name: agentic-memory-neo4j-prod
     restart: unless-stopped
@@ -48,20 +50,20 @@ services:
     image: agentic-memory/am-server:beta
     container_name: agentic-memory-openclaw-server
     restart: unless-stopped
-    depends_on:
-      neo4j:
-        condition: service_healthy
     environment:
       PYTHONUNBUFFERED: "1"
       AGENTIC_MEMORY_PRODUCT_STATE: /var/lib/agentic-memory/product-state.json
+      AGENTIC_MEMORY_DEPLOYMENT_MODE: ${AGENTIC_MEMORY_DEPLOYMENT_MODE:-managed}
+      AGENTIC_MEMORY_HOSTED_BASE_URL: ${AGENTIC_MEMORY_HOSTED_BASE_URL:-}
       AM_SERVER_HOST: 0.0.0.0
       AM_SERVER_PORT: 8765
+      AM_PUBLIC_BASE_URL: ${AM_PUBLIC_BASE_URL:-}
       # REST auth is mandatory for the OpenClaw plugin surface. Public and
       # internal hosted-MCP surfaces remain optional and can be added later.
       AM_SERVER_API_KEYS: ${AM_SERVER_API_KEYS:-change-me}
       AM_SERVER_PUBLIC_MCP_API_KEYS: ${AM_SERVER_PUBLIC_MCP_API_KEYS:-}
       AM_SERVER_INTERNAL_MCP_API_KEYS: ${AM_SERVER_INTERNAL_MCP_API_KEYS:-}
-      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_URI: ${NEO4J_URI:-bolt://neo4j:7687}
       NEO4J_USER: ${NEO4J_USER:-neo4j}
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:-change-me}
       # At least one embedding-capable provider key should be configured for

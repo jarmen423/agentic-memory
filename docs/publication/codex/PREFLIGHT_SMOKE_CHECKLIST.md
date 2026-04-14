@@ -6,7 +6,7 @@ Use this before claiming the Codex path is ready for wider operator use.
 
 ## Hosted handshake target
 
-- `https://api.agenticmemory.com/mcp-codex`
+- `https://mcp.agentmemorylabs.com/mcp-codex`
 
 ## Smoke checks
 

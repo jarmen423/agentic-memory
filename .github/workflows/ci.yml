@@ -53,6 +53,9 @@ jobs:
       - name: Run OpenClaw dashboard API merge gate
         run: python -m pytest tests/test_am_server.py tests/test_openclaw_contract.py desktop_shell/tests/test_app.py -q
 
+      - name: Run retrieval eval smoke gate
+        run: python bench/run_eval.py --backend smoke --profile smoke --smoke-gate
+
       - name: Run OpenClaw E2E/load/chaos merge gate
         run: python -m pytest tests/e2e/test_openclaw_e2e.py tests/load/test_openclaw_load.py tests/chaos/test_openclaw_chaos.py -q
 

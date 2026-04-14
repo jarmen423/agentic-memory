@@ -1,0 +1,73 @@
+name: public-mcp-cloudflare
+
+on:
+  workflow_dispatch:
+    inputs:
+      backend_origin:
+        description: "HTTPS origin for the existing Agentic Memory backend."
+        required: true
+        default: "https://backend.agentmemorylabs.com"
+        type: string
+      public_base_url:
+        description: "External public base URL for publication and MCP review."
+        required: true
+        default: "https://mcp.agentmemorylabs.com"
+        type: string
+      deploy:
+        description: "Deploy to Cloudflare after validation."
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  validate-public-edge:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: deploy/cloudflare-public-edge
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: deploy/cloudflare-public-edge/package.json
+
+      - name: Install Worker dependencies
+        run: npm install
+
+      - name: Dry-run Cloudflare deployment
+        env:
+          BACKEND_ORIGIN: ${{ inputs.backend_origin }}
+          PUBLIC_BASE_URL: ${{ inputs.public_base_url }}
+        run: npx wrangler deploy --dry-run
+
+  deploy-public-edge:
+    needs: validate-public-edge
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: deploy/cloudflare-public-edge
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: deploy/cloudflare-public-edge/package.json
+
+      - name: Install Worker dependencies
+        run: npm install
+
+      - name: Deploy Cloudflare public edge
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          BACKEND_ORIGIN: ${{ inputs.backend_origin }}
+          PUBLIC_BASE_URL: ${{ inputs.public_base_url }}
+        run: npx wrangler deploy

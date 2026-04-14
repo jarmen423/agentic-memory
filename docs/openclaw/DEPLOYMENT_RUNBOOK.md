@@ -175,8 +175,8 @@ openclaw plugin install agentic-memory-openclaw
 Then configure it against the deployed backend:
 
 ```bash
-openclaw agentic-memory doctor --backend-url http://127.0.0.1:8765
-openclaw agentic-memory setup --backend-url http://127.0.0.1:8765
+openclaw agentic-memory doctor --hosted --backend-url http://127.0.0.1:8765
+openclaw agentic-memory setup --hosted --backend-url http://127.0.0.1:8765
 ```
 
 `doctor` should pass before `setup` is considered the supported path. `setup`

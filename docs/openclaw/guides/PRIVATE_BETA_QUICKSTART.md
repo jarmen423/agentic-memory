@@ -26,16 +26,30 @@ Important identity split:
 
 ## Configure The Plugin
 
+Choose the mode that matches the backend you are pointing at:
+
+- managed hosted beta
+- self-hosted backend
+
+Managed hosted example:
+
 ```bash
-openclaw agentic-memory doctor --backend-url http://127.0.0.1:8765
-openclaw agentic-memory setup --backend-url http://127.0.0.1:8765
+openclaw agentic-memory doctor --hosted --backend-url https://your-managed-host.example.com
+openclaw agentic-memory setup --hosted --backend-url https://your-managed-host.example.com
+```
+
+Self-hosted example:
+
+```bash
+openclaw agentic-memory doctor --self-hosted --backend-url http://127.0.0.1:8765
+openclaw agentic-memory setup --self-hosted --backend-url http://127.0.0.1:8765
 ```
 
 Recommended order:
 
 1. `openclaw plugin install agentic-memory-openclaw`
-2. `openclaw agentic-memory doctor --backend-url http://127.0.0.1:8765`
-3. `openclaw agentic-memory setup --backend-url http://127.0.0.1:8765`
+2. `openclaw agentic-memory doctor ...`
+3. `openclaw agentic-memory setup ...`
 
 Why `doctor` comes first:
 
@@ -56,7 +70,7 @@ The setup flow records:
 If you intentionally want to save config before the backend is ready, use:
 
 ```bash
-openclaw agentic-memory setup --backend-url http://127.0.0.1:8765 --allow-degraded
+openclaw agentic-memory setup --self-hosted --backend-url http://127.0.0.1:8765 --allow-degraded
 ```
 
 ## Verify The Connection

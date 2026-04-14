@@ -61,6 +61,39 @@ OpenAI.
 
 That's it! Your repository is now indexed and ready for AI agents.
 
+### Running Agentic Memory On This Repository
+
+If you are working inside the `agentic-memory` repo itself, this checkout is
+already initialized through:
+
+- `D:\code\agentic-memory\.codememory\config.json`
+
+So you normally do **not** need to run `agentic-memory init` again.
+
+On this machine, the practical local flow is:
+
+```powershell
+cd D:\code\agentic-memory
+docker compose up -d neo4j
+.\.venv-agentic-memory\Scripts\python.exe -m agentic_memory.cli status --json
+.\.venv-agentic-memory\Scripts\python.exe -m agentic_memory.cli index --json
+```
+
+Why the commands use `python -m agentic_memory.cli` instead of `agentic-memory`:
+
+- the console script may not be on `PATH`
+- the repo-local virtualenv path is explicit and avoids shell ambiguity
+
+Current local config expectations for this repo:
+
+- Neo4j: `bolt://localhost:7687`
+- Neo4j user: `neo4j`
+- Neo4j password: `password`
+- code embedding provider: Gemini (`gemini-embedding-2-preview`)
+
+If `status` fails before indexing starts, the most likely immediate cause is
+that Neo4j is not running locally yet.
+
 ---
 
 ## 📖 Usage
@@ -91,6 +124,13 @@ agentic-memory serve
 
 # Semantic search across code
 agentic-memory search "where is the auth logic?"
+```
+
+If the console script is not on `PATH`, use the module form instead:
+
+```powershell
+.\.venv-agentic-memory\Scripts\python.exe -m agentic_memory.cli status --json
+.\.venv-agentic-memory\Scripts\python.exe -m agentic_memory.cli index --json
 ```
 
 ### Code-memory behavior model
@@ -185,6 +225,40 @@ agentic-memory chat-ingest /path/to/conversation.json
 # Search past conversations
 agentic-memory chat-search "what did we decide about the auth flow?"
 ```
+
+### Optional learned reranking
+
+Agentic Memory can optionally apply a shared learned reranking layer across
+code, research, and conversation search:
+
+- first-stage retrieval still gathers candidates with the domain's normal
+  dense / lexical / temporal logic
+- reranking only reorders the candidate pool that survived those filters
+- if the hosted reranker is disabled or unavailable, the system falls back to
+  baseline ordering and records that fallback in retrieval provenance
+
+The current hosted backend is Cohere Rerank v2. Configure it with:
+
+```bash
+AM_RERANK_ENABLED=true
+AM_RERANK_PROVIDER=cohere
+AM_RERANK_MODEL=rerank-v4.0-fast
+COHERE_API_KEY=...
+```
+
+Optional per-domain candidate caps and timeout settings live in `.env.example`.
+
+If you want a backup path for retryable provider failures, you can keep direct
+Cohere as primary and configure OpenRouter as a narrow failover:
+
+```bash
+AM_RERANK_FALLBACK_PROVIDER=openrouter
+AM_RERANK_FALLBACK_MODEL=cohere/rerank-4-fast
+OPENROUTER_API_KEY=...
+```
+
+The fallback is only used for retryable provider-side failures such as
+timeouts, HTTP `429`, and `5xx` responses.
 
 ### Git graph (opt-in)
 

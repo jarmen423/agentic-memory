@@ -54,6 +54,48 @@ export PATH="$HOME/.local/bin:$PATH"
 pipx install agentic-memory
 ```
 
+If you are working in this repository and already have the local virtualenv,
+prefer the explicit module path:
+
+```powershell
+cd D:\code\agentic-memory
+.\.venv-agentic-memory\Scripts\python.exe -m agentic_memory.cli --help
+```
+
+That avoids shell `PATH` ambiguity entirely.
+
+### `status` fails with a Neo4j connection error on this repo
+
+**Symptom:** Running the local code-memory CLI in this checkout fails with a
+connection error to `localhost:7687`.
+
+**Cause:** The repo-local config in:
+
+- `D:\code\agentic-memory\.codememory\config.json`
+
+expects a local Neo4j at:
+
+- `bolt://localhost:7687`
+
+with:
+
+- user `neo4j`
+- password `password`
+
+**Solution:**
+
+```powershell
+cd D:\code\agentic-memory
+docker compose up -d neo4j
+.\.venv-agentic-memory\Scripts\python.exe -m agentic_memory.cli status --json
+```
+
+If `status` works after Neo4j starts, then continue with:
+
+```powershell
+.\.venv-agentic-memory\Scripts\python.exe -m agentic_memory.cli index --json
+```
+
 ---
 
 ## OpenClaw Plugin Issues

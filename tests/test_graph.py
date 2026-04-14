@@ -170,6 +170,31 @@ class TestKnowledgeGraphBuilder:
         pass_2.assert_called_once_with(repo_root, target_paths=changed_paths)
         pass_3.assert_called_once_with(repo_root, target_paths=changed_paths)
 
+    def test_run_pipeline_returns_stage_timing_metrics(self, builder, monkeypatch, tmp_path):
+        """Pipeline metrics should expose pass-level timings for slow-run diagnosis."""
+        repo_root = tmp_path
+        changed_paths = ["src/changed.py"]
+
+        monkeypatch.setattr(builder, "setup_database", Mock())
+        monkeypatch.setattr(builder, "pass_1_structure_scan", Mock(return_value=changed_paths))
+        monkeypatch.setattr(builder, "pass_2_entity_definition", Mock())
+        monkeypatch.setattr(builder, "pass_3_imports", Mock())
+        builder.token_usage["embedding_calls"] = 3
+        builder.token_usage["embedding_tokens"] = 120
+        builder.token_usage["total_cost_usd"] = 0.0015
+
+        metrics = builder.run_pipeline(repo_root)
+
+        assert metrics["changed_files"] == 1
+        assert metrics["embedding_calls"] == 3
+        assert metrics["tokens_used"] == 120
+        assert metrics["cost_usd"] == pytest.approx(0.0015)
+        assert metrics["elapsed_seconds"] >= 0
+        assert metrics["setup_database_seconds"] >= 0
+        assert metrics["pass_1_seconds"] >= 0
+        assert metrics["pass_2_seconds"] >= 0
+        assert metrics["pass_3_seconds"] >= 0
+
     def test_reindex_file_scopes_entity_and_import_passes_to_one_file(
         self,
         builder,

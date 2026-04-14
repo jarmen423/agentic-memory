@@ -15,6 +15,7 @@ import os
 import json
 import hashlib
 import logging
+import sys
 import time
 import fnmatch
 import math
@@ -51,6 +52,45 @@ logger = logging.getLogger(__name__)
 
 # Register code ingestion source at module load time
 register_source("code_treesitter", ["Memory", "Code", "Chunk"])
+
+
+def _safe_console_text(text: str) -> str:
+    """Return text that can be written to the active terminal encoding.
+
+    Why this helper exists:
+
+    - The ingestion pipeline uses a few human-friendly progress glyphs such as
+      emoji and symbols.
+    - On Windows, a shell can still be attached to a legacy code page that
+      cannot encode those characters.
+    - When that happens, a normal ``print(...)`` can crash an otherwise healthy
+      ingest run before the indexing logic itself fails.
+
+    This helper preserves the original text when the terminal can encode it and
+    degrades unsupported characters with replacement markers when it cannot.
+
+    Args:
+        text: Human-facing status text intended for stdout.
+
+    Returns:
+        A version of ``text`` that is safe to emit to the current stdout
+        encoding without raising ``UnicodeEncodeError``.
+    """
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        text.encode(encoding)
+        return text
+    except UnicodeEncodeError:
+        return text.encode(encoding, errors="replace").decode(encoding)
+
+
+def _safe_print(text: str = "", *, end: str = "\n") -> None:
+    """Write one line of progress text without crashing on terminal encoding.
+
+    The code-memory pipeline is allowed to be verbose for operators, but it
+    should never fail merely because the shell cannot render a decorative glyph.
+    """
+    print(_safe_console_text(text), end=end)
 
 
 class CircuitBreaker:
@@ -794,7 +834,10 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                 return
 
             for i, rel_path in enumerate(files_to_process):
-                print(f"[{i+1}/{len(files_to_process)}] 🧠 Processing: {rel_path}...", end="\r")
+                _safe_print(
+                    f"[{i+1}/{len(files_to_process)}] 🧠 Processing: {rel_path}...",
+                    end="\r",
+                )
 
                 full_path = repo_path / rel_path
                 if not full_path.exists():
@@ -1669,7 +1712,10 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                 full_path = repo_path / rel_path
 
                 # Progress logging
-                print(f"[{i+1}/{total_files}] 📞 Processing calls in: {rel_path}...", end="\r")
+                _safe_print(
+                    f"[{i+1}/{total_files}] 📞 Processing calls in: {rel_path}...",
+                    end="\r",
+                )
 
                 if not full_path.exists():
                     continue
@@ -1798,7 +1844,9 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                 except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
                     logger.warning(f"⚠️ Failed to process calls in {rel_path}: {e}")
 
-            print(f"\n✅ [Pass 4] Call Graph approximation complete. Processed {total_files} files.")
+            _safe_print(
+                f"\n✅ [Pass 4] Call Graph approximation complete. Processed {total_files} files."
+            )
 
     def reindex_file(
         self,
@@ -1877,35 +1925,67 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         repo_path, _ = self._require_repo_context(repo_path)
 
         start_time = time.time()
-        print("=" * 60)
-        print("🚀 Starting Hybrid GraphRAG Ingestion")
-        print("=" * 60)
+        _safe_print("=" * 60)
+        _safe_print("🚀 Starting Hybrid GraphRAG Ingestion")
+        _safe_print("=" * 60)
 
+        stage_started = time.time()
         self.setup_database()
+        setup_database_seconds = time.time() - stage_started
+
+        stage_started = time.time()
         changed_paths = self.pass_1_structure_scan(
             repo_path,
             supported_extensions=supported_extensions,
         )
+        pass_1_seconds = time.time() - stage_started
+
+        stage_started = time.time()
         self.pass_2_entity_definition(repo_path, target_paths=changed_paths)
+        pass_2_seconds = time.time() - stage_started
+
+        stage_started = time.time()
         self.pass_3_imports(repo_path, target_paths=changed_paths)
+        pass_3_seconds = time.time() - stage_started
 
         elapsed = time.time() - start_time
+        changed_file_count = len(changed_paths)
 
         # Print cost summary
-        print("\n" + "=" * 60)
-        print("📊 COST SUMMARY")
-        print("=" * 60)
-        print(f"⏱️  Total Time: {elapsed:.2f} seconds")
-        print(f"🔢 Embedding API Calls: {self.token_usage['embedding_calls']:,}")
-        print(f"📝 Total Tokens Used: {self.token_usage['embedding_tokens']:,}")
-        print(f"💰 Estimated Cost: ${self.token_usage['total_cost_usd']:.4f} USD")
-        print(f"📦 Model: {self.EMBEDDING_MODEL}")
-        print("=" * 60)
-        print("✅ Graph is ready for Agent retrieval.")
-        print("=" * 60)
+        _safe_print("\n" + "=" * 60)
+        _safe_print("📊 COST SUMMARY")
+        _safe_print("=" * 60)
+        _safe_print(f"⏱️  Total Time: {elapsed:.2f} seconds")
+        _safe_print(f"🗂️  Changed Files: {changed_file_count:,}")
+        _safe_print(f"🧱 Setup Database: {setup_database_seconds:.2f} seconds")
+        _safe_print(f"📂 Pass 1 Scan: {pass_1_seconds:.2f} seconds")
+        _safe_print(f"🧠 Pass 2 Entities/Chunks: {pass_2_seconds:.2f} seconds")
+        _safe_print(f"🔗 Pass 3 Imports: {pass_3_seconds:.2f} seconds")
+        _safe_print(f"🔢 Embedding API Calls: {self.token_usage['embedding_calls']:,}")
+        _safe_print(f"📝 Total Tokens Used: {self.token_usage['embedding_tokens']:,}")
+        _safe_print(f"💰 Estimated Cost: ${self.token_usage['total_cost_usd']:.4f} USD")
+        _safe_print(f"📦 Model: {self.EMBEDDING_MODEL}")
+        _safe_print("=" * 60)
+        _safe_print("✅ Graph is ready for Agent retrieval.")
+        _safe_print("=" * 60)
+
+        logger.info(
+            "Pipeline timing summary | changed_files=%s setup=%.2fs pass1=%.2fs pass2=%.2fs pass3=%.2fs total=%.2fs",
+            changed_file_count,
+            setup_database_seconds,
+            pass_1_seconds,
+            pass_2_seconds,
+            pass_3_seconds,
+            elapsed,
+        )
 
         return {
             "elapsed_seconds": elapsed,
+            "changed_files": changed_file_count,
+            "setup_database_seconds": setup_database_seconds,
+            "pass_1_seconds": pass_1_seconds,
+            "pass_2_seconds": pass_2_seconds,
+            "pass_3_seconds": pass_3_seconds,
             "embedding_calls": self.token_usage["embedding_calls"],
             "tokens_used": self.token_usage["embedding_tokens"],
             "cost_usd": self.token_usage["total_cost_usd"],

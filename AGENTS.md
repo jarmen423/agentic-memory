@@ -1,394 +1,345 @@
-# Agentic Memory (CodeMemory)
+# Agentic Memory Repo Guide For Agents
 
-**Version:** 0.1.0-alpha  
-**Description:** Structural Memory Layer for AI Agents - A hybrid GraphRAG system that creates a "Digital Twin" of codebases in Neo4j to power AI coding agents.
+This file is the repo-local operating guide for coding agents working inside
+`D:\code\agentic-memory`.
 
----
+It is intentionally practical. Use it to answer:
 
-## Project Overview
-
-Agentic Memory is not just "RAG" for code. It is an **active, structural memory system** for Autonomous Agents. Unlike standard vector databases that only know "similarity," CodeMemory understands **structure** (dependencies, imports, inheritance).
-
-**Core Value Proposition:** "Don't let your Agent code blind. Give it a map."
-
-The system moves beyond simple vector search by establishing a property graph that models syntax, dependencies (Imports/Calls), and semantic meaning (Embeddings).
+- what this repo currently is
+- which product paths are primary vs secondary
+- where the important code and docs live
+- how to run Agentic Memory against this repository itself
+- which assumptions are safe and which ones are not
 
 ---
 
-## Architecture
+## 1. Current Product Shape
 
-The system is decoupled into three independent components:
+Agentic Memory is a multi-domain memory system for AI agents. The same project
+currently exposes three related but distinct surfaces:
 
+1. **Core code/research/conversation memory CLI + MCP**
+   - Python package: `agentic-memory`
+   - Main code: `src/agentic_memory`
+   - Purpose: index repositories, ingest research/conversation memory, expose
+     retrieval tools over MCP and CLI
+2. **Hosted/self-hosted backend for client integrations**
+   - Main code: `src/am_server`
+   - Purpose: REST/OpenClaw-facing backend used by plugins and future hosted
+     clients
+3. **OpenClaw plugin**
+   - Package: `packages/am-openclaw`
+   - npm package name: `agentic-memory-openclaw`
+   - Runtime plugin id: `agentic-memory`
+
+The important product distinction right now:
+
+- **Managed hosted beta** is the preferred user-facing path
+- **Self-hosted full stack** remains supported as the operator path
+
+Do not blur those two paths in docs or implementation.
+
+---
+
+## 2. Architecture Boundaries That Matter
+
+Keep this boundary clear in code and docs:
+
+- client/plugin/app -> talks to backend URL
+- backend (`am-server`) -> talks to Neo4j, provider APIs, optional temporal
+  services, and product state
+- databases/providers are backend concerns, not end-user plugin concerns
+
+For OpenClaw specifically:
+
+- normal users should think in terms of:
+  - install plugin
+  - run `doctor`
+  - run `setup`
+  - connect to hosted or self-hosted backend
+- they should **not** need to reason about Neo4j, SpacetimeDB, or Grafana to
+  use the managed path
+
+---
+
+## 3. Repo Areas
+
+### Core memory package
+
+- `D:\code\agentic-memory\src\agentic_memory`
+  - CLI, code graph indexing, research/chat ingest, MCP server, product-state helpers
+
+### Hosted/self-hosted backend
+
+- `D:\code\agentic-memory\src\am_server`
+  - FastAPI backend for `/health`, `/metrics`, `/openclaw/*`, onboarding contract,
+    auth, and hosted/self-hosted integration logic
+
+### OpenClaw plugin
+
+- `D:\code\agentic-memory\packages\am-openclaw`
+  - install/setup/doctor UX and OpenClaw-facing client integration
+
+### Desktop shell
+
+- `D:\code\agentic-memory\desktop_shell`
+  - lightweight local control plane / browser-based shell
+
+### Planning
+
+- `D:\code\agentic-memory\.planning`
+  - active execution registry, phases, handoffs, roadmap
+
+### Docs
+
+- `D:\code\agentic-memory\README.md`
+  - broad product overview and primary quickstart
+- `D:\code\agentic-memory\docs\INSTALLATION.md`
+  - installation guide across product surfaces
+- `D:\code\agentic-memory\docs\SETUP_FULL_STACK.md`
+  - self-hosted/operator full-stack setup
+- `D:\code\agentic-memory\docs\TROUBLESHOOTING.md`
+  - common failures and repair steps
+- `D:\code\agentic-memory\docs\PRODUCT_DOGFOODING.md`
+  - repeatable local validation loop
+- `D:\code\agentic-memory\docs\openclaw\`
+  - OpenClaw-specific quickstart, deployment, beta ops, support, marketplace
+
+---
+
+## 4. Primary Documentation Paths
+
+When updating docs, keep these paths aligned:
+
+### Managed hosted beta
+
+- `D:\code\agentic-memory\docs\INSTALLATION.md`
+- `D:\code\agentic-memory\docs\openclaw\guides\PRIVATE_BETA_QUICKSTART.md`
+- `D:\code\agentic-memory\docs\openclaw\DEPLOYMENT_RUNBOOK.md`
+
+### Self-hosted/operator path
+
+- `D:\code\agentic-memory\docs\SETUP_FULL_STACK.md`
+- `D:\code\agentic-memory\docs\TROUBLESHOOTING.md`
+- `D:\code\agentic-memory\docs\PRODUCT_DOGFOODING.md`
+
+### Public plugin/publication path
+
+- `D:\code\agentic-memory\docs\PUBLIC_PLUGIN_SURFACES.md`
+- `D:\code\agentic-memory\docs\publication\`
+
+If behavior changes, update the docs in all affected paths rather than leaving
+stale parallel stories.
+
+---
+
+## 5. Running Agentic Memory On This Repository
+
+This repo already contains a local repo config:
+
+- `D:\code\agentic-memory\.codememory\config.json`
+
+That means this repository is already initialized for code memory. You should
+normally **not** re-run `agentic-memory init` unless you intentionally want to
+replace the local config.
+
+### Local prerequisites for code-memory commands
+
+The current local config expects:
+
+- Neo4j at `bolt://localhost:7687`
+- username `neo4j`
+- password `password`
+
+It currently defaults the code embedding module to Gemini:
+
+- provider: `gemini`
+- model: `gemini-embedding-2-preview`
+
+### Windows local command flow for this repo
+
+From `D:\code\agentic-memory`:
+
+```powershell
+docker compose up -d neo4j
+.\.venv-agentic-memory\Scripts\python.exe -m agentic_memory.cli status --json
+.\.venv-agentic-memory\Scripts\python.exe -m agentic_memory.cli index --json
 ```
-┌─────────────────┐     Watches      ┌──────────────────┐
-│  User Repository│ ───────────────> │ Ingestion Service│
-│                 │                  │ (Observer)       │
-└─────────────────┘                  └────────┬─────────┘
-                                              │ Writes
-                                              ▼
-                                       ┌──────────────┐
-                                       │  Neo4j       │
-                                       │  Cortex      │
-                                       └──────┬───────┘
-                                              │ Reads
-                                              ▼
-┌─────────────────┐     MCP Protocol  ┌──────────────────┐
-│   AI Agent /    │ <───────────────> │  MCP Skill       │
-│   Claude        │                   │  (Interface)     │
-└─────────────────┘                   └──────────────────┘
-```
 
-### Component A: The Observer (Ingestion Service)
+Why these commands use the venv Python directly:
 
-- **Role:** The "Writer." It watches the file system and keeps the graph in sync.
-- **Key Command:** `agentic-memory watch`
-- **Implementation:** `src/agentic_memory/ingestion/watcher.py`
+- `agentic-memory` may not be on `PATH` on this machine
+- `python -m agentic_memory.cli ...` avoids shell-path ambiguity
 
-### Component B: The Brain (Neo4j Database)
+### Expected local states
 
-- **Role:** Stores the structural and semantic representation of code.
-- **Features:** Vector indexes, graph relationships (CALLS, IMPORTS), constraints.
+- if Neo4j is down:
+  - `status` fails with a connection error to `localhost:7687`
+- if Neo4j is up but the repo has never been indexed:
+  - `status` returns zero-ish counts
+- if indexing is configured but no embedding key is available:
+  - `index` may fail once the pipeline reaches embedding generation
 
-### Component C: The Interface (MCP Server)
+### Do not assume these commands are cheap
 
-- **Role:** The "Reader" and "Translator."
-- **Why MCP?** It allows us to expose high-level *skills* to the agent, rather than raw SQL access.
-- **Key Tools:**
-  1. `search_codebase(query: str)`: Hybrid search (Vector + Keyword).
-  2. `get_file_dependencies(path: str)`: Returns what this file imports and what calls it.
-- **Implementation:** `src/agentic_memory/server/`
+- `index` can take time on a repo this size
+- `watch` is long-running
+- `build-calls` is explicitly experimental
+
+Use:
+
+- `status` for a quick state check
+- `index` for one-time ingest
+- `watch` only when you intentionally want a foreground long-running observer
 
 ---
 
-## Technology Stack
+## 6. Backend And OpenClaw Reality
 
-| Component | Technology |
-|-----------|------------|
-| Language | Python 3.10+ |
-| Database | Neo4j 5.18+ (Graph + Vector) |
-| Parsing | Tree-sitter (0.21+) |
-| Embeddings | OpenAI (`text-embedding-3-small`) |
-| Agent Protocol | MCP (Model Context Protocol) |
-| State Management | PostgreSQL (for file hash tracking) |
-| Framework | LlamaIndex |
+For the current OpenClaw integration:
 
-### Key Dependencies
+- plugin package install surface:
+  - `openclaw plugin install agentic-memory-openclaw`
+  - some OpenClaw hosts may expose `plugins install`; docs should call out host-version differences when relevant
+- runtime config/setup surface:
+  - `openclaw agentic-memory doctor`
+  - `openclaw agentic-memory setup`
+- backend truth source:
+  - `GET /health/onboarding`
 
-- `neo4j>=5.14.0` - Graph database driver
-- `openai>=1.12.0` - Embeddings API
-- `tree-sitter>=0.21.0` - Static analysis/parsing
-- `tree-sitter-python`, `tree-sitter-javascript`, `tree-sitter-typescript` - Language bindings
-- `mcp[fastapi]>=0.1.0` - MCP SDK
-- `watchdog` - File system watching
-- `llama-index-*` - Ingestion pipeline framework
+The backend currently distinguishes:
 
----
+- backend reachable
+- setup ready
+- capture-only ready
+- augment-context ready
 
-## Project Structure
-
-```
-agentic-memory/
-├── src/agentic_memory/             # Main Python package
-│   ├── __init__.py
-│   ├── cli.py                      # Entry point (argparse)
-│   ├── ingestion/                  # Refactored ingestion logic
-│   │   ├── __init__.py
-│   │   ├── watcher.py              # File system watcher
-│   │   ├── parser.py               # Tree-sitter parsing logic (stub)
-│   │   └── graph.py                # Neo4j writer & query builder
-│   ├── server/                     # MCP Server
-│   │   ├── __init__.py
-│   │   ├── app.py                  # FastMCP server setup
-│   │   └── tools.py                # Agent tools implementation
-│   ├── product/                    # Local product control-plane state
-│   │   └── state.py
-│   └── docker/
-│       └── docker-compose.yml      # Full stack deployment
-├── desktop_shell/                  # Lightweight local desktop control plane
-│   └── ...
-│
-├── 4_pass_ingestion_with_prep_hybridgraphRAG.py  # Legacy: Day 0 indexer
-├── 5_continuous_ingestion.py                     # Legacy: Continuous daemon
-├── 5_continuous_ingestion_jina.py               # Legacy: Jina embeddings variant
-├── debug_extraction.py                          # Debug script for parsing
-├── upload_checkpoint.py                         # Manual embedding uploader
-│
-├── pyproject.toml                 # Main project configuration (Hatchling)
-├── graphrag_requirements.txt      # Legacy requirements (Python 3.11)
-├── SPEC.md                        # Architecture specification
-├── GRAPHRAG_README.md             # Legacy setup documentation
-├── 4-stage-ingestion-with-prep.md # Design rationale document
-├── .env                           # Environment variables (gitignored)
-└── .gitignore                     # Git exclusions
-```
+Do not describe plain `/health` success as if setup is complete.
 
 ---
 
-## Build and Installation
+## 7. Deployment Modes
 
-### Local Development Setup
+### Managed hosted beta
+
+- preferred default story
+- backend operated by us
+- databases/provider keys operated by us
+- user mainly needs:
+  - plugin install
+  - backend URL
+  - API key
+
+### Self-hosted full stack
+
+- supported operator path
+- operator runs:
+  - Neo4j
+  - optional temporal services
+  - `am-server`
+  - plugin against their backend URL
+
+### Not a first-class mode right now
+
+Do not frame this as a standard supported mode:
+
+- hosted FastAPI + customer-managed databases
+
+That may become an advanced exception later, but it should not shape the main
+docs or onboarding defaults now.
+
+---
+
+## 8. Common Local Assumptions To Avoid
+
+Avoid these mistakes in code, docs, and testing:
+
+- assuming `agentic-memory` is on `PATH`
+- assuming Neo4j is already running locally
+- assuming `localhost:3000` belongs to SpacetimeDB
+- assuming saved OpenClaw defaults are the same as the actual intended backend
+- assuming plugin install implies backend readiness
+- assuming managed and self-hosted docs can share one blended quickstart
+
+Prefer explicitness:
+
+- explicit backend URL
+- explicit deployment mode
+- explicit `STDB_URI`
+- explicit note when a prompt default comes from saved config
+
+---
+
+## 9. Agent Editing Expectations In This Repo
+
+When making non-trivial code changes:
+
+- add or maintain structured docstrings
+- add targeted comments before non-obvious logic
+- keep code understandable to a future agent or beginner reader
+
+When making documentation changes:
+
+- keep the same command examples consistent across:
+  - `README.md`
+  - `docs/INSTALLATION.md`
+  - `docs/TROUBLESHOOTING.md`
+  - `docs/openclaw/*`
+- include plain Windows paths in user-facing references when helpful
+- prefer operational accuracy over aspirational wording
+
+When running verification:
+
+- prefer direct commands with real outputs over assumptions
+- report blockers exactly
+- do not claim local indexing or hosted flows work unless they were actually run
+
+---
+
+## 10. Quick Command Reference
+
+### Core code-memory loop on this repo
+
+```powershell
+docker compose up -d neo4j
+.\.venv-agentic-memory\Scripts\python.exe -m agentic_memory.cli status --json
+.\.venv-agentic-memory\Scripts\python.exe -m agentic_memory.cli index --json
+```
+
+### Start backend locally
+
+```powershell
+.\.venv-agentic-memory\Scripts\dotenv.exe -f .env run -- .\.venv-agentic-memory\Scripts\python.exe -m am_server.server
+```
+
+### Start desktop shell locally
+
+```powershell
+.\.venv-agentic-memory\Scripts\python.exe -m desktop_shell --backend-url http://127.0.0.1:8765
+```
+
+### OpenClaw managed/self-hosted validation
 
 ```bash
-# 1. Create virtual environment
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-
-# 2. Install in editable mode
-pip install -e .
-
-# 3. Configure environment
-cp .env.example .env  # Edit with your credentials
-```
-
-### Docker Deployment
-
-```bash
-# Start full stack (Neo4j + Ingestor + MCP Server)
-docker-compose -f src/agentic_memory/docker/docker-compose.yml up
-
-# Requires OPENAI_API_KEY environment variable set
+openclaw agentic-memory doctor --hosted --backend-url https://your-managed-host.example.com
+openclaw agentic-memory doctor --self-hosted --backend-url http://127.0.0.1:8765
 ```
 
 ---
 
-## Commands
+## 11. If You Need More Context
 
-### CLI Commands
+Read these first, in this order:
 
-The package provides the `agentic-memory` CLI command. `codememory` remains a compatibility alias:
+1. `D:\code\agentic-memory\README.md`
+2. `D:\code\agentic-memory\docs\INSTALLATION.md`
+3. `D:\code\agentic-memory\docs\TROUBLESHOOTING.md`
+4. `D:\code\agentic-memory\docs\SETUP_FULL_STACK.md`
+5. `D:\code\agentic-memory\docs\openclaw\README.md`
+6. `D:\code\agentic-memory\docs\openclaw\DEPLOYMENT_RUNBOOK.md`
 
-```bash
-# Watch the current initialized repository
-agentic-memory watch
+If the question is about planning and current intended direction, check:
 
-# Start the MCP server
-agentic-memory serve --port 8000
-
-# Show help
-agentic-memory --help
-```
-
-### Tool-Use Annotation (Personal Research)
-
-You can manually label MCP tool-use bursts as `prompted` or `unprompted`:
-
-```bash
-agentic-memory --prompted "check our auth"
-agentic-memory --unprompted "check our auth"
-```
-
-See full behavior and options: `docs/TOOL_USE_ANNOTATION.md`.
-
-### Environment Variables
-
-Create a `.env` file in the project root:
-
-```ini
-# Required
-NEO4J_URI=bolt://localhost:7687
-NEO4J_USERNAME=neo4j
-NEO4J_PASSWORD=your-password
-OPENAI_API_KEY=sk-...
-
-# Optional (for legacy scripts)
-POSTGRES_URI=postgresql+psycopg2://user:pass@localhost:5432/dbname
-REPO_PATH=/absolute/path/to/repo
-```
-
-### VM Neo4j Note
-
-- VM-side secondary Neo4j container host ports currently noted for Agentic Memory:
-  - Browser: `7477`
-  - Bolt: `7667`
-- Remote Bolt URI currently noted for the VM-accessible instance:
-  - `bolt://100.114.240.126:7667`
-
----
-
-## Code Organization
-
-### Ingestion Module (`src/agentic_memory/ingestion/`)
-
-**`watcher.py`**
-- `CodeChangeHandler` - Watchdog event handler for file changes
-- `start_continuous_watch()` - Main loop for file system observation
-- Supports `.py`, `.js`, `.ts` file extensions
-
-**`graph.py`**
-- `KnowledgeGraphBuilder` - Core class for graph operations
-  - `EMBEDDING_MODEL = "text-embedding-3-small"`
-  - `setup_indexes()` - Creates constraints and vector indexes
-  - `process_file()` - Ingests a single file
-  - `semantic_search()` - Hybrid vector + graph search
-  - `get_embedding()` - OpenAI embedding generation
-
-### Server Module (`src/agentic_memory/server/`)
-
-**`app.py`**
-- FastMCP server initialization
-- Tool decorators for agent interface
-- `run_server()` - SSE/HTTP server entry point
-
-**`tools.py`**
-- `Toolkit` - Business logic separated from server
-  - `semantic_search()` - Formats results for LLM consumption
-  - `get_file_dependencies()` - Import/caller analysis
-
-### Desktop Shell (`desktop_shell/`)
-
-- Lightweight local FastAPI shell for the product control plane
-- Proxies `GET /product/status` and gives the first consumer-facing status view
-- Intended as the first desktop surface before a fuller native shell
-
----
-
-## Database Schema
-
-### Node Types
-
-| Label | Properties |
-|-------|------------|
-| `File` | `path` (unique), `last_updated` (datetime) |
-| `Function` | `signature` (unique), `name`, `docstring`, `args`, `return_type` |
-| `Class` | `name`, `methods` |
-| `Chunk` | `text`, `embedding` (vector 1536d) |
-
-### Relationships
-
-| Type | Pattern | Description |
-|------|---------|-------------|
-| `IMPORTS` | `(File)-[:IMPORTS]->(File)` | File dependency |
-| `CALLS` | `(Function)-[:CALLS]->(Function)` | Function call graph |
-| `DEFINES` | `(File)-[:DEFINES]->(Function\|Class)` | Containment |
-| `DESCRIBES` | `(Chunk)-[:DESCRIBES]->(Function)` | Vector to code mapping |
-| `HAS_METHOD` | `(Class)-[:HAS_METHOD]->(Function)` | Class membership |
-
-### Indexes
-
-```cypher
-// Constraints
-CREATE CONSTRAINT file_path_unique FOR (f:File) REQUIRE f.path IS UNIQUE
-CREATE CONSTRAINT func_sig_unique FOR (f:Function) REQUIRE f.signature IS UNIQUE
-
-// Vector Index
-CREATE VECTOR INDEX code_embeddings FOR (c:Chunk) ON (c.embedding)
-OPTIONS {indexConfig: {
-  `vector.dimensions`: 1536,
-  `vector.similarity_function`: 'cosine'
-}}
-```
-
----
-
-## Legacy Scripts (Python 3.11 Required)
-
-The root-level Python scripts are **legacy implementations** that require Python 3.11 due to `llama-index` and `tree-sitter` compatibility:
-
-| Script | Purpose |
-|--------|---------|
-| `4_pass_ingestion_with_prep_hybridgraphRAG.py` | Day 0 full ingestion (4-pass algorithm) |
-| `5_continuous_ingestion.py` | Continuous daemon with PostgreSQL state |
-| `5_continuous_ingestion_jina.py` | Variant using Jina AI embeddings (~750d) |
-| `debug_extraction.py` | Test Tree-sitter queries without full pipeline |
-| `upload_checkpoint.py` | Manual upload of pickled embeddings |
-
-**⚠️ Important:** These scripts use a separate virtual environment:
-
-```bash
-# Setup legacy environment
-pyenv install 3.11.9
-~/.pyenv/versions/3.11.9/bin/python -m venv .venv-graphrag
-source .venv-graphrag/bin/activate
-pip install -r graphrag_requirements.txt
-```
-
----
-
-## Development Guidelines
-
-### Python Version Compatibility
-
-- **Main package:** Python 3.10+
-- **Legacy scripts:** Python 3.11 only (due to llama-index/tree-sitter bindings)
-
-### Configuration Management
-
-- Use `python-dotenv` for environment variables
-- CLI arguments override environment variables
-- No hardcoded paths in production code
-
-### Error Handling
-
-- Use `logging` module with appropriate levels
-- Wrap embedding calls with try/except (fallback to zero vectors)
-- Validate file paths before processing
-
-### Code Style
-
-- Type hints encouraged (`from typing import List, Dict, Optional`)
-- Docstrings for public methods
-- f-strings for formatting
-
----
-
-## Testing Strategy
-
-Currently, the project uses:
-
-1. **Debug scripts** (`debug_extraction.py`) for rapid testing of parsing logic
-2. **Manual integration testing** via CLI commands
-3. **Checkpoints** (`.embedding_checkpoint.pkl`) for recovery
-
-No automated unit test suite is currently configured.
-
----
-
-## Security Considerations
-
-1. **API Keys:** Store in `.env` file (already gitignored)
-2. **Neo4j Credentials:** Use environment variables, never commit passwords
-3. **File Access:** Watcher only reads files, never writes to source
-4. **Docker:** Default password `neoj/password` should be changed in production
-
----
-
-## Deployment Options
-
-### Option 1: Local Development
-
-```bash
-pip install -e .
-cd /path/to/repo
-agentic-memory watch
-agentic-memory serve  # In another terminal
-python -m desktop_shell --backend-url http://127.0.0.1:8000
-```
-
-### Option 2: Docker Compose
-
-```bash
-cd src/agentic_memory/docker
-docker-compose up -d
-```
-
-Services exposed:
-- Neo4j Browser: http://localhost:7474
-- Neo4j Bolt: `bolt://localhost:7687`
-- MCP Server: http://localhost:8000
-
----
-
-## Known Limitations
-
-1. **MVP Status:** The `parser.py` is currently a stub - full Tree-sitter logic needs porting from legacy scripts
-2. **Language Support:** Currently Python, JavaScript, TypeScript only
-3. **No Tests:** Automated test suite not yet implemented
-4. **Single Repository:** Designed for one repo per Neo4j instance
-
----
-
-## References
-
-- `SPEC.md` - Full architecture specification
-- `GRAPHRAG_README.md` - Legacy setup guide for Python 3.11
-- `4-stage-ingestion-with-prep.md` - Design rationale for hybrid chunking
+- `D:\code\agentic-memory\.planning\STATE.md`
+- `D:\code\agentic-memory\.planning\ROADMAP.md`
+- `D:\code\agentic-memory\.planning\execution\tasks.json`

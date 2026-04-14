@@ -21,6 +21,15 @@ Use this index when you need to answer one of these questions quickly:
 The npm artifact is the OpenClaw plugin package. Operators still provision or
 connect to a separate Agentic Memory backend.
 
+Important host-version note:
+
+- some OpenClaw hosts expose `openclaw plugins install ...`
+- others expose `openclaw plugin install ...`
+
+This docs bundle uses the singular form because that is the locked contract we
+are targeting, but beta operators should verify the host-specific command shape
+if install output differs.
+
 ## Recommended Reading Order
 
 1. `docs/openclaw/guides/PRIVATE_BETA_QUICKSTART.md`
@@ -83,7 +92,7 @@ connect to a separate Agentic Memory backend.
 
 This doc set assumes:
 
-- self-hosted or operator-managed backend deployment
+- managed hosted beta or self-hosted backend deployment
 - authenticated `/metrics` and `/openclaw/*` routes already exist
 - the plugin package is ready for controlled beta distribution
 - the runtime plugin id remains stable as `agentic-memory`

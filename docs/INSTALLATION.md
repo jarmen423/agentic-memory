@@ -74,6 +74,34 @@ Use these docs for the beta flow:
 The rest of this guide covers the Python/CLI install surface for the broader
 Agentic Memory product.
 
+## Running Agentic Memory On This Repo
+
+If you are working inside this repository itself, it is already initialized for
+code memory through:
+
+- `D:\code\agentic-memory\.codememory\config.json`
+
+That means the normal local sequence here is:
+
+```powershell
+cd D:\code\agentic-memory
+docker compose up -d neo4j
+.\.venv-agentic-memory\Scripts\python.exe -m agentic_memory.cli status --json
+.\.venv-agentic-memory\Scripts\python.exe -m agentic_memory.cli index --json
+```
+
+Use the explicit virtualenv Python path because `agentic-memory` may not be on
+`PATH` on every developer machine.
+
+Current repo-local expectations:
+
+- Neo4j at `bolt://localhost:7687`
+- Neo4j auth `neo4j/password`
+- code embeddings configured for Gemini by default in the local config
+
+If `status` fails before indexing begins, fix the local Neo4j connection first.
+That is the most common local blocker on this checkout.
+
 ## Public Plugin Publication
 
 If you are preparing the hosted/public plugin surfaces, use the publication

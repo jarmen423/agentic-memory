@@ -99,6 +99,30 @@ agentic-memory product-event-record ^
   --json
 ```
 
+## Running The Core Code-Memory Loop On This Repo
+
+If the dogfood target is this repository itself, it is already initialized via:
+
+- `D:\code\agentic-memory\.codememory\config.json`
+
+Use this local Windows sequence first:
+
+```powershell
+cd D:\code\agentic-memory
+docker compose up -d neo4j
+.\.venv-agentic-memory\Scripts\python.exe -m agentic_memory.cli status --json
+.\.venv-agentic-memory\Scripts\python.exe -m agentic_memory.cli index --json
+```
+
+Important notes:
+
+- `agentic-memory` may not be on `PATH` locally, so prefer the explicit venv
+  Python command shown above
+- `status` is the quick liveness/state check
+- `index` is the one-time ingest pass and can take materially longer
+- `watch` is a foreground long-running observer and should be treated as a
+  deliberate step, not the default first command
+
 ## Release Gate
 
 Do not call a packaging/UI release ready unless all of these pass:

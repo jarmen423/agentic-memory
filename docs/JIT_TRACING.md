@@ -53,8 +53,8 @@ What it deliberately does **not** do during normal indexing:
 
 This applies to both:
 
-- `agentic-memory index`
-- `agentic-memory watch`
+- `agent-memory index`
+- `agent-memory watch`
 
 ---
 
@@ -67,7 +67,7 @@ Two explicit paths now exist:
 If you still want the older analyzer-backed repo-wide `CALLS` build, run:
 
 ```bash
-agentic-memory build-calls
+agent-memory build-calls
 ```
 
 This keeps the legacy/experimental pass available for diagnostics and comparison
@@ -78,7 +78,7 @@ without forcing it into every normal indexing run.
 If you want to understand what one function likely does, run:
 
 ```bash
-agentic-memory trace-execution path/to/file.py:qualified_name --json
+agent-memory trace-execution path/to/file.py:qualified_name --json
 ```
 
 Or use the MCP tool:
@@ -194,8 +194,8 @@ The CLI also exposes:
 ### Normal indexing
 
 ```bash
-agentic-memory index
-agentic-memory watch
+agent-memory index
+agent-memory watch
 ```
 
 Behavior:
@@ -206,7 +206,7 @@ Behavior:
 ### Explicit old path
 
 ```bash
-agentic-memory build-calls
+agent-memory build-calls
 ```
 
 Behavior:
@@ -217,9 +217,9 @@ Behavior:
 ### On-demand tracing
 
 ```bash
-agentic-memory trace-execution src/app.py:run_checkout
-agentic-memory trace-execution src/app.py:run_checkout --max-depth 3 --json
-agentic-memory trace-execution checkout --force-refresh
+agent-memory trace-execution src/app.py:run_checkout
+agent-memory trace-execution src/app.py:run_checkout --max-depth 3 --json
+agent-memory trace-execution checkout --force-refresh
 ```
 
 Behavior:
@@ -232,9 +232,9 @@ Behavior:
 ### Diagnostics
 
 ```bash
-agentic-memory call-status
-agentic-memory debug-py-calls path/to/file.py --repo /path/to/repo --json
-agentic-memory debug-ts-calls path/to/file.ts --repo /path/to/repo --json
+agent-memory call-status
+agent-memory debug-py-calls path/to/file.py --repo /path/to/repo --json
+agent-memory debug-ts-calls path/to/file.ts --repo /path/to/repo --json
 ```
 
 These remain useful for inspecting the older analyzer-backed path.

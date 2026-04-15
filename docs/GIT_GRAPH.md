@@ -9,7 +9,7 @@ This document defines the git graph integration for Agentic Memory and how to ru
 - Local git ingestion is the baseline.
 - GitHub enrichment is optional and non-blocking.
 
-If your installed `agentic-memory` build does not yet expose `git-init`, `git-sync`, or `git-status`, update to a build that includes the git graph rollout.
+If your installed `agent-memory` build does not yet expose `git-init`, `git-sync`, or `git-status`, update to a build that includes the git graph rollout.
 
 ## Architecture: Separate Labels in the Same Database
 
@@ -47,12 +47,12 @@ Use explicit domain routing in MCP tool calls:
 
 ## CLI Commands
 
-### `agentic-memory git-init`
+### `agent-memory git-init`
 
 Initialize git graph metadata and checkpoint state for a repository.
 
 ```bash
-agentic-memory git-init \
+agent-memory git-init \
   --repo /absolute/path/to/repo \
   --mode local \
   --full-history
@@ -73,12 +73,12 @@ Mode: local
 Checkpoint: <HEAD_SHA>
 ```
 
-### `agentic-memory git-sync`
+### `agent-memory git-sync`
 
 Sync commits from git history into the git graph.
 
 ```bash
-agentic-memory git-sync --repo /absolute/path/to/repo --incremental
+agent-memory git-sync --repo /absolute/path/to/repo --incremental
 ```
 
 Common options:
@@ -105,12 +105,12 @@ New commits: 0
 Checkpoint unchanged: <HEAD_SHA>
 ```
 
-### `agentic-memory git-status`
+### `agent-memory git-status`
 
 Show git graph ingestion status for the current repository.
 
 ```bash
-agentic-memory git-status --repo /absolute/path/to/repo --json
+agent-memory git-status --repo /absolute/path/to/repo --json
 ```
 
 Expected JSON envelope:
@@ -153,9 +153,9 @@ Expected JSON envelope:
 Quick validation sequence:
 
 ```bash
-agentic-memory git-init --repo /absolute/path/to/repo --mode local --full-history
-agentic-memory git-sync --repo /absolute/path/to/repo --incremental
-agentic-memory git-status --repo /absolute/path/to/repo --json
+agent-memory git-init --repo /absolute/path/to/repo --mode local --full-history
+agent-memory git-sync --repo /absolute/path/to/repo --incremental
+agent-memory git-status --repo /absolute/path/to/repo --json
 ```
 
 Expected behavior:
@@ -171,7 +171,7 @@ Your installed package does not include the git graph CLI yet.
 
 Action:
 - Upgrade to a build/release that includes git graph commands.
-- Verify with `agentic-memory --help`.
+- Verify with `agent-memory --help`.
 
 ### `Not a git repository`
 
@@ -189,7 +189,7 @@ Action:
 
 ```bash
 git fetch --unshallow
-agentic-memory git-sync --full
+agent-memory git-sync --full
 ```
 
 ### Diverged/rewritten history after force push
@@ -199,10 +199,10 @@ Checkpoint no longer matches reachable history.
 Action:
 
 ```bash
-agentic-memory git-sync --full
+agent-memory git-sync --full
 ```
 
-If reconcile support is enabled in your build, use the reconcile flag documented by `agentic-memory git-sync --help`.
+If reconcile support is enabled in your build, use the reconcile flag documented by `agent-memory git-sync --help`.
 
 ### GitHub enrichment fails (auth/rate limit)
 

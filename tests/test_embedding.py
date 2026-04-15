@@ -265,14 +265,18 @@ class TestEmbedBatch:
             mock_client = MagicMock()
             mock_genai.Client.return_value = mock_client
 
-            call_count = 0
             embeddings = [[0.1] * 3072, [0.2] * 3072]
 
             def embed_side_effect(**kwargs: object) -> MagicMock:
-                nonlocal call_count
                 result = MagicMock()
-                result.embeddings = [MagicMock(values=embeddings[call_count])]
-                call_count += 1
+                # One Gemini request carries all texts; SDK returns one entry per input.
+                result.embeddings = [
+                    MagicMock(values=embeddings[0]),
+                    MagicMock(values=embeddings[1]),
+                ]
+                result.usage_metadata = MagicMock(
+                    prompt_token_count=10, total_token_count=10
+                )
                 return result
 
             mock_client.models.embed_content.side_effect = embed_side_effect
@@ -281,6 +285,7 @@ class TestEmbedBatch:
             result = service.embed_batch(["text1", "text2"])
 
             assert len(result) == 2
+            mock_client.models.embed_content.assert_called_once()
 
 
 class TestModelInfo:

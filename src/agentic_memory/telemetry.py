@@ -11,7 +11,7 @@ Database layout:
       ``applied`` when rows are updated (or deleted if no match).
 
 Annotation workflow (CLI + store):
-    #. Operator runs ``agentic-memory --prompted`` / ``--unprompted`` after a turn.
+    #. Operator runs ``agent-memory --prompted`` / ``--unprompted`` after a turn.
     #. :meth:`TelemetryStore.create_pending_annotation` persists the intent.
     #. :meth:`TelemetryStore.get_latest_unannotated_burst` finds recent unlabeled calls.
     #. :meth:`TelemetryStore.apply_annotation_to_calls` writes labels and closes the loop.

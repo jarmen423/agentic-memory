@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 *.pyo
 .venv/
+.venv-agentic-memory/
 venv/
 .pytest_cache/
 pytest-cache-files-*/

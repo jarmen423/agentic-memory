@@ -331,41 +331,105 @@ class EmbeddingService:
         vector, _ = self.embed_with_metadata(text, task_instruction=task_instruction)
         return vector
 
-    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+    def embed_batch(
+        self,
+        texts: list[str],
+        *,
+        task_instruction: str | None = None,
+    ) -> list[list[float]]:
         """Generate embedding vectors for a batch of texts.
 
         Gemini embed_content accepts up to 250 texts per call, so we chunk
         the input list into groups of 250 and send one API call per chunk.
         OpenAI/Nemotron use a single batched API call.
 
+        For Gemini, optional ``task_instruction`` applies the same
+        :meth:`_prepare_gemini_content` formatting as :meth:`embed_with_metadata`
+        to each text so batched code indexing matches single-text behavior.
+
         Args:
             texts: List of input texts to embed.
+            task_instruction: Optional Gemini Embedding 2 template; ignored by
+                non-Gemini providers.
 
         Returns:
             List of embedding vectors (one per input text).
         """
+        vectors, _ = self.embed_batch_with_metadata(
+            texts,
+            task_instruction=task_instruction,
+        )
+        return vectors
+
+    def embed_batch_with_metadata(
+        self,
+        texts: list[str],
+        *,
+        task_instruction: str | None = None,
+    ) -> tuple[list[list[float]], EmbeddingMetadata | None]:
+        """Generate many embeddings plus aggregated usage metadata.
+
+        Used by code ingestion to embed all chunks for one file in one or a few
+        API calls instead of one request per function/class.
+
+        Args:
+            texts: Input texts (already truncated/normalized by the caller).
+            task_instruction: Same semantics as :meth:`embed_with_metadata`.
+
+        Returns:
+            One vector per input text, and usage metadata when the provider
+            returns it (Gemini/OpenAI aggregate per HTTP response; multiple
+            Gemini sub-batches are summed).
+        """
+        if not texts:
+            return [], None
+
         if self.provider == "gemini":
-            # Gemini embed_content supports up to 250 texts per request.
-            # Batch them to avoid hitting RPM limits with per-text calls.
             MAX_BATCH = 250
             all_embeddings: list[list[float]] = []
+            agg_prompt: int | None = None
+            agg_total: int | None = None
+            agg_cost: float = 0.0
             for i in range(0, len(texts), MAX_BATCH):
                 chunk = texts[i : i + MAX_BATCH]
-                self._rate_limiter.wait_if_needed()
+                prepared = [
+                    self._prepare_gemini_content(t, task_instruction=task_instruction)
+                    for t in chunk
+                ]
+                if self._rate_limiter is not None:
+                    self._rate_limiter.wait_if_needed()
                 result = self._client.models.embed_content(
                     model=self.model,
-                    contents=chunk,
+                    contents=prepared,
                     config={"output_dimensionality": self.dimensions},
                 )
                 all_embeddings.extend(list(e.values) for e in result.embeddings)
-            return all_embeddings
-        else:
-            response = self._client.embeddings.create(
-                model=self.model,
-                input=texts,
-                dimensions=self.dimensions,
-            )
-            return [d.embedding for d in response.data]
+                meta = self._build_gemini_metadata(result)
+                if meta.prompt_tokens is not None:
+                    agg_prompt = (agg_prompt or 0) + meta.prompt_tokens
+                if meta.total_tokens is not None:
+                    agg_total = (agg_total or 0) + meta.total_tokens
+                if meta.estimated_cost_usd is not None:
+                    agg_cost += meta.estimated_cost_usd
+            combined: EmbeddingMetadata | None = None
+            if agg_prompt is not None or agg_total is not None or agg_cost > 0:
+                combined = EmbeddingMetadata(
+                    provider=self.provider,
+                    model=self.model,
+                    prompt_tokens=agg_prompt,
+                    total_tokens=agg_total,
+                    estimated_cost_usd=agg_cost if agg_cost > 0 else None,
+                    transport="vertex_ai" if self.vertexai else "developer_api",
+                )
+            return all_embeddings, combined
+
+        response = self._client.embeddings.create(
+            model=self.model,
+            input=texts,
+            dimensions=self.dimensions,
+        )
+        vectors = [d.embedding for d in response.data]
+        return vectors, self._build_openai_metadata(response)
 
     @property
     def model_info(self) -> dict[str, Any]:

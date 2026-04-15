@@ -30,21 +30,26 @@ Agentic Memory gives AI agents persistent, searchable memory across four domains
 
 ```bash
 # Recommended: Use pipx for isolated global installation
-pipx install agentic-memory
+pipx install agent-memory-labs
 
 # Or with uv tooling
-uv tool install agentic-memory
-uvx agentic-memory --help
+uv tool install agent-memory-labs
+uvx --from agent-memory-labs agent-memory --help
 
 # Or use pip in a virtualenv
-pip install agentic-memory
+pip install agent-memory-labs
 ```
+
+After a `pipx` install:
+- `agent-memory` is available globally on that machine
+- you install the CLI once, not once per repository
+- each repository keeps its own local Agentic Memory config under `.agentic-memory/`
 
 ### 2. Initialize in any repository
 
 ```bash
 cd /path/to/your/repo
-agentic-memory init
+agent-memory init
 ```
 
 The interactive wizard will guide you through:
@@ -53,11 +58,48 @@ The interactive wizard will guide you through:
 - Gemini API key by default for code semantic search
 - File extensions to index
 
-By default, `agentic-memory init` configures the `code` module to use
+By default, `agent-memory init` configures the `code` module to use
 `gemini-embedding-2-preview` so code memory stays aligned with the rest of the
 multimodal Agentic Memory system. If you want code memory completely separate,
 you can switch the `code` module to another text embedding provider such as
 OpenAI.
+
+### Multi-Repo Workflow
+
+If a machine hosts more than one repository, the normal flow is still:
+
+```bash
+cd /path/to/repo-a
+agent-memory init
+
+cd /path/to/repo-b
+agent-memory init
+```
+
+After that, Agentic Memory discovers the active repository from your current
+working directory. In practice that means:
+
+- `cd /path/to/repo-a && agent-memory index` works against repo A
+- `cd /path/to/repo-b && agent-memory serve` works against repo B
+- you do not need `--repo` for normal day-to-day use once each repo is initialized
+
+For no-flags multi-repo operation, store Agentic Memory credentials in the repo's
+own control directory:
+
+- `/path/to/repo/.agentic-memory/.env`
+
+Agentic Memory intentionally does **not** auto-load the repo root `.env`, because
+application-level env files often contain unrelated variables that can override
+memory configuration in surprising ways.
+
+If you change the embedding model, dimensions, or task-format configuration and
+need fresh vectors for the whole repo, run:
+
+```bash
+agent-memory index --full
+```
+
+That clears only the current repo's code graph, then rebuilds it from source.
 
 That's it! Your repository is now indexed and ready for AI agents.
 
@@ -68,7 +110,7 @@ already initialized through:
 
 - `D:\code\agentic-memory\.codememory\config.json`
 
-So you normally do **not** need to run `agentic-memory init` again.
+So you normally do **not** need to run `agent-memory init` again.
 
 On this machine, the practical local flow is:
 
@@ -79,7 +121,7 @@ docker compose up -d neo4j
 .\.venv-agentic-memory\Scripts\python.exe -m agentic_memory.cli index --json
 ```
 
-Why the commands use `python -m agentic_memory.cli` instead of `agentic-memory`:
+Why the commands use `python -m agentic_memory.cli` instead of `agent-memory`:
 
 - the console script may not be on `PATH`
 - the repo-local virtualenv path is explicit and avoids shell ambiguity
@@ -102,28 +144,31 @@ that Neo4j is not running locally yet.
 
 ```bash
 # Setup/config for code memory in this repo
-agentic-memory init
+agent-memory init
 
 # Show repository status and statistics
-agentic-memory status
+agent-memory status
 
 # One-time structural code ingest (files, entities, imports)
-agentic-memory index
+agent-memory index
+
+# Full repo rebuild after embedding-model or task-format changes
+agent-memory index --full
 
 # Continuous structural code ingest on file changes
-agentic-memory watch
+agent-memory watch
 
 # Experimental old repo-wide CALLS build
-agentic-memory build-calls
+agent-memory build-calls
 
 # JIT trace one function's likely execution neighborhood
-agentic-memory trace-execution src/app.py:run_checkout --json
+agent-memory trace-execution src/app.py:run_checkout --json
 
 # Start MCP server for AI agents
-agentic-memory serve
+agent-memory serve
 
 # Semantic search across code
-agentic-memory search "where is the auth logic?"
+agent-memory search "where is the auth logic?"
 ```
 
 If the console script is not on `PATH`, use the module form instead:
@@ -147,12 +192,12 @@ What it does **not** do by default:
 
 Behavioral tracing is now handled just in time with:
 
-- CLI: `agentic-memory trace-execution ...`
+- CLI: `agent-memory trace-execution ...`
 - MCP: `trace_execution_path(...)`
 
 The older repo-wide analyzer-backed `CALLS` flow is still available explicitly:
 
-- CLI: `agentic-memory build-calls`
+- CLI: `agent-memory build-calls`
 
 Detailed explanation:
 
@@ -198,32 +243,32 @@ For the public surface contract and auth details, see [docs/PUBLIC_PLUGIN_SURFAC
 
 ```bash
 # Setup/index repair for research memory
-agentic-memory web-init
+agent-memory web-init
 
 # Actual ad hoc research ingest from a URL or PDF
-agentic-memory web-ingest https://example.com/paper.pdf
+agent-memory web-ingest https://example.com/paper.pdf
 
 # Search research memory
-agentic-memory web-search "transformer attention mechanisms"
+agent-memory web-search "transformer attention mechanisms"
 
 # Create future ingest triggers
-agentic-memory web-schedule --project my-project --query "LLM memory" --interval 24h
+agent-memory web-schedule --project my-project --query "LLM memory" --interval 24h
 
 # Actual scheduled or ad hoc research ingest execution
-agentic-memory web-run-research --project my-project
+agent-memory web-run-research --project my-project
 ```
 
 ### Conversation memory
 
 ```bash
 # Setup/index repair for conversation memory
-agentic-memory chat-init
+agent-memory chat-init
 
 # Actual conversation ingest
-agentic-memory chat-ingest /path/to/conversation.json
+agent-memory chat-ingest /path/to/conversation.json
 
 # Search past conversations
-agentic-memory chat-search "what did we decide about the auth flow?"
+agent-memory chat-search "what did we decide about the auth flow?"
 ```
 
 ### Optional learned reranking
@@ -263,9 +308,9 @@ timeouts, HTTP `429`, and `5xx` responses.
 ### Git graph (opt-in)
 
 ```bash
-agentic-memory git-init --repo /absolute/path/to/repo --mode local --full-history
-agentic-memory git-sync --repo /absolute/path/to/repo --incremental
-agentic-memory git-status --repo /absolute/path/to/repo --json
+agent-memory git-init --repo /absolute/path/to/repo --mode local --full-history
+agent-memory git-sync --repo /absolute/path/to/repo --incremental
+agent-memory git-status --repo /absolute/path/to/repo --json
 ```
 
 Git graph command details and rollout notes: [docs/GIT_GRAPH.md](docs/GIT_GRAPH.md)
@@ -277,8 +322,8 @@ Git graph command details and rollout notes: [docs/GIT_GRAPH.md](docs/GIT_GRAPH.
 Agentic Memory supports SQLite telemetry for MCP tool calls plus manual post-response labeling as `prompted` or `unprompted`.
 
 ```bash
-agentic-memory --prompted "check our auth"
-agentic-memory --unprompted "check our auth"
+agent-memory --prompted "check our auth"
+agent-memory --unprompted "check our auth"
 ```
 
 Full workflow and options: [docs/TOOL_USE_ANNOTATION.md](docs/TOOL_USE_ANNOTATION.md)
@@ -364,7 +409,7 @@ Full workflow and options: [docs/TOOL_USE_ANNOTATION.md](docs/TOOL_USE_ANNOTATIO
 | `get_commit_context(sha, include_diff_stats=true)` | Commit metadata and change statistics |
 | `find_recent_risky_changes(path_or_symbol, window_days)` | Recent high-risk changes using hybrid signals |
 
-> Note: Git-domain tools are part of the git graph rollout. If missing in your build, run `agentic-memory git-init` first.
+> Note: Git-domain tools are part of the git graph rollout. If missing in your build, run `agent-memory git-init` first.
 
 ---
 
@@ -399,7 +444,7 @@ A unified search surface spans code, research, and conversation memory:
 
 A local product control plane handles install and dogfood loops:
 
-- CLI: `agentic-memory product-status`, `agentic-memory product-repo-add`, `agentic-memory product-integration-set`, `agentic-memory product-component-set`, `agentic-memory product-event-record`
+- CLI: `agent-memory product-status`, `agent-memory product-repo-add`, `agent-memory product-integration-set`, `agent-memory product-component-set`, `agent-memory product-event-record`
 - REST: `GET /product/status`, `POST /product/repos`, `POST /product/integrations`, `POST /product/components/{component}`, `POST /product/events`, `POST /product/onboarding`
 - Workflow: [docs/PRODUCT_DOGFOODING.md](docs/PRODUCT_DOGFOODING.md)
 
@@ -495,7 +540,7 @@ Per-repository configuration is stored in `.agentic-memory/config.json`:
 {
   "mcpServers": {
     "agentic-memory": {
-      "command": "agentic-memory",
+      "command": "agent-memory",
       "args": ["serve", "--repo", "/absolute/path/to/your/project"]
     }
   }
@@ -508,7 +553,7 @@ Per-repository configuration is stored in `.agentic-memory/config.json`:
 {
   "mcpServers": {
     "agentic-memory": {
-      "command": "agentic-memory",
+      "command": "agent-memory",
       "args": ["serve", "--repo", "/absolute/path/to/your/project", "--port", "8000"]
     }
   }
@@ -519,7 +564,7 @@ Per-repository configuration is stored in `.agentic-memory/config.json`:
 
 Add to your MCP configuration file.
 
-> Note: If your installed version does not support `--repo`, use your client's `cwd` setting or launch via a wrapper script: `cd /absolute/path/to/project && agentic-memory serve`.
+> Note: If your installed version does not support `--repo`, use your client's `cwd` setting or launch via a wrapper script: `cd /absolute/path/to/project && agent-memory serve`.
 
 ---
 
@@ -529,7 +574,7 @@ Add to your MCP configuration file.
 git clone https://github.com/jarmen423/agentic-memory.git
 cd agentic-memory
 pip install -e .
-agentic-memory init
+agent-memory init
 ```
 
 ---

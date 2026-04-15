@@ -35,7 +35,7 @@ The code-memory system now has two separate layers:
 The older repo-wide analyzer-backed `CALLS` path still exists, but it is now an
 explicit experimental CLI workflow:
 
-- `agentic-memory build-calls`
+- `agent-memory build-calls`
 
 ## Research-memory tools
 

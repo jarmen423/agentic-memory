@@ -1,4 +1,4 @@
-"""Command-line interface for Agentic Memory (``agentic-memory`` / ``codememory``).
+"""Command-line interface for Agentic Memory (``agent-memory`` / ``codememory``).
 
 This module is the primary **operator control plane**: repository initialization,
 indexing, watch mode, ad hoc search, git-graph sync, product state, web/chat
@@ -7,7 +7,7 @@ memory workflows, and MCP server startup. It is packaged as console scripts in
 
 Entry points:
     * **Setuptools / pip:** ``agentic_memory.cli:main`` registered as
-      ``agentic-memory`` and ``codememory``.
+      ``agent-memory`` and ``codememory``.
     * **Module run:** ``python -m agentic_memory`` loads ``__main__``, which
       calls :func:`main`.
     * **Direct script:** ``python path/to/cli.py`` hits the ``__main__`` guard
@@ -66,7 +66,28 @@ from agentic_memory.telemetry import TelemetryStore, resolve_telemetry_db_path
 from agentic_memory.trace.service import TraceExecutionService
 
 # Canonical name for help text, examples, and error messages (matches pyproject script).
-PRIMARY_CLI_NAME = "agentic-memory"
+PRIMARY_CLI_NAME = "agent-memory"
+
+
+def _configure_stdio_for_utf8() -> None:
+    """Force UTF-8 stdio when the runtime supports stream reconfiguration.
+
+    Windows desktop clients may launch this CLI under a legacy code page such as
+    cp1252. If any CLI or MCP-server path emits Unicode under that code page,
+    the process can crash with ``UnicodeEncodeError`` during startup or request
+    handling. MCP stdio is UTF-8 oriented already, so explicitly reconfiguring
+    stdout and stderr to UTF-8 is the safest baseline.
+    """
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                # Best effort only; some embedded streams may not support
+                # reconfiguration and should continue using their original setup.
+                pass
 
 
 def _command_example(*parts: str) -> str:
@@ -744,7 +765,18 @@ def cmd_init(args):
 
 
 def cmd_status(args):
-    """Show status of Agentic Memory for the current repository."""
+    """Show graph statistics for the active repo by default or for the whole DB.
+
+    Operator expectation:
+        - ``agent-memory status`` should answer "what is indexed for *this repo*?"
+        - ``agent-memory status --global`` should answer "what is in this Neo4j
+          database overall?"
+
+    This split matters because many operators point multiple repositories at the
+    same Neo4j instance. A repo-local status command that silently reports global
+    totals is misleading during indexing/debugging and makes it difficult to
+    compare what the graph contains for one specific codebase.
+    """
     repo_root, config = _resolve_repo_and_config(args, require_initialized=True)
 
     if not _is_json_mode(args):
@@ -759,21 +791,54 @@ def cmd_status(args):
         builder = _build_code_graph_builder(repo_root=repo_root, config=config)
 
         with builder.driver.session() as session:
-            # Get stats
-            files = session.run("MATCH (f:File) RETURN count(f) as count").single()["count"]
-            functions = session.run("MATCH (fn:Function) RETURN count(fn) as count").single()[
-                "count"
-            ]
-            classes = session.run("MATCH (c:Class) RETURN count(c) as count").single()["count"]
-            chunks = session.run("MATCH (ch:Chunk) RETURN count(ch) as count").single()["count"]
+            scoped = not getattr(args, "global_status", False)
+            status_scope = "repository" if scoped else "global"
 
-            # Get last update
-            last_update = session.run("""
-                MATCH (f:File)
-                RETURN max(f.last_updated) as last_updated
-            """).single()["last_updated"]
+            if scoped:
+                repo_id = str(repo_root)
+                files = session.run(
+                    "MATCH (f:File {repo_id: $repo_id}) RETURN count(f) as count",
+                    repo_id=repo_id,
+                ).single()["count"]
+                functions = session.run(
+                    "MATCH (fn:Function {repo_id: $repo_id}) RETURN count(fn) as count",
+                    repo_id=repo_id,
+                ).single()["count"]
+                classes = session.run(
+                    "MATCH (c:Class {repo_id: $repo_id}) RETURN count(c) as count",
+                    repo_id=repo_id,
+                ).single()["count"]
+                chunks = session.run(
+                    "MATCH (ch:Chunk {repo_id: $repo_id}) RETURN count(ch) as count",
+                    repo_id=repo_id,
+                ).single()["count"]
+                last_update = session.run(
+                    """
+                    MATCH (f:File {repo_id: $repo_id})
+                    RETURN max(f.last_updated) as last_updated
+                    """,
+                    repo_id=repo_id,
+                ).single()["last_updated"]
+            else:
+                files = session.run("MATCH (f:File) RETURN count(f) as count").single()["count"]
+                functions = session.run(
+                    "MATCH (fn:Function) RETURN count(fn) as count"
+                ).single()["count"]
+                classes = session.run("MATCH (c:Class) RETURN count(c) as count").single()[
+                    "count"
+                ]
+                chunks = session.run("MATCH (ch:Chunk) RETURN count(ch) as count").single()[
+                    "count"
+                ]
+                last_update = session.run(
+                    """
+                    MATCH (f:File)
+                    RETURN max(f.last_updated) as last_updated
+                    """
+                ).single()["last_updated"]
 
             stats = {
+                "scope": status_scope,
                 "files": files,
                 "functions": functions,
                 "classes": classes,
@@ -792,6 +857,7 @@ def cmd_status(args):
                 return
 
             print(f"\n📈 Graph Statistics:")
+            print(f"   Scope:     {status_scope}")
             print(f"   Files:     {files:,}")
             print(f"   Functions: {functions:,}")
             print(f"   Classes:   {classes:,}")
@@ -819,11 +885,17 @@ def cmd_index(args):
     The default pipeline intentionally stops after Pass 3. Repo-wide CALLS
     reconstruction is now an explicit experimental command (`build-calls`)
     rather than part of normal indexing.
+
+    `--full` is the repo-scoped rebuild path for cases where the source files
+    are unchanged but the derived corpus must be regenerated anyway, such as an
+    embedding-model or embedding-format change.
     """
     repo_root, config = _resolve_repo_and_config(args, require_initialized=True)
 
     if not args.quiet and not _is_json_mode(args):
         print(f"📂 Indexing repository: {repo_root}")
+        if getattr(args, "full", False):
+            print("🧹 Full reindex requested: clearing this repo's code graph first")
 
     indexing_cfg = config.get_indexing_config()
     ignore_dirs = set(indexing_cfg.get("ignore_dirs", []))
@@ -840,7 +912,11 @@ def cmd_index(args):
     )
 
     try:
-        metrics = builder.run_pipeline(repo_root, supported_extensions=extensions)
+        metrics = builder.run_pipeline(
+            repo_root,
+            supported_extensions=extensions,
+            full_reindex=getattr(args, "full", False),
+        )
         if _emit_success(
             args,
             data={"repository": str(repo_root)},
@@ -2765,7 +2841,7 @@ def cmd_migrate_temporal(args: argparse.Namespace) -> None:
 def main():
     """Parse CLI arguments and dispatch to the appropriate command handler.
 
-    This is the setuptools entry point registered as ``agentic-memory`` (and the
+    This is the setuptools entry point registered as ``agent-memory`` (and the
     legacy alias ``codememory``) in ``pyproject.toml``.  It builds the full
     argparse tree — global flags plus every subcommand — then routes to the
     matching ``cmd_*`` function.
@@ -2776,15 +2852,17 @@ def main():
     repository root and .env file discovery.
 
     Typical invocations:
-        ``agentic-memory init``            — interactive setup wizard
-        ``agentic-memory serve --port 8080`` — start MCP server
-        ``agentic-memory index --quiet``   — one-shot indexing (CI-friendly)
-        ``agentic-memory search "auth flow"`` — ad hoc code semantic query
+        ``agent-memory init``            — interactive setup wizard
+        ``agent-memory serve --port 8080`` — start MCP server
+        ``agent-memory index --quiet``   — one-shot indexing (CI-friendly)
+        ``agent-memory search "auth flow"`` — ad hoc code semantic query
 
     Side effects:
         Calls sys.exit() on unrecoverable errors via _exit_with_error().
         Prints human-readable or JSON output to stdout depending on ``--json``.
     """
+    _configure_stdio_for_utf8()
+
     primary_name = PRIMARY_CLI_NAME
     parser = argparse.ArgumentParser(
         description="Agentic Memory: Structural Memory Layer for AI agents",
@@ -2880,6 +2958,12 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
     # Command: status
     status_parser = subparsers.add_parser("status", help="Show repository status and statistics")
     status_parser.add_argument(
+        "--global",
+        dest="global_status",
+        action="store_true",
+        help="Show whole-database graph totals instead of the current repository only",
+    )
+    status_parser.add_argument(
         "--json",
         action="store_true",
         help="Emit machine-readable JSON output",
@@ -2888,6 +2972,14 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
     # Command: index (one-time full pipeline)
     index_parser = subparsers.add_parser("index", help="Run a one-time full pipeline ingestion")
     index_parser.add_argument("--quiet", "-q", action="store_true", help="Suppress progress output")
+    index_parser.add_argument(
+        "--full",
+        action="store_true",
+        help=(
+            "Clear this repo's existing code graph before indexing so every file is "
+            "re-embedded even if unchanged"
+        ),
+    )
     index_parser.add_argument(
         "--json",
         action="store_true",

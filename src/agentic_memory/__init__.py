@@ -2,7 +2,7 @@
 
 This package implements repository-local configuration, Neo4j-backed code
 memory, ingestion pipelines, and an MCP server surface. Most operators
-interact through the ``agentic-memory`` console script (see
+interact through the ``agent-memory`` console script (see
 ``agentic_memory.cli``) or by importing subpackages such as
 ``agentic_memory.ingestion`` or ``agentic_memory.server`` from application
 code.

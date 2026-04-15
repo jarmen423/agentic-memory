@@ -471,7 +471,7 @@ Why it was moved out of normal ingestion:
 
 Current role:
 
-- explicit experimental path behind `agentic-memory build-calls`
+- explicit experimental path behind `agent-memory build-calls`
 - useful for diagnostics and comparison
 - no longer required for normal structural graph readiness
 
@@ -844,12 +844,12 @@ DETACH DELETE f
 
 **Commands:**
 ```python
-agentic-memory init      # Interactive setup
-agentic-memory status    # Show statistics
-agentic-memory index     # One-time ingestion
-agentic-memory watch     # Continuous monitoring
-agentic-memory serve     # MCP server
-agentic-memory search    # Test semantic search
+agent-memory init      # Interactive setup
+agent-memory status    # Show statistics
+agent-memory index     # One-time ingestion
+agent-memory watch     # Continuous monitoring
+agent-memory serve     # MCP server
+agent-memory search    # Test semantic search
 ```
 
 ---
@@ -1061,7 +1061,7 @@ sequenceDiagram
     participant MCPServer
     participant Agent
 
-    User->>CLI: agentic-memory watch
+    User->>CLI: agent-memory watch
     CLI->>Watcher: start_continuous_watch()
     Watcher->>GraphBuilder: setup_database()
     GraphBuilder->>Neo4j: CREATE CONSTRAINTS

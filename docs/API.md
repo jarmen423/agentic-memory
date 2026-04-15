@@ -70,13 +70,13 @@ surfaces for Agentic Memory as a whole.
 
 ## CLI Commands
 
-### `agentic-memory init`
+### `agent-memory init`
 
 Initialize Agentic Memory in the current repository with an interactive wizard.
 
 **Usage:**
 ```bash
-agentic-memory init
+agent-memory init
 ```
 
 **What it does:**
@@ -112,7 +112,7 @@ Choose Neo4j setup [1-4] (default: 1):
 **Example:**
 ```bash
 $ cd /path/to/my/project
-$ agentic-memory init
+$ agent-memory init
 
 🚀 Initializing Agentic Memory in: /path/to/my/project
 
@@ -122,9 +122,9 @@ $ agentic-memory init
 Config file: /path/to/my/project/.codememory/config.json
 
 Next steps:
-  • agentic-memory status    - Show repository status
-  • agentic-memory watch     - Start continuous monitoring
-  • agentic-memory serve     - Start MCP server for AI agents
+  • agent-memory status    - Show repository status
+  • agent-memory watch     - Start continuous monitoring
+  • agent-memory serve     - Start MCP server for AI agents
 ```
 
 **Exit codes:**
@@ -133,13 +133,13 @@ Next steps:
 
 ---
 
-### `agentic-memory status`
+### `agent-memory status`
 
 Display statistics about the indexed repository.
 
 **Usage:**
 ```bash
-agentic-memory status
+agent-memory status
 ```
 
 **Output:**
@@ -158,22 +158,23 @@ Config:     /path/to/project/.codememory/config.json
 ```
 
 **Error cases:**
-- Not initialized: Suggests running `agentic-memory init`
+- Not initialized: Suggests running `agent-memory init`
 - Neo4j unavailable: Shows connection error
 
 ---
 
-### `agentic-memory index`
+### `agent-memory index`
 
 Run a one-time structural ingestion pipeline.
 
 **Usage:**
 ```bash
-agentic-memory index [options]
+agent-memory index [options]
 ```
 
 **Options:**
 - `--quiet`, `-q` - Suppress progress output
+- `--full` - Clear this repo's code graph first, then rebuild every file
 
 **What it does:**
 1. Pass 0: Setup database constraints
@@ -185,10 +186,11 @@ agentic-memory index [options]
 - Normal `index` no longer runs repo-wide `CALLS` construction.
 - Behavioral tracing is now on demand through `trace-execution`.
 - The older repo-wide analyzer-backed `CALLS` path is still available explicitly through `build-calls`.
+- `--full` is the supported rebuild path when embedding configuration changes require every unchanged file to be re-embedded.
 
 **Example:**
 ```bash
-$ agentic-memory index
+$ agent-memory index
 
 ============================================================
 🚀 Starting Hybrid GraphRAG Ingestion
@@ -218,6 +220,12 @@ $ agentic-memory index
 ============================================================
 ```
 
+```bash
+$ agent-memory index --full
+```
+
+Use the full rebuild path after embedding-model or task-format changes.
+
 **When to use:**
 - After cloning a new repository
 - After major code changes
@@ -232,13 +240,13 @@ $ agentic-memory index
 
 ---
 
-### `agentic-memory watch`
+### `agent-memory watch`
 
 Start continuous file monitoring and incremental updates.
 
 **Usage:**
 ```bash
-agentic-memory watch [options]
+agent-memory watch [options]
 ```
 
 **Options:**
@@ -257,7 +265,7 @@ agentic-memory watch [options]
 
 **Example:**
 ```bash
-$ agentic-memory watch
+$ agent-memory watch
 
 👀 Starting Observer on: /path/to/project
 🛠️  Setting up Database Indexes...
@@ -296,13 +304,13 @@ $ agentic-memory watch
 
 ---
 
-### `agentic-memory serve`
+### `agent-memory serve`
 
 Start the MCP server for AI agent integration.
 
 **Usage:**
 ```bash
-agentic-memory serve [options]
+agent-memory serve [options]
 ```
 
 **Options:**
@@ -310,7 +318,7 @@ agentic-memory serve [options]
 
 **Example:**
 ```bash
-$ agentic-memory serve
+$ agent-memory serve
 
 📂 Using config from: /path/to/project/.codememory/config.json
 ✅ Connected to Neo4j at bolt://localhost:7687
@@ -344,13 +352,13 @@ curl http://localhost:8000/tools/search_codebase \
 
 ---
 
-### `agentic-memory build-calls`
+### `agent-memory build-calls`
 
 Run the older analyzer-backed repo-wide `CALLS` build explicitly.
 
 **Usage:**
 ```bash
-agentic-memory build-calls [options]
+agent-memory build-calls [options]
 ```
 
 **Options:**
@@ -368,13 +376,13 @@ agentic-memory build-calls [options]
 
 ---
 
-### `agentic-memory trace-execution`
+### `agent-memory trace-execution`
 
 Trace one function's likely execution neighborhood on demand.
 
 **Usage:**
 ```bash
-agentic-memory trace-execution <start_symbol> [options]
+agent-memory trace-execution <start_symbol> [options]
 ```
 
 **Options:**
@@ -406,13 +414,13 @@ If resolution stays ambiguous, the command returns candidates instead of guessin
 
 ---
 
-### `agentic-memory search`
+### `agent-memory search`
 
 Test semantic search from the command line (for debugging/testing).
 
 **Usage:**
 ```bash
-agentic-memory search <query> [options]
+agent-memory search <query> [options]
 ```
 
 **Arguments:**
@@ -423,7 +431,7 @@ agentic-memory search <query> [options]
 
 **Example:**
 ```bash
-$ agentic-memory search "JWT token validation" --limit 3
+$ agent-memory search "JWT token validation" --limit 3
 
 Found 3 result(s):
 
@@ -1292,7 +1300,7 @@ def get_indexing_config(self) -> Dict[str, Any]
 
 | Error | Message | Resolution |
 |-------|---------|------------|
-| Graph not initialized | "❌ Graph not initialized" | Run `agentic-memory index` |
+| Graph not initialized | "❌ Graph not initialized" | Run `agent-memory index` |
 | File not found | "❌ File not found in the graph" | Check file path, run indexing |
 | Code embedding key missing | "❌ Configured code embedding API key not configured" | Set `GEMINI_API_KEY` / `GOOGLE_API_KEY`, or switch provider and set that provider's key |
 | No results | "No relevant code found" | Try different query |
@@ -1304,7 +1312,7 @@ def get_indexing_config(self) -> Dict[str, Any]
 
 | Exception | When | How to handle |
 |-----------|------|---------------|
-| `RuntimeError` | Config file corrupted | Re-run `agentic-memory init` |
+| `RuntimeError` | Config file corrupted | Re-run `agent-memory init` |
 | `neo4j.ServiceUnavailable` | Neo4j not running | Start Neo4j |
 | Provider-specific auth exception | Invalid embedding API key | Check the configured provider key |
 | Provider-specific rate-limit exception | Embedding API rate limit | Wait and retry |

@@ -21,19 +21,19 @@ The target is not just "the repo works." The target is:
 ## Core Artifacts
 
 - Local product state:
-  - `agentic-memory product-status --json`
+  - `agent-memory product-status --json`
   - `GET /product/status`
 - Repo registration:
-  - `agentic-memory product-repo-add`
+  - `agent-memory product-repo-add`
   - `POST /product/repos`
 - Integration registration:
-  - `agentic-memory product-integration-set`
+  - `agent-memory product-integration-set`
   - `POST /product/integrations`
 - Runtime component health:
-  - `agentic-memory product-component-set`
+  - `agent-memory product-component-set`
   - `POST /product/components/{component}`
 - Dogfood event capture:
-  - `agentic-memory product-event-record`
+  - `agent-memory product-event-record`
   - `POST /product/events`
 - Desktop shell:
   - `python -m am_server.server`
@@ -70,28 +70,28 @@ For every journey, record:
 
 ```bash
 # Inspect the local control-plane state
-agentic-memory product-status --json
+agent-memory product-status --json
 
 # Register a repo under test
-agentic-memory product-repo-add C:\path\to\repo --label "Dogfood Repo" --json
+agent-memory product-repo-add C:\path\to\repo --label "Dogfood Repo" --json
 
 # Mark an integration as configured
-agentic-memory product-integration-set ^
+agent-memory product-integration-set ^
   --surface mcp ^
   --target claude_desktop ^
   --status configured ^
-  --config-json "{\"command\":\"agentic-memory\"}" ^
+  --config-json "{\"command\":\"agent-memory\"}" ^
   --json
 
 # Mark runtime health
-agentic-memory product-component-set ^
+agent-memory product-component-set ^
   --component server ^
   --status healthy ^
   --details-json "{\"endpoint\":\"http://localhost:8000\"}" ^
   --json
 
 # Record friction or success
-agentic-memory product-event-record ^
+agent-memory product-event-record ^
   --event install_completed ^
   --status ok ^
   --actor dogfood ^
@@ -116,7 +116,7 @@ docker compose up -d neo4j
 
 Important notes:
 
-- `agentic-memory` may not be on `PATH` locally, so prefer the explicit venv
+- `agent-memory` may not be on `PATH` locally, so prefer the explicit venv
   Python command shown above
 - `status` is the quick liveness/state check
 - `index` is the one-time ingest pass and can take materially longer

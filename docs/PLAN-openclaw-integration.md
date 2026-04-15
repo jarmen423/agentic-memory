@@ -49,7 +49,7 @@ So the correct interpretation of `capture_only` is:
   - `chat_openclaw` conversation source plumbing
   - cross-device OpenClaw stress harness and tests
   - desktop shell OpenClaw setup/verify flow against real `/openclaw/*` routes
-  - Python setup command: `agentic-memory openclaw-setup`
+  - Python setup command: `agent-memory openclaw-setup`
   - OpenClaw-native setup command: `openclaw agentic-memory setup`
   - native `packages/am-openclaw/` runtime package with real memory/context wiring
 - `In progress`
@@ -156,7 +156,7 @@ So the correct interpretation of `capture_only` is:
 ### 4. Product and onboarding
 
 - Add a dedicated OpenClaw setup command on the Python side:
-  - `agentic-memory openclaw-setup`
+  - `agent-memory openclaw-setup`
 - Add a dedicated OpenClaw-native setup command:
   - `openclaw agentic-memory setup`
 - Add project lifecycle commands:
@@ -186,7 +186,7 @@ So the correct interpretation of `capture_only` is:
   - `Done:`
     - shell OpenClaw setup card
     - shell verification flow hitting `/openclaw/context/resolve`
-    - `agentic-memory openclaw-setup`
+    - `agent-memory openclaw-setup`
     - `openclaw agentic-memory setup` now writes the live OpenClaw plugin config in-place
     - `openclaw agentic-memory project *` command family
     - `openclaw_setup_completed` event recording

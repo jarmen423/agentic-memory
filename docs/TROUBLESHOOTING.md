@@ -38,10 +38,10 @@ xcode-select --install
 # Use a virtual environment
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
-pip install agentic-memory
+pip install agent-memory-labs
 ```
 
-### `agentic-memory: command not found`
+### `agent-memory: command not found`
 
 **Symptom:** Command not found after installation.
 
@@ -51,7 +51,7 @@ pip install agentic-memory
 export PATH="$HOME/.local/bin:$PATH"
 
 # Or use pipx for isolated installation (recommended)
-pipx install agentic-memory
+pipx install agent-memory-labs
 ```
 
 If you are working in this repository and already have the local virtualenv,
@@ -63,6 +63,32 @@ cd D:\code\agentic-memory
 ```
 
 That avoids shell `PATH` ambiguity entirely.
+
+### `agent-memory` is installed, but it is using the wrong repo
+
+**Symptom:** You have more than one repo on the machine and a command appears to
+be indexing or serving the wrong one.
+
+**What to know:**
+- `agent-memory` is a machine-wide CLI after `pipx install agent-memory-labs`
+- repo selection normally comes from your current working directory
+- each repo needs its own `agent-memory init`
+
+**Recommended fix:**
+```bash
+cd /path/to/the/repo-you-actually-want
+agent-memory init   # only needed once per repo
+agent-memory status
+agent-memory index
+```
+
+If the repo is already initialized, you usually do **not** need `--repo`.
+
+**Env-file note:**
+- for no-flags multi-repo usage, store Agentic Memory env vars in:
+  - `/path/to/repo/.agentic-memory/.env`
+- the CLI intentionally does not auto-load `/path/to/repo/.env`
+- use `--env-file` only when you intentionally want to override the repo-local default
 
 ### `status` fails with a Neo4j connection error on this repo
 
@@ -273,7 +299,7 @@ curl http://localhost:7474
 
 # For Aura, copy password from Aura console
 # Update config:
-agentic-memory init
+agent-memory init
 ```
 
 ### "Vector index not found"
@@ -283,12 +309,29 @@ agentic-memory init
 **Solution:**
 ```bash
 # Re-run indexing to recreate indexes
-agentic-memory index
+agent-memory index
 
 # Or manually in Neo4j Browser:
 CALL db.index.vector.drop('code_embeddings');
-# Then re-run: agentic-memory index
+# Then re-run: agent-memory index
 ```
+
+### Embedding configuration changed but unchanged files were skipped
+
+**Symptom:** You changed the embedding model, dimensions, or Gemini task-format
+settings, but a normal `agent-memory index` only processed a small number of
+changed files.
+
+**Cause:** Normal indexing is incremental and skips files whose content hash did
+not change.
+
+**Solution:**
+```bash
+agent-memory index --full
+```
+
+`--full` clears only the current repo's code graph, then rebuilds every file's
+entities, chunks, and embeddings from source.
 
 ---
 
@@ -310,11 +353,11 @@ export CODE_EMBEDDING_PROVIDER="openai"
 export OPENAI_API_KEY="sk-..."
 
 # Option 3: Add the provider key through init
-agentic-memory init
+agent-memory init
 # Choose the code embedding provider and then enter the matching key
 
 # Verify:
-agentic-memory search "test"
+agent-memory search "test"
 ```
 
 ### Mixed code embedding providers in one Neo4j
@@ -332,7 +375,7 @@ index directly and does not namespace results by repo or provider.
 
 ### "No files indexed"
 
-**Symptom:** `agentic-memory status` shows 0 files.
+**Symptom:** `agent-memory status` shows 0 files.
 
 **Solutions:**
 
@@ -353,7 +396,7 @@ cat .codememory/config.json | grep ignore_dirs
 
 3. **Re-run indexing:**
 ```bash
-agentic-memory index
+agent-memory index
 ```
 
 ### Indexing is very slow
@@ -375,15 +418,15 @@ agentic-memory index
 
 3. **Use a smaller repository for testing:**
 ```bash
-agentic-memory init
+agent-memory init
 # Only point to a subdirectory during init
 ```
 
-4. **Remember the new default behavior:** Normal `agentic-memory index` now stops
+4. **Remember the new default behavior:** Normal `agent-memory index` now stops
    after structural graph construction. If you are waiting for repo-wide
    `CALLS`, that no longer happens automatically. Use:
 ```bash
-agentic-memory build-calls
+agent-memory build-calls
 ```
    only when you explicitly want the older experimental repo-wide `CALLS` path.
 
@@ -394,7 +437,7 @@ one function's likely execution neighborhood.
 
 **Solution:**
 ```bash
-agentic-memory trace-execution src/app.py:run_checkout --json
+agent-memory trace-execution src/app.py:run_checkout --json
 ```
 
 **Notes:**
@@ -414,7 +457,7 @@ agentic-memory trace-execution src/app.py:run_checkout --json
 
 1. **Check server is running:**
 ```bash
-agentic-memory serve
+agent-memory serve
 # Should see: "🧠 Starting MCP Interface"
 ```
 
@@ -425,7 +468,7 @@ netstat -an | grep 8000  # Linux/macOS
 netstat -an | findstr 8000  # Windows
 
 # Use different port:
-agentic-memory serve --port 8001
+agent-memory serve --port 8001
 ```
 
 3. **Check MCP configuration:**
@@ -435,7 +478,7 @@ agentic-memory serve --port 8001
    {
      "mcpServers": {
        "agentic-memory": {
-         "command": "agentic-memory",
+         "command": "agent-memory",
          "args": ["serve", "--repo", "/absolute/path/to/your/project"]
        }
      }
@@ -457,7 +500,7 @@ agentic-memory serve --port 8001
 
 2. **Check server logs:**
 ```bash
-agentic-memory serve
+agent-memory serve
 # Look for: "✅ Connected to Neo4j"
 ```
 
@@ -465,7 +508,7 @@ agentic-memory serve
 ```bash
 # Run from your repo directory
 cd /path/to/your/repo
-agentic-memory serve
+agent-memory serve
 
 # Should see: "📂 Using config from: .codememory/config.json"
 ```
@@ -482,7 +525,7 @@ agentic-memory serve
 
 **Solution:**
 ```bash
-agentic-memory --help
+agent-memory --help
 # Verify git-init/git-sync/git-status appear under commands
 ```
 
@@ -494,7 +537,7 @@ If missing, upgrade to a git graph-enabled release/build.
 
 **Solution:**
 ```bash
-agentic-memory git-init --repo /absolute/path/to/repo --mode local --full-history
+agent-memory git-init --repo /absolute/path/to/repo --mode local --full-history
 # Confirm /absolute/path/to/repo contains a .git directory
 ```
 
@@ -520,7 +563,7 @@ New commits: 0
 **Solution:**
 ```bash
 git fetch --unshallow
-agentic-memory git-sync --repo /absolute/path/to/repo --full
+agent-memory git-sync --repo /absolute/path/to/repo --full
 ```
 
 ### Sync errors after force push / rewritten history
@@ -529,10 +572,10 @@ agentic-memory git-sync --repo /absolute/path/to/repo --full
 
 **Solution:**
 ```bash
-agentic-memory git-sync --repo /absolute/path/to/repo --full
+agent-memory git-sync --repo /absolute/path/to/repo --full
 ```
 
-If your build exposes reconcile flags, use `agentic-memory git-sync --help` and run the documented reconcile mode.
+If your build exposes reconcile flags, use `agent-memory git-sync --help` and run the documented reconcile mode.
 
 ### GitHub enrichment fails, local ingestion should still proceed
 
@@ -576,11 +619,11 @@ as first-class options. Until then, keep `mcp_native` as default.
 
 **Solutions:**
 
-1. **Only index what changes:** Use `agentic-memory watch` instead of full re-indexes.
+1. **Only index what changes:** Use `agent-memory watch` instead of full re-indexes.
 
 2. **Check cost after indexing:**
 ```bash
-agentic-memory index
+agent-memory index
 # Look for: "💰 Estimated Cost: $X.XX USD"
 ```
 
@@ -588,7 +631,7 @@ agentic-memory index
 
 ### Slow semantic search
 
-**Symptom:** `agentic-memory search` takes more than a few seconds.
+**Symptom:** `agent-memory search` takes more than a few seconds.
 
 **Solutions:**
 
@@ -601,7 +644,7 @@ agentic-memory index
 
 2. **Reduce result limit:**
 ```bash
-agentic-memory search "query" --limit 3
+agent-memory search "query" --limit 3
 ```
 
 3. **Neo4j might need more RAM:**
@@ -622,12 +665,12 @@ If you're still stuck:
 1. **Check logs:**
 ```bash
 # Enable verbose logging
-agentic-memory index 2>&1 | tee debug.log
+agent-memory index 2>&1 | tee debug.log
 ```
 
 2. **Verify your setup:**
 ```bash
-agentic-memory status
+agent-memory status
 ```
 
 3. **Report issues:**
@@ -644,8 +687,8 @@ agentic-memory status
 
 | Error | Cause | Solution |
 |-------|-------|----------|
-| `ModuleNotFoundError: No module named 'agentic_memory'` | Not installed or in wrong venv | `pip install agentic-memory` |
+| `ModuleNotFoundError: No module named 'agentic_memory'` | Not installed or in wrong venv | `pip install agent-memory-labs` |
 | `Neo4j timeout` | Neo4j not responding | Restart Neo4j: `docker-compose restart neo4j` |
 | `Embedding provider rate limit` | Too many embedding requests | Wait 60s, re-run; verify the configured provider key and quota |
-| `File not found in graph` | File not indexed yet | Run `agentic-memory index` |
+| `File not found in graph` | File not indexed yet | Run `agent-memory index` |
 | `Path not found` | Wrong working directory | Run from repo root where `.codememory/` exists |

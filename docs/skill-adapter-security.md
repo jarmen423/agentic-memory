@@ -17,7 +17,7 @@ This document defines secret-handling rules for the skill-adapter workflow.
 {
   "mcpServers": {
     "agentic-memory": {
-      "command": "agentic-memory",
+      "command": "agent-memory",
       "args": ["serve", "--repo", "/abs/path/repo"],
       "env": {
         "OPENAI_API_KEY": "sk-live-plaintext",
@@ -34,7 +34,7 @@ This document defines secret-handling rules for the skill-adapter workflow.
 {
   "mcpServers": {
     "agentic-memory": {
-      "command": "agentic-memory",
+      "command": "agent-memory",
       "args": [
         "serve",
         "--repo", "/abs/path/repo",
@@ -64,7 +64,7 @@ chmod 600 /abs/path/repo/.env
 Then run:
 
 ```bash
-agentic-memory serve --repo /abs/path/repo --env-file /abs/path/repo/.env --port 8000
+agent-memory serve --repo /abs/path/repo --env-file /abs/path/repo/.env --port 8000
 ```
 
 ### Pattern B: Shell Environment
@@ -74,7 +74,7 @@ export OPENAI_API_KEY='sk-...'
 export NEO4J_URI='bolt://localhost:7687'
 export NEO4J_USER='neo4j'
 export NEO4J_PASSWORD='...'
-agentic-memory serve --repo /abs/path/repo --port 8000
+agent-memory serve --repo /abs/path/repo --port 8000
 ```
 
 Use for ephemeral sessions. Clear when done:

@@ -45,6 +45,7 @@ DEFAULT_CONFIG = {
             "node_modules",
             "__pycache__",
             ".git",
+            ".claude",
             "dist",
             "build",
             ".venv",

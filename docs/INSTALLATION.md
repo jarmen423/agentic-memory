@@ -90,7 +90,7 @@ docker compose up -d neo4j
 .\.venv-agentic-memory\Scripts\python.exe -m agentic_memory.cli index --json
 ```
 
-Use the explicit virtualenv Python path because `agentic-memory` may not be on
+Use the explicit virtualenv Python path because `agent-memory` may not be on
 `PATH` on every developer machine.
 
 Current repo-local expectations:
@@ -172,25 +172,51 @@ python -m pip install --user pipx
 export PATH="$PATH:$HOME/.local/bin"
 
 # Install Agentic Memory
-pipx install agentic-memory
+pipx install agent-memory-labs
 
 # Verify installation
-agentic-memory --version
+agent-memory --version
 ```
 
 **Advantages:**
 - Isolated from system Python
 - No dependency conflicts
-- Easy to uninstall: `pipx uninstall agentic-memory`
+- Easy to uninstall: `pipx uninstall agent-memory-labs`
+
+**How this works across multiple repos:**
+- `pipx install agent-memory-labs` installs the CLI once for the whole machine
+- `agent-memory` becomes available globally
+- each repo still needs its own one-time `agent-memory init`
+- after init, commands like `agent-memory index` and `agent-memory serve` use the repo you are currently inside
+
+**Recommended multi-repo flow:**
+```bash
+cd /path/to/repo-a
+agent-memory init
+
+cd /path/to/repo-b
+agent-memory init
+
+cd /path/to/repo-a
+agent-memory index
+
+cd /path/to/repo-b
+agent-memory serve
+```
+
+**Important env note:**
+- no-flags operation expects Agentic Memory env values in `/path/to/repo/.agentic-memory/.env`
+- the CLI intentionally does not auto-load `/path/to/repo/.env`
+- use `--env-file` only when you intentionally want a non-default env source
 
 ### Method 2: uv / uvx (Global Tooling)
 
 ```bash
 # Install globally as a Python tool
-uv tool install agentic-memory
+uv tool install agent-memory-labs
 
 # Run without installing globally
-uvx agentic-memory --help
+uvx --from agent-memory-labs agent-memory --help
 ```
 
 **Advantages:**
@@ -201,10 +227,10 @@ uvx agentic-memory --help
 
 ```bash
 # Install directly
-pip install agentic-memory
+pip install agent-memory-labs
 
 # Or with user-only installation
-pip install --user agentic-memory
+pip install --user agent-memory-labs
 ```
 
 **Note:** This may conflict with other packages requiring different versions of dependencies.
@@ -224,13 +250,32 @@ source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -e .
 
 # Verify installation
-agentic-memory --help
+agent-memory --help
 ```
 
 **Advantages:**
 - Can modify source code directly
 - Changes take effect immediately
 - Ideal for contributors
+
+---
+
+## Repo Discovery And Per-Repo Config
+
+After you run `agent-memory init` in a repository, Agentic Memory stores repo-local
+state under:
+
+- `.agentic-memory/config.json`
+- optional `.agentic-memory/.env`
+
+Most commands then discover the target repo from your current working directory.
+That means:
+
+- `cd /path/to/m26pipeline && agent-memory index` targets `m26pipeline`
+- `cd /path/to/another-repo && agent-memory serve` targets that other repo
+
+You usually do **not** need `--repo` once the repo is initialized. `--repo` is
+mainly for clients, wrappers, and explicit automation.
 
 ---
 
@@ -371,7 +416,7 @@ Run the init wizard in your project directory:
 
 ```bash
 cd /path/to/your/project
-agentic-memory init
+agent-memory init
 ```
 
 The wizard will guide you through:
@@ -464,7 +509,7 @@ The init wizard creates `.codememory/config.json`:
 
 ```bash
 cd /path/to/your/repository
-agentic-memory init
+agent-memory init
 ```
 
 Follow the interactive prompts:
@@ -478,7 +523,7 @@ Follow the interactive prompts:
 
 ```bash
 # Check status
-agentic-memory status
+agent-memory status
 
 # Expected output:
 # 📊 Agentic Memory Status
@@ -494,10 +539,23 @@ agentic-memory status
 #    Last sync: 2025-02-09 14:32:15
 ```
 
-### Step 3: Test Semantic Search
+### Step 3: Index Or Rebuild
 
 ```bash
-agentic-memory search "where is the auth logic?"
+# Normal incremental indexing
+agent-memory index
+
+# Full repo rebuild after embedding-model or task-format changes
+agent-memory index --full
+```
+
+Use `--full` when source files are unchanged but every stored code embedding
+still needs to be regenerated.
+
+### Step 4: Test Semantic Search
+
+```bash
+agent-memory search "where is the auth logic?"
 
 # Expected output:
 # Found 3 result(s):
@@ -511,10 +569,10 @@ agentic-memory search "where is the auth logic?"
 #         """Handle user login requests"""...
 ```
 
-### Step 4: Start MCP Server (Optional)
+### Step 5: Start MCP Server (Optional)
 
 ```bash
-agentic-memory serve
+agent-memory serve
 
 # Output: 🧠 Starting MCP Interface on port 8000
 ```
@@ -535,7 +593,7 @@ ModuleNotFoundError: No module named 'agentic_memory'
 **Solution:**
 ```bash
 # Reinstall the package
-pip install --force-reinstall agentic-memory
+pip install --force-reinstall agent-memory-labs
 
 # Or if installing from source
 pip install -e .
@@ -618,7 +676,7 @@ echo "GEMINI_API_KEY=your-gemini-key-here" >> .env
 
 5. **Verify end-to-end by running a real search:**
 ```bash
-agentic-memory search "entrypoint"
+agent-memory search "entrypoint"
 ```
 
 ### Issue: "Out of Memory" During Indexing
@@ -643,7 +701,7 @@ dbms.memory.heap.max_size=4G
 2. **Index in batches:**
 ```bash
 # Use --watch for incremental indexing instead of full re-index
-agentic-memory watch
+agent-memory watch
 ```
 
 ### Issue: Parser Errors for Unsupported Languages
@@ -701,7 +759,7 @@ No parser found for .go files
 3. **Use incremental updates:**
 ```bash
 # Instead of full re-index
-agentic-memory watch  # Only processes changed files
+agent-memory watch  # Only processes changed files
 ```
 
 ### Issue: Docker Volume Permission Errors
@@ -730,7 +788,7 @@ Claude Desktop/Cursor can't connect to the MCP server.
 
 1. **Check server is running:**
 ```bash
-agentic-memory serve
+agent-memory serve
 
 # Should see: 🧠 Starting MCP Interface on port 8000
 ```
@@ -757,13 +815,13 @@ If none of these solutions work:
 docker-compose logs neo4j
 
 # Agentic Memory logs
-agentic-memory --verbose
+agent-memory --verbose
 ```
 
 2. **Enable debug logging:**
 ```bash
 export LOG_LEVEL=DEBUG
-agentic-memory index
+agent-memory index
 ```
 
 3. **Report issues:**
@@ -787,25 +845,25 @@ After successful installation:
 
 ```bash
 # Install
-pipx install agentic-memory
+pipx install agent-memory-labs
 
 # Initialize
-agentic-memory init
+agent-memory init
 
 # Status
-agentic-memory status
+agent-memory status
 
 # Index
-agentic-memory index
+agent-memory index
 
 # Watch
-agentic-memory watch
+agent-memory watch
 
 # Search
-agentic-memory search "query"
+agent-memory search "query"
 
 # MCP Server
-agentic-memory serve
+agent-memory serve
 ```
 
 For CLI command details, see [API.md](API.md#cli-commands).

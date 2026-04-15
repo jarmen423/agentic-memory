@@ -57,6 +57,31 @@ class TestKnowledgeGraphBuilder:
         """Test that builder initializes correctly."""
         assert builder.EMBEDDING_MODEL == "text-embedding-3-large"
         assert builder.driver is not None
+        assert ".claude" in builder.ignore_dirs
+
+    def test_initialization_keeps_builtin_ignore_dirs_when_custom_dirs_are_supplied(
+        self,
+        mock_driver,
+    ):
+        """Custom ignore dirs should extend, not replace, builtin safety defaults."""
+        from agentic_memory.ingestion.graph import KnowledgeGraphBuilder
+
+        driver, _session = mock_driver
+        with (
+            patch("neo4j.GraphDatabase.driver", return_value=driver),
+            patch.object(KnowledgeGraphBuilder, "_init_parsers"),
+            patch("agentic_memory.ingestion.graph.EmbeddingService"),
+        ):
+            builder = KnowledgeGraphBuilder(
+                uri="bolt://localhost:7687",
+                user="neo4j",
+                password="test",
+                openai_key="sk-test",
+                ignore_dirs={"custom-cache"},
+            )
+
+        assert ".claude" in builder.ignore_dirs
+        assert "custom-cache" in builder.ignore_dirs
 
     def test_get_embedding(self, builder):
         """Test embedding generation."""
@@ -186,6 +211,8 @@ class TestKnowledgeGraphBuilder:
         metrics = builder.run_pipeline(repo_root)
 
         assert metrics["changed_files"] == 1
+        assert metrics["full_reindex"] is False
+        assert metrics["full_reindex_seconds"] == 0
         assert metrics["embedding_calls"] == 3
         assert metrics["tokens_used"] == 120
         assert metrics["cost_usd"] == pytest.approx(0.0015)
@@ -194,6 +221,29 @@ class TestKnowledgeGraphBuilder:
         assert metrics["pass_1_seconds"] >= 0
         assert metrics["pass_2_seconds"] >= 0
         assert metrics["pass_3_seconds"] >= 0
+
+    def test_run_pipeline_full_reindex_clears_repo_before_pass_1(
+        self,
+        builder,
+        monkeypatch,
+        tmp_path,
+    ):
+        """Full reindex should clear the repo-scoped code graph before scanning."""
+        repo_root = tmp_path
+        changed_paths = ["src/changed.py"]
+
+        monkeypatch.setattr(builder, "setup_database", Mock())
+        clear_repo_code_graph = Mock()
+        monkeypatch.setattr(builder, "clear_repo_code_graph", clear_repo_code_graph)
+        monkeypatch.setattr(builder, "pass_1_structure_scan", Mock(return_value=changed_paths))
+        monkeypatch.setattr(builder, "pass_2_entity_definition", Mock())
+        monkeypatch.setattr(builder, "pass_3_imports", Mock())
+
+        metrics = builder.run_pipeline(repo_root, full_reindex=True)
+
+        clear_repo_code_graph.assert_called_once_with(repo_root)
+        assert metrics["full_reindex"] is True
+        assert metrics["full_reindex_seconds"] >= 0
 
     def test_reindex_file_scopes_entity_and_import_passes_to_one_file(
         self,
@@ -991,5 +1041,9 @@ class TestGraphIntegration:
             'get_embedding',
             return_value=[0.1] * neo4j_builder.VECTOR_DIMENSIONS,
         ):
-            results = neo4j_builder.semantic_search("test query", limit=5)
+            results = neo4j_builder.semantic_search(
+                "test query",
+                limit=5,
+                repo_id="integration-test-repo",
+            )
             assert isinstance(results, list)

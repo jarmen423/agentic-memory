@@ -1,6 +1,6 @@
 """Support ``python -m agentic_memory`` as an alternate CLI entry path.
 
-This module exists so the same ``main()`` routine used by the ``agentic-memory``
+This module exists so the same ``main()`` routine used by the ``agent-memory``
 and ``codememory`` console scripts (defined in ``pyproject.toml``) can be
 invoked when Python is asked to run the package as a module. Behavior is
 identical to calling ``agentic_memory.cli:main`` directly.

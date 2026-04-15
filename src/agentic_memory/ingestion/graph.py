@@ -793,6 +793,64 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             task_instruction=self.embedding_query_task_instruction,
         )
 
+    @retry_on_openai_error(max_retries=3, delay=1.0)
+    def get_document_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
+        """Embed many document strings in one or few provider calls.
+
+        Pass 2 uses this for all chunks in a file so Gemini traffic stays near
+        one batched ``embed_content`` request (up to 250 texts) instead of one
+        HTTP call per class/function, which previously tripped the RPM limiter.
+
+        Args:
+            texts: Raw enriched strings (same shape as passed to
+                :meth:`get_document_embedding`).
+
+        Returns:
+            One embedding vector per input string (same order).
+        """
+        if not texts:
+            return []
+
+        if self.embedding_service is None:
+            logger.warning(
+                "No API key configured for code embedding provider '%s'; returning zero-vector embeddings.",
+                self.embedding_runtime.provider,
+            )
+            return [[0.0] * self.VECTOR_DIMENSIONS for _ in texts]
+
+        MAX_CHARS = 24000
+        prepared: List[str] = []
+        for raw in texts:
+            t = raw
+            if len(t) > MAX_CHARS:
+                logger.warning(
+                    "⚠️ Truncating text chunk of size %s to %s chars.",
+                    len(t),
+                    MAX_CHARS,
+                )
+                t = t[:MAX_CHARS] + "...[TRUNCATED]"
+            prepared.append(t.replace("\n", " "))
+
+        vectors, metadata = self.embedding_service.embed_batch_with_metadata(
+            prepared,
+            task_instruction=self.embedding_document_task_instruction,
+        )
+        if len(vectors) != len(texts):
+            raise RuntimeError(
+                f"Embedding batch size mismatch: expected {len(texts)} vectors, got {len(vectors)}"
+            )
+
+        self.token_usage["embedding_calls"] += len(texts)
+        billable = None
+        if metadata is not None:
+            billable = metadata.prompt_tokens or metadata.total_tokens
+        if billable is not None:
+            self.token_usage["embedding_tokens"] += int(billable)
+        if metadata is not None and metadata.estimated_cost_usd is not None:
+            self.token_usage["total_cost_usd"] += float(metadata.estimated_cost_usd)
+
+        return vectors
+
     # =========================================================================
     # PASS 1: STRUCTURE SCAN & CHANGE DETECTION
     # =========================================================================
@@ -901,6 +959,11 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         1. Extracts Classes/Functions.
         2. Creates 'Chunk' nodes with "Contextual Prefixing".
 
+        Embeddings for each file are computed in one batched provider request
+        (up to 250 chunks per HTTP call for Gemini via
+        :meth:`get_document_embeddings_batch`) instead of one API call per
+        entity, keeping throughput well above the per-call RPM limiter.
+
         Args:
             repo_path: Path to repository root (defaults to self.repo_root)
             target_paths: Optional repo-relative file paths to rebuild. When
@@ -955,6 +1018,12 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                     ohash=file_hash,
                 )
 
+                # Build Class/Function nodes first, collect enriched texts in the same
+                # order as before (all classes, then all functions), then one batched
+                # embed call per file (see EmbeddingService.embed_batch_with_metadata).
+                chunk_specs: List[Dict[str, Any]] = []
+                texts_to_embed: List[str] = []
+
                 for class_row in parsed["classes"]:
                     class_name = class_row["name"]
                     class_signature = f"{rel_path}:{class_name}"
@@ -976,22 +1045,13 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                     )
 
                     enriched_text = f"Context: File {rel_path} > Class {class_name}\n\n{class_code}"
-                    session.run(
-                        """
-                        MATCH (c:Class {repo_id: $repo_id, qualified_name: $sig})
-                        CREATE (ch:Chunk {id: randomUUID()})
-                        SET ch.repo_id = $repo_id,
-                            ch.path = $path,
-                            ch.text = $text,
-                            ch.embedding = $embedding,
-                            ch.created_at = datetime()
-                        MERGE (ch)-[:DESCRIBES]->(c)
-                        """,
-                        repo_id=repo_id,
-                        path=rel_path,
-                        sig=class_signature,
-                        text=class_code,
-                        embedding=self.get_document_embedding(enriched_text),
+                    texts_to_embed.append(enriched_text)
+                    chunk_specs.append(
+                        {
+                            "kind": "class",
+                            "sig": class_signature,
+                            "text": class_code,
+                        }
                     )
 
                 for function_row in parsed["functions"]:
@@ -1044,23 +1104,53 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                     enriched_text = (
                         f"Context: {context_prefix} > Method: {function_name}\n\n{function_code}"
                     )
-                    session.run(
-                        """
-                        MATCH (fn:Function {repo_id: $repo_id, signature: $sig})
-                        CREATE (ch:Chunk {id: randomUUID()})
-                        SET ch.repo_id = $repo_id,
-                            ch.path = $path,
-                            ch.text = $text,
-                            ch.embedding = $embedding,
-                            ch.created_at = datetime()
-                        MERGE (ch)-[:DESCRIBES]->(fn)
-                        """,
-                        repo_id=repo_id,
-                        path=rel_path,
-                        sig=function_signature,
-                        text=function_code,
-                        embedding=self.get_document_embedding(enriched_text),
+                    texts_to_embed.append(enriched_text)
+                    chunk_specs.append(
+                        {
+                            "kind": "function",
+                            "sig": function_signature,
+                            "text": function_code,
+                        }
                     )
+
+                embeddings = self.get_document_embeddings_batch(texts_to_embed)
+                for spec, embedding in zip(chunk_specs, embeddings):
+                    if spec["kind"] == "class":
+                        session.run(
+                            """
+                            MATCH (c:Class {repo_id: $repo_id, qualified_name: $sig})
+                            CREATE (ch:Chunk {id: randomUUID()})
+                            SET ch.repo_id = $repo_id,
+                                ch.path = $path,
+                                ch.text = $text,
+                                ch.embedding = $embedding,
+                                ch.created_at = datetime()
+                            MERGE (ch)-[:DESCRIBES]->(c)
+                            """,
+                            repo_id=repo_id,
+                            path=rel_path,
+                            sig=spec["sig"],
+                            text=spec["text"],
+                            embedding=embedding,
+                        )
+                    else:
+                        session.run(
+                            """
+                            MATCH (fn:Function {repo_id: $repo_id, signature: $sig})
+                            CREATE (ch:Chunk {id: randomUUID()})
+                            SET ch.repo_id = $repo_id,
+                                ch.path = $path,
+                                ch.text = $text,
+                                ch.embedding = $embedding,
+                                ch.created_at = datetime()
+                            MERGE (ch)-[:DESCRIBES]->(fn)
+                            """,
+                            repo_id=repo_id,
+                            path=rel_path,
+                            sig=spec["sig"],
+                            text=spec["text"],
+                            embedding=embedding,
+                        )
 
         logger.info("✅ [Pass 2] Entities and Semantic Chunks created.")
 

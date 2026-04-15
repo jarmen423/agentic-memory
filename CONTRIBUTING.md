@@ -46,7 +46,7 @@ If you experience or witness unacceptable behavior, please contact the project m
 ### Prerequisites
 
 - Python 3.10+
-- Neo4j 5.18+ (Docker recommended)
+- Neo4j 5.23+ (Docker recommended)
 - OpenAI API key (for testing embeddings)
 - Git
 

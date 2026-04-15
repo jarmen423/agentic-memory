@@ -40,15 +40,13 @@ class TestKnowledgeGraphBuilder:
         from agentic_memory.ingestion.graph import KnowledgeGraphBuilder
 
         driver, session = mock_driver
-        with patch('neo4j.GraphDatabase.driver', return_value=driver), \
-             patch.object(KnowledgeGraphBuilder, '_init_parsers'), \
-             patch('agentic_memory.ingestion.graph.EmbeddingService'):
-            
+        with (
+            patch("neo4j.GraphDatabase.driver", return_value=driver),
+            patch.object(KnowledgeGraphBuilder, "_init_parsers"),
+            patch("agentic_memory.ingestion.graph.EmbeddingService"),
+        ):
             builder = KnowledgeGraphBuilder(
-                uri="bolt://localhost:7687",
-                user="neo4j",
-                password="test",
-                openai_key="sk-test"
+                uri="bolt://localhost:7687", user="neo4j", password="test", openai_key="sk-test"
             )
             builder.driver = driver
             return builder
@@ -168,7 +166,63 @@ class TestKnowledgeGraphBuilder:
         builder.close()
         builder.driver.close.assert_called_once()
 
-    def test_run_pipeline_scopes_pass_2_and_pass_3_to_changed_files(self, builder, monkeypatch, tmp_path):
+    def test_store_jit_trace_result_uses_scope_clause_in_union_branches(
+        self,
+        builder,
+        mock_driver,
+    ):
+        """JIT trace writes should use Neo4j 5.23+ scope-clause CALL syntax.
+
+        The project minimum is now Neo4j 5.23+, so correlated subqueries should
+        import variables through ``CALL (caller, callee, edge)`` instead of the
+        deprecated importing-WITH workaround. This regression test protects the
+        JIT trace writer from falling back to the double-WITH pattern.
+        """
+        _, session = mock_driver
+
+        builder.store_jit_trace_result(
+            repo_id="repo-1",
+            root_signature="pkg/a.py:foo",
+            root_file_ohash="ohash-1",
+            trace_id="trace-1",
+            model="test-model",
+            max_depth=2,
+            edges=[
+                {
+                    "callee_signature": "pkg/b.py:bar",
+                    "relationship_type": "JIT_CALLS_DIRECT",
+                    "edge_type": "direct_call",
+                    "confidence": 0.95,
+                    "rationale": "semantic analyzer",
+                    "evidence": "foo -> bar",
+                }
+            ],
+            unresolved=[],
+        )
+
+        write_query = next(
+            call.args[0]
+            for call in session.run.call_args_list
+            if "UNWIND $edges as edge" in call.args[0]
+        )
+
+        assert "CALL (caller, callee, edge) {" in write_query
+        assert (
+            "WITH caller, callee, edge\n                            WITH caller, callee, edge"
+            not in write_query
+        )
+        assert (
+            "WITH caller, callee, edge\n"
+            "                            WHERE edge.relationship_type = 'JIT_CALLS_CALLBACK'"
+        ) in write_query
+        assert (
+            "WITH caller, callee, edge\n"
+            "                            WHERE edge.relationship_type = 'JIT_MESSAGE_FLOW'"
+        ) in write_query
+
+    def test_run_pipeline_scopes_pass_2_and_pass_3_to_changed_files(
+        self, builder, monkeypatch, tmp_path
+    ):
         """Full indexing should only rebuild chunks/imports for changed files.
 
         Pass 1 already computes file content hashes. This regression protects the
@@ -330,32 +384,32 @@ const lazy = import("./lazy-module");
         (repo_root / "src" / "b.ts").write_text("export function bar() {}", encoding="utf8")
 
         initial_records = [
-                {
-                    "path": "src/a.ts",
-                    "funcs": [
-                        {
-                            "name": "foo",
-                            "sig": "src/a.ts:foo",
-                            "qualified_name": "foo",
-                            "parent_class": "",
-                            "name_line": 1,
-                            "name_column": 17,
-                        }
-                    ],
-                },
-                {
-                    "path": "src/b.ts",
-                    "funcs": [
-                        {
-                            "name": "bar",
-                            "sig": "src/b.ts:bar",
-                            "qualified_name": "bar",
-                            "parent_class": "",
-                            "name_line": 1,
-                            "name_column": 17,
-                        }
-                    ],
-                },
+            {
+                "path": "src/a.ts",
+                "funcs": [
+                    {
+                        "name": "foo",
+                        "sig": "src/a.ts:foo",
+                        "qualified_name": "foo",
+                        "parent_class": "",
+                        "name_line": 1,
+                        "name_column": 17,
+                    }
+                ],
+            },
+            {
+                "path": "src/b.ts",
+                "funcs": [
+                    {
+                        "name": "bar",
+                        "sig": "src/b.ts:bar",
+                        "qualified_name": "bar",
+                        "parent_class": "",
+                        "name_line": 1,
+                        "name_column": 17,
+                    }
+                ],
+            },
         ]
         session.run.side_effect = [initial_records] + [None] * 12
 
@@ -425,9 +479,7 @@ const lazy = import("./lazy-module");
         builder.pass_4_call_graph(repo_root)
 
         write_calls = [
-            call
-            for call in session.run.call_args_list
-            if "SET r.source = $source" in call.args[0]
+            call for call in session.run.call_args_list if "SET r.source = $source" in call.args[0]
         ]
         assert len(write_calls) == 1
         assert write_calls[0].kwargs["source"] == "typescript_service"
@@ -445,7 +497,9 @@ const lazy = import("./lazy-module");
         _, session = mock_driver
         repo_root = tmp_path
         (repo_root / "pkg").mkdir()
-        (repo_root / "pkg" / "a.py").write_text("from pkg.b import bar\n\ndef foo():\n    bar()\n", encoding="utf8")
+        (repo_root / "pkg" / "a.py").write_text(
+            "from pkg.b import bar\n\ndef foo():\n    bar()\n", encoding="utf8"
+        )
         (repo_root / "pkg" / "b.py").write_text("def bar():\n    return 1\n", encoding="utf8")
 
         initial_records = [
@@ -545,9 +599,7 @@ const lazy = import("./lazy-module");
         builder.pass_4_call_graph(repo_root)
 
         write_calls = [
-            call
-            for call in session.run.call_args_list
-            if "SET r.source = $source" in call.args[0]
+            call for call in session.run.call_args_list if "SET r.source = $source" in call.args[0]
         ]
         assert len(write_calls) == 1
         assert write_calls[0].kwargs["source"] == "python_service"
@@ -559,19 +611,27 @@ const lazy = import("./lazy-module");
         _, session = mock_driver
         builder.repo_id = "repo-1"
         session.run.side_effect = [
-            Mock(single=Mock(return_value={
-                "total_functions": 5,
-                "functions_with_calls": 3,
-                "total_call_edges": 4,
-                "high_confidence_edges": 3,
-            })),
-            Mock(single=Mock(return_value={
-                "files_with_functions": 3,
-                "files_with_call_edges": 2,
-                "files_with_analyzer_edges": 1,
-                "files_with_analyzer_attempts": 2,
-                "files_with_drop_reasons": 1,
-            })),
+            Mock(
+                single=Mock(
+                    return_value={
+                        "total_functions": 5,
+                        "functions_with_calls": 3,
+                        "total_call_edges": 4,
+                        "high_confidence_edges": 3,
+                    }
+                )
+            ),
+            Mock(
+                single=Mock(
+                    return_value={
+                        "files_with_functions": 3,
+                        "files_with_call_edges": 2,
+                        "files_with_analyzer_edges": 1,
+                        "files_with_analyzer_attempts": 2,
+                        "files_with_drop_reasons": 1,
+                    }
+                )
+            ),
             [
                 {
                     "source": "typescript_service",
@@ -624,16 +684,21 @@ const lazy = import("./lazy-module");
         assert diagnostics["analyzer_issues"][0]["source"] == "typescript_service"
         assert diagnostics["analyzer_issues"][0]["status"] == "failed"
 
-    def test_pass_4_records_typescript_analyzer_batch_failures(self, builder, mock_driver, monkeypatch, tmp_path):
+    def test_pass_4_records_typescript_analyzer_batch_failures(
+        self, builder, mock_driver, monkeypatch, tmp_path
+    ):
         """Batch analyzer failures should be persisted for later call-status inspection."""
         _, session = mock_driver
         repo_root = tmp_path
         (repo_root / "pkg").mkdir()
-        (repo_root / "pkg" / "a.ts").write_text("export function foo(){ return 1 }", encoding="utf8")
+        (repo_root / "pkg" / "a.ts").write_text(
+            "export function foo(){ return 1 }", encoding="utf8"
+        )
         builder.repo_root = repo_root
         builder.repo_id = str(repo_root)
 
         file_records = [{"path": "pkg/a.ts", "ohash": "hash"}]
+
         def _run_side_effect(*args, **kwargs):
             cypher = args[0]
             if "MATCH (f:File" in cypher and "collect({" in cypher:
@@ -650,7 +715,11 @@ const lazy = import("./lazy-module");
             builder,
             "_prepare_typescript_analysis_requests",
             lambda **_: (
-                {"pkg/a.ts": {"functions": [{"qualified_name": "foo", "name": "foo", "calls": []}]}},
+                {
+                    "pkg/a.ts": {
+                        "functions": [{"qualified_name": "foo", "name": "foo", "calls": []}]
+                    }
+                },
                 [{"path": "pkg/a.ts", "functions": [{"qualified_name": "foo", "name": "foo"}]}],
             ),
         )
@@ -904,7 +973,9 @@ const lazy = import("./lazy-module");
 
             def __init__(self):
                 self.last_run_issues = (
-                    Mock(total_batches=2, message="Python call analyzer batch timed out after 30s."),
+                    Mock(
+                        total_batches=2, message="Python call analyzer batch timed out after 30s."
+                    ),
                 )
 
             def is_available(self):
@@ -951,8 +1022,7 @@ const lazy = import("./lazy-module");
         record_issue_calls = [
             call
             for call in session.run.call_args_list
-            if "CallAnalysisIssue" in call.args[0]
-            and call.kwargs.get("source") == "python_service"
+            if "CallAnalysisIssue" in call.args[0] and call.kwargs.get("source") == "python_service"
         ]
         assert record_issue_calls
         assert record_issue_calls[0].kwargs["status"] == "partial_failure"
@@ -996,7 +1066,7 @@ class TestCypherQueries:
             "CREATE CONSTRAINT class_name_unique",
             "CREATE VECTOR INDEX code_embeddings",
         ]
-        
+
         # Just verify the expected queries exist
         for query in expected_queries:
             assert isinstance(query, str)
@@ -1038,7 +1108,7 @@ class TestGraphIntegration:
         # Mock embedding to avoid API call
         with patch.object(
             neo4j_builder,
-            'get_embedding',
+            "get_embedding",
             return_value=[0.1] * neo4j_builder.VECTOR_DIMENSIONS,
         ):
             results = neo4j_builder.semantic_search(

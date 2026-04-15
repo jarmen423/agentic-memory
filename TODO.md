@@ -120,7 +120,7 @@
 
 - [ ] Add LICENSE file (currently placeholder text)
 - [ ] Create installation troubleshooting guide
-- [ ] Document required Neo4j version and configuration (5.18+)
+- [ ] Document required Neo4j version and configuration (5.23+)
 - [ ] Add MCP client configuration examples for:
   - [ ] Claude Desktop
   - [ ] Cursor IDE

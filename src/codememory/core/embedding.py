@@ -2,44 +2,15 @@
 
 `EmbeddingService` normalizes single/batch embedding calls and dimension parameters
 so ingestion code matches Neo4j vector index widths from `ConnectionManager.setup_database`.
-Gemini calls use an internal rate limiter to reduce 429s during bulk embeds.
 """
 
 import logging
-import time
 from typing import Any
 
 from google import genai
 from openai import OpenAI
 
 logger = logging.getLogger(__name__)
-
-
-class _GeminiRateLimiter:
-    """Simple sliding-window rate limiter for Gemini API calls.
-
-    The Gemini free tier enforces ~15 RPM for embedding models.
-    This limiter tracks recent call timestamps and sleeps when
-    the window is full, preventing 429 RESOURCE_EXHAUSTED errors
-    during bulk ingestion.
-    """
-
-    def __init__(self, max_calls: int = 14, window_seconds: float = 60.0) -> None:
-        self._max_calls = max_calls
-        self._window = window_seconds
-        self._timestamps: list[float] = []
-
-    def wait_if_needed(self) -> None:
-        """Block until a request slot is available within the rate window."""
-        now = time.monotonic()
-        # Prune timestamps outside the window
-        self._timestamps = [t for t in self._timestamps if now - t < self._window]
-        if len(self._timestamps) >= self._max_calls:
-            sleep_for = self._window - (now - self._timestamps[0]) + 0.1
-            if sleep_for > 0:
-                logger.info("Gemini rate limiter: sleeping %.1fs to stay under RPM", sleep_for)
-                time.sleep(sleep_for)
-        self._timestamps.append(time.monotonic())
 
 
 class EmbeddingService:
@@ -136,8 +107,7 @@ class EmbeddingService:
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Generate embedding vectors for a batch of texts.
 
-        Gemini embed_content accepts up to 250 texts per call, so we chunk
-        the input list into groups of 250 and send one API call per chunk.
+        Gemini batch embed accepts at most 100 texts per call; we chunk accordingly.
         OpenAI/Nemotron use a single batched API call.
 
         Args:
@@ -147,9 +117,8 @@ class EmbeddingService:
             List of embedding vectors (one per input text).
         """
         if self.provider == "gemini":
-            # Gemini embed_content supports up to 250 texts per request.
-            # Batch them to avoid hitting RPM limits with per-text calls.
-            MAX_BATCH = 250
+            # Gemini BatchEmbedContents: at most 100 requests per batch.
+            MAX_BATCH = 100
             all_embeddings: list[list[float]] = []
             for i in range(0, len(texts), MAX_BATCH):
                 chunk = texts[i : i + MAX_BATCH]

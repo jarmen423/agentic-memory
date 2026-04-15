@@ -27,10 +27,16 @@ Gemini Embedding 2 note:
     interpolate ``{content}`` and optionally ``{title}``. This keeps the
     repo-local configuration aligned with the official model guidance while
     remaining explicit and easy to inspect.
+
+Gemini quota (sliding 60s window, defaults 3000 RPM / 1M TPM):
+
+    * ``AGENTIC_MEMORY_GEMINI_MAX_RPM`` — max HTTP embedding requests per minute
+    * ``AGENTIC_MEMORY_GEMINI_MAX_TPM`` — max estimated input tokens per minute
 """
 
 from dataclasses import dataclass
 import logging
+import os
 import time
 from typing import Any
 
@@ -39,6 +45,104 @@ from google.genai import types as genai_types
 from openai import OpenAI
 
 logger = logging.getLogger(__name__)
+
+# Default Gemini API ceilings (overridable for different billing tiers).
+_ENV_MAX_RPM = "AGENTIC_MEMORY_GEMINI_MAX_RPM"
+_ENV_MAX_TPM = "AGENTIC_MEMORY_GEMINI_MAX_TPM"
+_DEFAULT_MAX_RPM = 3000
+_DEFAULT_MAX_TPM = 1_000_000
+_QUOTA_WINDOW_S = 60.0
+
+# Google Generative Language API: BatchEmbedContents allows at most 100 inputs
+# per HTTP request (error: "at most 100 requests can be in one batch").
+GEMINI_BATCH_EMBED_MAX_TEXTS = 100
+
+
+class _GeminiQuotaGate:
+    """Sliding-window guard for Gemini RPM and TPM (one HTTP call = one request).
+
+    Defaults match a typical paid tier style ceiling (3k requests/min,
+    1M input tokens/min). Override with:
+
+    * ``AGENTIC_MEMORY_GEMINI_MAX_RPM``
+    * ``AGENTIC_MEMORY_GEMINI_MAX_TPM``
+
+    We approximate pre-call input size for waits; after each response we record
+    actual prompt token counts when the API returns them.
+    """
+
+    __slots__ = ("_calls", "max_rpm", "max_tpm", "window_s")
+
+    def __init__(
+        self,
+        *,
+        max_rpm: int = _DEFAULT_MAX_RPM,
+        max_tpm: int = _DEFAULT_MAX_TPM,
+        window_s: float = _QUOTA_WINDOW_S,
+    ) -> None:
+        self.max_rpm = max_rpm
+        self.max_tpm = max_tpm
+        self.window_s = window_s
+        self._calls: list[tuple[float, int]] = []
+
+    @staticmethod
+    def from_environment() -> "_GeminiQuotaGate":
+        """Build a gate using optional env overrides (invalid values fall back)."""
+        rpm = _DEFAULT_MAX_RPM
+        tpm = _DEFAULT_MAX_TPM
+        raw_rpm = os.environ.get(_ENV_MAX_RPM)
+        raw_tpm = os.environ.get(_ENV_MAX_TPM)
+        if raw_rpm:
+            try:
+                rpm = max(1, int(raw_rpm.strip()))
+            except ValueError:
+                logger.warning("Invalid %s=%r; using %s", _ENV_MAX_RPM, raw_rpm, rpm)
+        if raw_tpm:
+            try:
+                tpm = max(1, int(raw_tpm.strip()))
+            except ValueError:
+                logger.warning("Invalid %s=%r; using %s", _ENV_MAX_TPM, raw_tpm, tpm)
+        return _GeminiQuotaGate(max_rpm=rpm, max_tpm=tpm, window_s=_QUOTA_WINDOW_S)
+
+    @staticmethod
+    def estimate_chars_as_tokens(texts: list[str]) -> int:
+        """Rough input-token estimate for quota waits (chars / 4, minimum 1)."""
+        total = sum(len(s) for s in texts)
+        return max(1, total // 4)
+
+    def _prune(self, now: float) -> None:
+        cutoff = now - self.window_s
+        self._calls = [(t, n) for t, n in self._calls if t > cutoff]
+
+    def wait_before_request(self, *, estimated_input_tokens: int) -> None:
+        """Block until this request fits under RPM and TPM for the rolling window."""
+        est = max(1, estimated_input_tokens)
+        while True:
+            now = time.monotonic()
+            self._prune(now)
+            n_req = len(self._calls)
+            tok_sum = sum(toks for _, toks in self._calls)
+            if n_req < self.max_rpm and tok_sum + est <= self.max_tpm:
+                return
+            sleep_s = 0.05
+            if self._calls:
+                oldest = self._calls[0][0]
+                sleep_s = max(sleep_s, oldest + self.window_s - now + 0.001)
+            logger.debug(
+                "Gemini quota gate: sleeping %.2fs (requests %s/%s, tokens %s/%s, est +%s)",
+                sleep_s,
+                n_req,
+                self.max_rpm,
+                tok_sum,
+                self.max_tpm,
+                est,
+            )
+            time.sleep(min(sleep_s, 15.0))
+
+    def record_completed_request(self, *, prompt_tokens: int | None, fallback_tokens: int) -> None:
+        """Record one HTTP embed after it finishes (drives the next wait)."""
+        recorded = prompt_tokens if prompt_tokens is not None else fallback_tokens
+        self._calls.append((time.monotonic(), max(1, int(recorded))))
 
 
 @dataclass(frozen=True)
@@ -61,33 +165,6 @@ class EmbeddingMetadata:
     total_tokens: int | None = None
     estimated_cost_usd: float | None = None
     transport: str | None = None
-
-
-class _GeminiRateLimiter:
-    """Simple sliding-window rate limiter for Gemini API calls.
-
-    The Gemini free tier enforces ~15 RPM for embedding models.
-    This limiter tracks recent call timestamps and sleeps when
-    the window is full, preventing 429 RESOURCE_EXHAUSTED errors
-    during bulk ingestion.
-    """
-
-    def __init__(self, max_calls: int = 14, window_seconds: float = 60.0) -> None:
-        self._max_calls = max_calls
-        self._window = window_seconds
-        self._timestamps: list[float] = []
-
-    def wait_if_needed(self) -> None:
-        """Block until a request slot is available within the rate window."""
-        now = time.monotonic()
-        # Prune timestamps outside the window
-        self._timestamps = [t for t in self._timestamps if now - t < self._window]
-        if len(self._timestamps) >= self._max_calls:
-            sleep_for = self._window - (now - self._timestamps[0]) + 0.1
-            if sleep_for > 0:
-                logger.info("Gemini rate limiter: sleeping %.1fs to stay under RPM", sleep_for)
-                time.sleep(sleep_for)
-        self._timestamps.append(time.monotonic())
 
 
 class EmbeddingService:
@@ -154,9 +231,10 @@ class EmbeddingService:
         self.project = project
         self.location = location or ("global" if self.vertexai and provider == "gemini" else None)
         self.api_version = api_version
+        self._gemini_quota: _GeminiQuotaGate | None = None
 
-        self._rate_limiter: _GeminiRateLimiter | None = None
         if provider == "gemini":
+            self._gemini_quota = _GeminiQuotaGate.from_environment()
             client_kwargs: dict[str, Any] = {}
             if self.vertexai:
                 client_kwargs["vertexai"] = True
@@ -173,7 +251,6 @@ class EmbeddingService:
             else:
                 client_kwargs["api_key"] = api_key
             self._client = genai.Client(**client_kwargs)
-            self._rate_limiter = _GeminiRateLimiter()
         elif provider == "nemotron":
             self._client = OpenAI(
                 api_key=api_key,
@@ -303,17 +380,24 @@ class EmbeddingService:
             # CRITICAL: Always pass output_dimensionality explicitly.
             # Gemini default is 3072d but we may need 768d for web/chat indexes.
             # Pitfall 2 from RESEARCH.md: never rely on the API default.
-            if self._rate_limiter is not None:
-                self._rate_limiter.wait_if_needed()
+            assert self._gemini_quota is not None
+            prepared = self._prepare_gemini_content(
+                text,
+                task_instruction=task_instruction,
+            )
+            est = _GeminiQuotaGate.estimate_chars_as_tokens([prepared])
+            self._gemini_quota.wait_before_request(estimated_input_tokens=est)
             response = self._client.models.embed_content(
                 model=self.model,
-                contents=self._prepare_gemini_content(
-                    text,
-                    task_instruction=task_instruction,
-                ),
+                contents=prepared,
                 config={"output_dimensionality": self.dimensions},
             )
-            return list(response.embeddings[0].values), self._build_gemini_metadata(response)
+            meta = self._build_gemini_metadata(response)
+            self._gemini_quota.record_completed_request(
+                prompt_tokens=meta.prompt_tokens or meta.total_tokens,
+                fallback_tokens=est,
+            )
+            return list(response.embeddings[0].values), meta
         else:
             response = self._client.embeddings.create(
                 model=self.model,
@@ -339,8 +423,8 @@ class EmbeddingService:
     ) -> list[list[float]]:
         """Generate embedding vectors for a batch of texts.
 
-        Gemini embed_content accepts up to 250 texts per call, so we chunk
-        the input list into groups of 250 and send one API call per chunk.
+        Gemini ``batchEmbedContents`` accepts at most 100 texts per call, so we
+        chunk the input list accordingly and send one API call per chunk.
         OpenAI/Nemotron use a single batched API call.
 
         For Gemini, optional ``task_instruction`` applies the same
@@ -385,7 +469,8 @@ class EmbeddingService:
             return [], None
 
         if self.provider == "gemini":
-            MAX_BATCH = 250
+            assert self._gemini_quota is not None
+            MAX_BATCH = GEMINI_BATCH_EMBED_MAX_TEXTS
             all_embeddings: list[list[float]] = []
             agg_prompt: int | None = None
             agg_total: int | None = None
@@ -396,8 +481,8 @@ class EmbeddingService:
                     self._prepare_gemini_content(t, task_instruction=task_instruction)
                     for t in chunk
                 ]
-                if self._rate_limiter is not None:
-                    self._rate_limiter.wait_if_needed()
+                est = _GeminiQuotaGate.estimate_chars_as_tokens(prepared)
+                self._gemini_quota.wait_before_request(estimated_input_tokens=est)
                 result = self._client.models.embed_content(
                     model=self.model,
                     contents=prepared,
@@ -405,6 +490,10 @@ class EmbeddingService:
                 )
                 all_embeddings.extend(list(e.values) for e in result.embeddings)
                 meta = self._build_gemini_metadata(result)
+                self._gemini_quota.record_completed_request(
+                    prompt_tokens=meta.prompt_tokens or meta.total_tokens,
+                    fallback_tokens=est,
+                )
                 if meta.prompt_tokens is not None:
                     agg_prompt = (agg_prompt or 0) + meta.prompt_tokens
                 if meta.total_tokens is not None:

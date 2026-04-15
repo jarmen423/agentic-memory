@@ -137,7 +137,7 @@ For the public surface contract and auth model, see
 | Software | Minimum Version | Recommended | Purpose |
 |----------|----------------|-------------|---------|
 | **Python** | 3.10 | 3.11+ | Runtime environment |
-| **Neo4j** | 5.18 | 5.25+ | Graph database with vector search |
+| **Neo4j** | 5.23 | 5.25+ | Graph database with vector search |
 | **Gemini API Key** | - | - | Default code embedding provider |
 | **Git** | 2.0+ | Latest | For version control (optional) |
 
@@ -281,7 +281,7 @@ mainly for clients, wrappers, and explicit automation.
 
 ## Neo4j Setup
 
-Agentic Memory requires Neo4j 5.18+ with vector search support. Choose one of the following methods:
+Agentic Memory requires Neo4j 5.23+ with vector search support. Choose one of the following methods:
 
 ### Option 1: Docker (Recommended for Local Development)
 

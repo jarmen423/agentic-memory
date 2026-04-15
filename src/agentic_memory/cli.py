@@ -320,14 +320,14 @@ def _resolve_repo_and_config(
 
     config = Config(repo_root)
     if require_initialized and not config.exists():
-            _exit_with_error(
-                args,
-                error="Agentic Memory is not initialized in this repository.",
-                human_lines=[
-                    "❌ Agentic Memory is not initialized in this repository.",
-                    f"   Run '{_command_example('init')}' to get started.",
-                ],
-            )
+        _exit_with_error(
+            args,
+            error="Agentic Memory is not initialized in this repository.",
+            human_lines=[
+                "❌ Agentic Memory is not initialized in this repository.",
+                f"   Run '{_command_example('init')}' to get started.",
+            ],
+        )
 
     return repo_root, config
 
@@ -434,9 +434,7 @@ def cmd_init(args):
         print("⚠️  Found a legacy CodeMemory config for this repository.")
         print(f"    Legacy config: {config.legacy_config_file}")
         use_legacy = (
-            input("\nUse the existing .codememory config for this repo? [Y/n]: ")
-            .strip()
-            .lower()
+            input("\nUse the existing .codememory config for this repo? [Y/n]: ").strip().lower()
         )
         if use_legacy != "n":
             print("\n✅ Keeping the existing legacy config.")
@@ -459,7 +457,7 @@ def cmd_init(args):
     print("Step 1: Neo4j Database Configuration")
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 
-    print("Agentic Memory requires Neo4j 5.18+ with vector search support.")
+    print("Agentic Memory requires Neo4j 5.23+ with vector search support.")
     print("\nOptions:")
     print("  1. Local Neo4j (Docker)")
     print("  2. Neo4j Aura (Cloud)")
@@ -506,9 +504,7 @@ def cmd_init(args):
         should_offer_env_file = True
         neo4j_uri_default = os.getenv("NEO4J_URI", neo4j_config["uri"])
         neo4j_user_default = (
-            os.getenv("NEO4J_USERNAME")
-            or os.getenv("NEO4J_USER")
-            or neo4j_config["user"]
+            os.getenv("NEO4J_USERNAME") or os.getenv("NEO4J_USER") or neo4j_config["user"]
         )
         neo4j_password_default = os.getenv("NEO4J_PASSWORD", neo4j_config["password"])
         print("   Enter the values you want Agentic Memory to write into .agentic-memory/.env.")
@@ -623,7 +619,9 @@ def cmd_init(args):
             api_key = input("   Enter Gemini API key: ").strip()
             gemini_config["api_key"] = api_key
         elif gemini_choice == "2":
-            print("   ✅ Will use GEMINI_API_KEY or GOOGLE_API_KEY from .agentic-memory/.env or shell env")
+            print(
+                "   ✅ Will use GEMINI_API_KEY or GOOGLE_API_KEY from .agentic-memory/.env or shell env"
+            )
             should_offer_env_file = True
             existing_gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
             existing_google_key = os.getenv("GOOGLE_API_KEY", "").strip()
@@ -821,15 +819,11 @@ def cmd_status(args):
                 ).single()["last_updated"]
             else:
                 files = session.run("MATCH (f:File) RETURN count(f) as count").single()["count"]
-                functions = session.run(
-                    "MATCH (fn:Function) RETURN count(fn) as count"
-                ).single()["count"]
-                classes = session.run("MATCH (c:Class) RETURN count(c) as count").single()[
+                functions = session.run("MATCH (fn:Function) RETURN count(fn) as count").single()[
                     "count"
                 ]
-                chunks = session.run("MATCH (ch:Chunk) RETURN count(ch) as count").single()[
-                    "count"
-                ]
+                classes = session.run("MATCH (c:Class) RETURN count(c) as count").single()["count"]
+                chunks = session.run("MATCH (ch:Chunk) RETURN count(ch) as count").single()["count"]
                 last_update = session.run(
                     """
                     MATCH (f:File)
@@ -1038,8 +1032,7 @@ def cmd_search(args):
         _exit_with_error(
             args,
             error=(
-                f"Code embedding API key not configured for provider "
-                f"'{code_runtime.provider}'."
+                f"Code embedding API key not configured for provider '{code_runtime.provider}'."
             ),
             human_lines=[
                 (
@@ -1099,7 +1092,9 @@ def cmd_debug_ts_calls(args):
     Its role is to answer one question quickly: "what outgoing calls can the
     TypeScript semantic analyzer resolve for this file right now?"
     """
-    repo_root = Path(args.repo).expanduser().resolve() if getattr(args, "repo", None) else find_repo_root()
+    repo_root = (
+        Path(args.repo).expanduser().resolve() if getattr(args, "repo", None) else find_repo_root()
+    )
     if not repo_root.exists() or not repo_root.is_dir():
         _exit_with_error(
             args,
@@ -1224,7 +1219,9 @@ def cmd_debug_py_calls(args):
     It lets operators answer one question quickly: "what repo-local outgoing
     calls can the Python semantic analyzer resolve for this file right now?"
     """
-    repo_root = Path(args.repo).expanduser().resolve() if getattr(args, "repo", None) else find_repo_root()
+    repo_root = (
+        Path(args.repo).expanduser().resolve() if getattr(args, "repo", None) else find_repo_root()
+    )
     if not repo_root.exists() or not repo_root.is_dir():
         _exit_with_error(
             args,
@@ -1393,9 +1390,7 @@ def cmd_call_status(args):
         print(
             f"  Files with analyzer attempts: {diagnostics.get('files_with_analyzer_attempts', 0):,}"
         )
-        print(
-            f"  Files with drop reasons: {diagnostics.get('files_with_drop_reasons', 0):,}"
-        )
+        print(f"  Files with drop reasons: {diagnostics.get('files_with_drop_reasons', 0):,}")
         print(f"  File coverage ratio: {diagnostics['file_coverage_ratio']:.1%}")
         print()
         print("Edges")
@@ -1420,9 +1415,7 @@ def cmd_call_status(args):
             print()
             print("Drop Reasons")
             for row in drop_reasons:
-                print(
-                    f"  {row['source']} :: {row['reason']} = {row['drop_count']:,}"
-                )
+                print(f"  {row['source']} :: {row['reason']} = {row['drop_count']:,}")
 
         analyzer_issues = diagnostics.get("analyzer_issues", [])
         if analyzer_issues:
@@ -1430,10 +1423,7 @@ def cmd_call_status(args):
             print("Analyzer Issues")
             for row in analyzer_issues:
                 updated_suffix = f" @ {row['updated_at']}" if row.get("updated_at") else ""
-                print(
-                    f"  {row['source']} [{row['status']}]"
-                    f"{updated_suffix}: {row['message']}"
-                )
+                print(f"  {row['source']} [{row['status']}]{updated_suffix}: {row['message']}")
 
     except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ServiceUnavailable) as exc:
         _exit_with_error(
@@ -2055,9 +2045,7 @@ def cmd_annotate_interaction(
     client_filter = getattr(args, "client", None) or os.getenv("CODEMEMORY_CLIENT")
     specific_call_ids = getattr(args, "tool_call_id", None) or []
 
-    annotation_id = (
-        getattr(args, "annotation_id", None) or TelemetryStore.new_annotation_id()
-    )
+    annotation_id = getattr(args, "annotation_id", None) or TelemetryStore.new_annotation_id()
     store.create_pending_annotation(
         annotation_id=annotation_id,
         prompt_prefix=cleaned_prefix,
@@ -2074,9 +2062,7 @@ def cmd_annotate_interaction(
         )
         if updated == 0:
             store.delete_pending_annotation(annotation_id)
-            print(
-                "ℹ️ No matching tool-call IDs found. Pending annotation entry was removed."
-            )
+            print("ℹ️ No matching tool-call IDs found. Pending annotation entry was removed.")
             return
 
         print(f"✅ Annotated {updated} tool call(s) as `{annotation_mode}`.")
@@ -2130,10 +2116,7 @@ def cmd_annotate_interaction(
     )
     if updated == 0:
         store.delete_pending_annotation(annotation_id)
-        print(
-            "ℹ️ Tool usage was detected but changed before annotation. "
-            "Pending entry removed."
-        )
+        print("ℹ️ Tool usage was detected but changed before annotation. Pending entry removed.")
         return
 
     first_id = call_ids[0]
@@ -2157,11 +2140,14 @@ def cmd_web_init(args: argparse.Namespace) -> None:
 
     try:
         from agentic_memory.core.connection import ConnectionManager
+
         conn = ConnectionManager(uri, user, password)
         conn.setup_database()
         conn.fix_vector_index_dimensions()
         conn.driver.close()
-        print("web-init: research_embeddings vector index ready (3072d). chat_embeddings reset to 3072d.")
+        print(
+            "web-init: research_embeddings vector index ready (3072d). chat_embeddings reset to 3072d."
+        )
     except Exception as e:
         print(f"web-init failed: {e}")
         sys.exit(1)
@@ -2170,6 +2156,7 @@ def cmd_web_init(args: argparse.Namespace) -> None:
 def cmd_web_ingest(args: argparse.Namespace) -> None:
     """Ingest a web URL or local PDF into research memory."""
     import asyncio
+
     url = args.url
     if not url:
         print("web-ingest: URL argument required.")
@@ -2207,6 +2194,7 @@ def cmd_web_ingest(args: argparse.Namespace) -> None:
                 # Remote PDF URL — download first
                 import httpx
                 import tempfile
+
                 print(f"web-ingest: Downloading PDF {url}...")
                 resp = httpx.get(url, follow_redirects=True, timeout=60.0)
                 resp.raise_for_status()
@@ -2406,9 +2394,7 @@ def cmd_chat_init(args: argparse.Namespace) -> None:
         conn.setup_database()
         print("chat-init: Vector indexes and constraints created (or already exist).")
         conn.fix_vector_index_dimensions()
-        print(
-            "chat-init: research_embeddings and chat_embeddings reset to 3072d. Done."
-        )
+        print("chat-init: research_embeddings and chat_embeddings reset to 3072d. Done.")
     finally:
         conn.driver.close()
 
@@ -2650,8 +2636,7 @@ def cmd_chat_search(args: argparse.Namespace) -> None:
                     display_content = content[:120] + "..." if len(content) > 120 else content
                     score = row.get("score", 0.0)
                     print(
-                        f"  {i}. [{role}] session={session_id} turn={turn_index} "
-                        f"score={score:.4f}"
+                        f"  {i}. [{role}] session={session_id} turn={turn_index} score={score:.4f}"
                     )
                     print(f"     {display_content}")
                     print()
@@ -2681,23 +2666,17 @@ def _temporal_backfill_statements() -> list[tuple[str, str, dict[str, Any]]]:
     return [
         (
             "ABOUT",
-            "MATCH (m)-[r:ABOUT]->()\n"
-            "WHERE r.valid_from IS NULL\n"
-            f"{memory_tail}",
+            f"MATCH (m)-[r:ABOUT]->()\nWHERE r.valid_from IS NULL\n{memory_tail}",
             {"legacy_timestamp": legacy_timestamp},
         ),
         (
             "MENTIONS",
-            "MATCH (m)-[r:MENTIONS]->()\n"
-            "WHERE r.valid_from IS NULL\n"
-            f"{memory_tail}",
+            f"MATCH (m)-[r:MENTIONS]->()\nWHERE r.valid_from IS NULL\n{memory_tail}",
             {"legacy_timestamp": legacy_timestamp},
         ),
         (
             "BELONGS_TO",
-            "MATCH (m)-[r:BELONGS_TO]->()\n"
-            "WHERE r.valid_from IS NULL\n"
-            f"{memory_tail}",
+            f"MATCH (m)-[r:BELONGS_TO]->()\nWHERE r.valid_from IS NULL\n{memory_tail}",
             {"legacy_timestamp": legacy_timestamp},
         ),
         (
@@ -2895,8 +2874,7 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
         "--prompted",
         metavar="PROMPT_PREFIX",
         help=(
-            "Annotate the latest tool-use burst as prompted. "
-            "Example: --prompted \"check our auth\""
+            'Annotate the latest tool-use burst as prompted. Example: --prompted "check our auth"'
         ),
     )
     parser.add_argument(
@@ -2904,7 +2882,7 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
         metavar="PROMPT_PREFIX",
         help=(
             "Annotate the latest tool-use burst as unprompted. "
-            "Example: --unprompted \"check our auth\""
+            'Example: --unprompted "check our auth"'
         ),
     )
     parser.add_argument(
@@ -3244,9 +3222,15 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
         "product-integration-set",
         help="Create or update an integration record in local product state",
     )
-    product_integration_set_parser.add_argument("--surface", required=True, help="Integration surface")
-    product_integration_set_parser.add_argument("--target", required=True, help="Integration target")
-    product_integration_set_parser.add_argument("--status", required=True, help="Integration status")
+    product_integration_set_parser.add_argument(
+        "--surface", required=True, help="Integration surface"
+    )
+    product_integration_set_parser.add_argument(
+        "--target", required=True, help="Integration target"
+    )
+    product_integration_set_parser.add_argument(
+        "--status", required=True, help="Integration status"
+    )
     product_integration_set_parser.add_argument(
         "--config-json",
         type=str,
@@ -3326,7 +3310,9 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
         "openclaw-setup",
         help="Generate OpenClaw config and register local product state",
     )
-    openclaw_setup_parser.add_argument("--workspace-id", required=True, help="Shared OpenClaw workspace identifier")
+    openclaw_setup_parser.add_argument(
+        "--workspace-id", required=True, help="Shared OpenClaw workspace identifier"
+    )
     openclaw_setup_parser.add_argument(
         "--device-id",
         help="Current device identifier. Defaults to COMPUTERNAME when omitted.",
@@ -3441,7 +3427,9 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
     # Conversation Memory commands (Phase 4)
     subparsers.add_parser("chat-init", help="Initialize conversation memory module")
     chat_ingest_parser = subparsers.add_parser("chat-ingest", help="Ingest conversation logs")
-    chat_ingest_parser.add_argument("source", nargs="?", help="Path to conversation log (or '-' for stdin)")
+    chat_ingest_parser.add_argument(
+        "source", nargs="?", help="Path to conversation log (or '-' for stdin)"
+    )
     chat_ingest_parser.add_argument(
         "--project-id",
         type=str,
@@ -3511,7 +3499,7 @@ For more information, visit: https://github.com/jarmen423/agentic-memory
                 error="Annotation flags cannot be combined with subcommands.",
                 human_lines=[
                     "❌ Annotation flags cannot be combined with subcommands.",
-                    f"   Use: {_command_example('--unprompted', '\"check our auth\"')}",
+                    f"   Use: {_command_example('--unprompted', '"check our auth"')}",
                 ],
             )
 

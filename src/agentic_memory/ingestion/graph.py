@@ -96,18 +96,18 @@ def _safe_print(text: str = "", *, end: str = "\n") -> None:
 class CircuitBreaker:
     """
     Circuit breaker pattern for handling repeated Neo4j connection failures.
-    
+
     After a threshold of failures, the circuit opens and subsequent calls
     fail fast until a timeout period passes.
     """
-    
+
     def __init__(self, failure_threshold=5, recovery_timeout=30):
         self.failure_threshold = failure_threshold
         self.recovery_timeout = recovery_timeout
         self.failure_count = 0
         self.last_failure_time = None
         self.state = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
-        
+
     def call(self, func, *args, **kwargs):
         """Execute function with circuit breaker protection."""
         if self.state == "OPEN":
@@ -118,7 +118,7 @@ class CircuitBreaker:
                 raise neo4j.exceptions.ServiceUnavailable(
                     "Circuit breaker is OPEN - Neo4j connection temporarily disabled"
                 )
-        
+
         try:
             result = func(*args, **kwargs)
             if self.state == "HALF_OPEN":
@@ -129,12 +129,12 @@ class CircuitBreaker:
         except neo4j.exceptions.ServiceUnavailable as e:
             self._record_failure()
             raise e
-            
+
     def _record_failure(self):
         """Record a failure and potentially open the circuit."""
         self.failure_count += 1
         self.last_failure_time = time.time()
-        
+
         if self.failure_count >= self.failure_threshold:
             if self.state != "OPEN":
                 self.state = "OPEN"
@@ -164,6 +164,7 @@ def retry_on_openai_error(max_retries=3, delay=1.0):
         @retry_on_openai_error(max_retries=5, delay=0.5)
         def embed(self, text: str) -> list[float]: ...
     """
+
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
@@ -171,17 +172,25 @@ def retry_on_openai_error(max_retries=3, delay=1.0):
             for attempt in range(max_retries):
                 try:
                     return func(*args, **kwargs)
-                except (openai.RateLimitError, openai.APIConnectionError, openai.APITimeoutError) as e:
+                except (
+                    openai.RateLimitError,
+                    openai.APIConnectionError,
+                    openai.APITimeoutError,
+                ) as e:
                     last_exception = e
                     if attempt < max_retries - 1:
-                        wait_time = delay * (2 ** attempt)  # Exponential backoff
-                        logger.warning(f"OpenAI API error (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {wait_time:.1f}s...")
+                        wait_time = delay * (2**attempt)  # Exponential backoff
+                        logger.warning(
+                            f"OpenAI API error (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {wait_time:.1f}s..."
+                        )
                         time.sleep(wait_time)
                     else:
                         logger.error(f"OpenAI API failed after {max_retries} attempts: {e}")
                         raise
             raise last_exception
+
         return wrapper
+
     return decorator
 
 
@@ -277,7 +286,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
 
         # Keep existing driver reference for backward compat with internal methods
         self.driver = self._conn.driver
-        
+
         # Circuit breaker for Neo4j connection failures
         self.circuit_breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=30)
         legacy_provider = embedding_provider
@@ -746,9 +755,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         MAX_CHARS = 24000
 
         if len(text) > MAX_CHARS:
-            logger.warning(
-                f"⚠️ Truncating text chunk of size {len(text)} to {MAX_CHARS} chars."
-            )
+            logger.warning(f"⚠️ Truncating text chunk of size {len(text)} to {MAX_CHARS} chars.")
             text = text[:MAX_CHARS] + "...[TRUNCATED]"
 
         text = text.replace("\n", " ")
@@ -798,7 +805,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         """Embed many document strings in one or few provider calls.
 
         Pass 2 uses this for all chunks in a file so Gemini traffic stays near
-        one batched ``embed_content`` request (up to 250 texts) instead of one
+        one batched ``batchEmbedContents`` request (up to 100 texts) instead of one
         HTTP call per class/function, which previously tripped the RPM limiter.
 
         Args:
@@ -903,10 +910,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
 
                     # Check if file exists and hash matches (Change Detection)
                     result = session.run(
-                        (
-                            "MATCH (f:File {repo_id: $repo_id, path: $path}) "
-                            "RETURN f.ohash as hash"
-                        ),
+                        ("MATCH (f:File {repo_id: $repo_id, path: $path}) RETURN f.ohash as hash"),
                         repo_id=repo_id,
                         path=rel_path,
                     ).single()
@@ -960,7 +964,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         2. Creates 'Chunk' nodes with "Contextual Prefixing".
 
         Embeddings for each file are computed in one batched provider request
-        (up to 250 chunks per HTTP call for Gemini via
+        (up to 100 chunks per HTTP call for Gemini via
         :meth:`get_document_embeddings_batch`) instead of one API call per
         entity, keeping throughput well above the per-call RPM limiter.
 
@@ -996,7 +1000,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
 
             for i, rel_path in enumerate(files_to_process):
                 _safe_print(
-                    f"[{i+1}/{len(files_to_process)}] 🧠 Processing: {rel_path}...",
+                    f"[{i + 1}/{len(files_to_process)}] 🧠 Processing: {rel_path}...",
                     end="\r",
                 )
 
@@ -1779,9 +1783,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                         analyzer_issues = list(getattr(analyzer, "last_run_issues", []) or [])
                         if analyzer_issues:
                             failed_batches = len(analyzer_issues)
-                            total_batches = max(
-                                issue.total_batches for issue in analyzer_issues
-                            )
+                            total_batches = max(issue.total_batches for issue in analyzer_issues)
                             latest_issue = analyzer_issues[-1]
                             self._record_call_analyzer_issue(
                                 session,
@@ -1844,9 +1846,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                         analyzer_issues = list(getattr(analyzer, "last_run_issues", []) or [])
                         if analyzer_issues:
                             failed_batches = len(analyzer_issues)
-                            total_batches = max(
-                                issue.total_batches for issue in analyzer_issues
-                            )
+                            total_batches = max(issue.total_batches for issue in analyzer_issues)
                             latest_issue = analyzer_issues[-1]
                             self._record_call_analyzer_issue(
                                 session,
@@ -1901,7 +1901,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
 
                 # Progress logging
                 _safe_print(
-                    f"[{i+1}/{total_files}] 📞 Processing calls in: {rel_path}...",
+                    f"[{i + 1}/{total_files}] 📞 Processing calls in: {rel_path}...",
                     end="\r",
                 )
 
@@ -2575,8 +2575,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                         MATCH (caller:Function {repo_id: $repo_id, signature: $root_signature})
                         UNWIND $edges as edge
                         MATCH (callee:Function {repo_id: $repo_id, signature: edge.callee_signature})
-                        CALL {
-                            WITH caller, callee, edge
+                        CALL (caller, callee, edge) {
                             WITH caller, callee, edge
                             WHERE edge.relationship_type = 'JIT_CALLS_DIRECT'
                             MERGE (caller)-[r:JIT_CALLS_DIRECT]->(callee)
@@ -2669,6 +2668,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         Returns:
             List of dicts with name, signature, score, and text
         """
+
         def _env_int(name: str, default: int) -> int:
             raw = os.getenv(name)
             if raw is None:
@@ -2904,6 +2904,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         Returns:
             Dict with 'affected_files' list containing path, depth, and impact_type
         """
+
         def _execute_impact_analysis():
             depth = max(1, int(max_depth))
             resolved_repo_id = repo_id or self.repo_id
@@ -2928,7 +2929,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                     for r in result
                 ]
                 return {"affected_files": affected_files, "total_count": len(affected_files)}
-        
+
         return self.circuit_breaker.call(_execute_impact_analysis)
 
     def get_call_diagnostics(
@@ -3174,9 +3175,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         return cleaned
 
     @staticmethod
-    def _build_memory_embedding_text(
-        name: str, entity_type: str, observations: List[str]
-    ) -> str:
+    def _build_memory_embedding_text(name: str, entity_type: str, observations: List[str]) -> str:
         """Build the canonical text used for memory embeddings."""
         lines = [f"Name: {name}", f"Type: {entity_type}"]
         if observations:
@@ -3238,16 +3237,10 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             raise ValueError("Each relation must be an object.")
 
         source = str(
-            relation.get("from")
-            or relation.get("from_entity")
-            or relation.get("source")
-            or ""
+            relation.get("from") or relation.get("from_entity") or relation.get("source") or ""
         ).strip()
         target = str(
-            relation.get("to")
-            or relation.get("to_entity")
-            or relation.get("target")
-            or ""
+            relation.get("to") or relation.get("to_entity") or relation.get("target") or ""
         ).strip()
         relation_type = str(
             relation.get("relationType")
@@ -3262,9 +3255,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         return {
             "from": source,
             "to": target,
-            "relation_type": KnowledgeGraphBuilder._normalize_memory_relation_type(
-                relation_type
-            ),
+            "relation_type": KnowledgeGraphBuilder._normalize_memory_relation_type(relation_type),
         }
 
     @staticmethod
@@ -3349,7 +3340,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                     session.run(
                         f"""
                         MATCH (m:{self.MEMORY_ENTITY_LABEL} {{repo_id: $repo_id, name: $name}})
-                        SET m:`{entity['entity_label']}`
+                        SET m:`{entity["entity_label"]}`
                         """,
                         **self._with_repo(name=entity["name"]),
                     )
@@ -3409,7 +3400,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                         f"""
                         MATCH (source:{self.MEMORY_ENTITY_LABEL} {{repo_id: $repo_id, name: $source}})
                         MATCH (target:{self.MEMORY_ENTITY_LABEL} {{repo_id: $repo_id, name: $target}})
-                        MERGE (source)-[r:`{relation['relation_type']}`]->(target)
+                        MERGE (source)-[r:`{relation["relation_type"]}`]->(target)
                         ON CREATE SET r.created_at = datetime()
                         ON MATCH SET r.updated_at = datetime()
                         RETURN source.name as source, target.name as target, type(r) as relation_type
@@ -3443,10 +3434,10 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                         f"""
                         MATCH (source:{self.MEMORY_ENTITY_LABEL} {{repo_id: $repo_id, name: $source}})
                         MATCH (target:{self.MEMORY_ENTITY_LABEL} {{repo_id: $repo_id, name: $target}})
-                        OPTIONAL MATCH (source)-[r:`{relation['relation_type']}`]->(target)
+                        OPTIONAL MATCH (source)-[r:`{relation["relation_type"]}`]->(target)
                         WITH source, target, r
                         FOREACH (_ IN CASE WHEN r IS NULL THEN [] ELSE [1] END | DELETE r)
-                        RETURN source.name as source, target.name as target, '{relation['relation_type']}' as relation_type, r IS NOT NULL as deleted
+                        RETURN source.name as source, target.name as target, '{relation["relation_type"]}' as relation_type, r IS NOT NULL as deleted
                         """,
                         **self._with_repo(source=relation["from"], target=relation["to"]),
                     ).single()
@@ -3575,9 +3566,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         self.setup_memory_schema()
         safe_limit = max(1, int(limit))
         if self.embedding_service is None:
-            raise ValueError(
-                "An embedding provider is required to backfill memory embeddings."
-            )
+            raise ValueError("An embedding provider is required to backfill memory embeddings.")
 
         def _execute_backfill() -> Dict[str, Any]:
             with self.driver.session() as session:
@@ -3684,7 +3673,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
                     vector = self.get_embedding(normalized_query)
                     result = session.run(
                         f"""
-                        CALL {{
+                        CALL () {{
                             CALL db.index.vector.queryNodes('{self.MEMORY_VECTOR_INDEX}', $limit, $vector)
                             YIELD node, score
                             RETURN node, score, 'vector' as source
@@ -3794,6 +3783,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
 
     def has_git_graph_data(self) -> bool:
         """Return True if at least one GitCommit node exists."""
+
         def _execute_check() -> bool:
             cypher = "MATCH (c:GitCommit) RETURN count(c) > 0 as has_data"
             with self.driver.session() as session:
@@ -3819,6 +3809,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         Returns:
             List of commit metadata records sorted by commit time descending
         """
+
         def _execute_history_query() -> List[Dict[str, Any]]:
             safe_limit = max(1, int(limit))
             resolved_repo_id = repo_id or self.repo_id
@@ -3864,6 +3855,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         Returns:
             Dict with commit metadata and optional diff stats, or None if missing
         """
+
         def _execute_commit_context_query() -> Optional[Dict[str, Any]]:
             commit_cypher = """
             MATCH (c:GitCommit {sha: $sha})

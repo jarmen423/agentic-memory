@@ -22,7 +22,7 @@ services:
       # less brittle.
       NEO4J_server_memory_heap_max__size: 2G
       NEO4J_server_memory_pagecache_size: 1G
-      # Enable vector search (Neo4j 5.18+)
+      # Project minimum is Neo4j 5.23+; this image includes vector search support.
       NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
       NEO4J_dbms_security_procedures_allowlist: "apoc.*"
     volumes:

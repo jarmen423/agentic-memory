@@ -130,7 +130,9 @@ def search_code(
         graph,
         query=query,
         limit=baseline_limit,
-        repo_id=repo_id,
+        # Baseline semantic retrieval must stay inside the resolved repo scope,
+        # even when the caller relies on the graph's default repo_id.
+        repo_id=resolved_repo_id,
     )
     if not baseline_rows:
         return []

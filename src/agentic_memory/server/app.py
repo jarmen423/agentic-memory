@@ -599,7 +599,10 @@ def search_codebase(
                 current_graph,
                 query=normalized_query,
                 limit=safe_limit,
-                repo_id=repo_id,
+                # Preserve the active server repo scope when the caller omits repo_id.
+                # Without this, the lower-level search can fall back to a global query
+                # and leak results from another indexed repository.
+                repo_id=resolved_repo_id,
                 retrieval_policy=resolved_retrieval_policy or SAFE_RETRIEVAL_POLICY,
             )
             if not results:
@@ -638,7 +641,9 @@ def search_codebase(
             current_graph,
             query=normalized_query,
             limit=safe_limit,
-            repo_id=repo_id,
+            # Hybrid search should use the same repo scoping rules as code-only
+            # search so both sections in the response reflect the active repo.
+            repo_id=resolved_repo_id,
             retrieval_policy=resolved_retrieval_policy or SAFE_RETRIEVAL_POLICY,
         )
         output = "## Hybrid Search Results\n\n"

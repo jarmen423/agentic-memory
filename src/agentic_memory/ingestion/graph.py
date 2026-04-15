@@ -340,11 +340,14 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             "total_cost_usd": 0.0,
         }
 
-        # Default ignore patterns
-        self.ignore_dirs = ignore_dirs or {
+        # Default ignore patterns. `.claude` contains agent handoffs, cached
+        # worktrees, and other local workspace state that should not pollute the
+        # repo's searchable code graph.
+        default_ignore_dirs = {
             "node_modules",
             "__pycache__",
             ".git",
+            ".claude",
             "dist",
             "build",
             ".venv",
@@ -355,6 +358,9 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             "bin",
             "obj",
         }
+        self.ignore_dirs = set(default_ignore_dirs)
+        if ignore_dirs:
+            self.ignore_dirs.update(ignore_dirs)
         self.ignore_files = ignore_files or set()
         self.ignore_patterns = ignore_patterns or set()
 
@@ -426,6 +432,60 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             repo_id=repo_id,
             path=rel_path,
         )
+
+    def clear_repo_code_graph(self, repo_path: Optional[Path] = None) -> None:
+        """Delete one repo's code graph so the next index run rebuilds everything.
+
+        Normal indexing is incremental and skips files whose content hash has not
+        changed. That is correct for source edits, but not for embedding-model or
+        embedding-format changes where every stored vector must be regenerated.
+
+        This method clears only the repo-scoped code graph so a later ``index``
+        run can rebuild the repository from source without touching the repo's
+        git graph or writable memory graph.
+        """
+        _, repo_id = self._require_repo_context(repo_path)
+
+        with self.driver.session() as session:
+            session.run(
+                """
+                MATCH (trace:CodeTraceRun {repo_id: $repo_id})
+                DETACH DELETE trace
+                """,
+                repo_id=repo_id,
+            )
+            session.run(
+                """
+                MATCH (issue:CallAnalysisIssue {repo_id: $repo_id})
+                DETACH DELETE issue
+                """,
+                repo_id=repo_id,
+            )
+            session.run(
+                """
+                MATCH (f:File {repo_id: $repo_id})
+                DETACH DELETE f
+                """,
+                repo_id=repo_id,
+            )
+            session.run(
+                """
+                MATCH (n)
+                WHERE n.repo_id = $repo_id
+                  AND (n:Chunk OR n:Function OR n:Class)
+                DETACH DELETE n
+                """,
+                repo_id=repo_id,
+            )
+            session.run(
+                """
+                MATCH (reason:CallDropReason)
+                WHERE NOT EXISTS {
+                    MATCH ()-[r:CALL_ANALYSIS_DROP]->(reason)
+                }
+                DETACH DELETE reason
+                """
+            )
 
     def _init_parsers(self) -> Dict[str, Parser]:
         """Initialize the canonical parser and expose its parser cache."""
@@ -752,7 +812,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
             Repo-relative paths that are new or whose content hash changed.
 
         Why this matters:
-            Phase 11 exposed that `agentic-memory index` was still re-running
+            Phase 11 exposed that `agent-memory index` was still re-running
             Pass 2 for every file even when Pass 1 had already proven the file
             was unchanged. Returning the changed-file set lets later passes
             scope expensive work, especially embeddings, to only the files that
@@ -1944,6 +2004,7 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         self,
         repo_path: Optional[Path] = None,
         supported_extensions: Optional[Set[str]] = None,
+        full_reindex: bool = False,
     ) -> Dict:
         """
         Execute the default code-ingestion pipeline with cost tracking.
@@ -1956,6 +2017,8 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         Args:
             repo_path: Path to repository root (defaults to self.repo_root)
             supported_extensions: Set of file extensions to process in Pass 1
+            full_reindex: When True, clear this repo's existing code graph
+                before Pass 1 so every file is reparsed and re-embedded.
 
         Returns:
             Dict with pipeline execution metrics
@@ -1970,6 +2033,12 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         stage_started = time.time()
         self.setup_database()
         setup_database_seconds = time.time() - stage_started
+
+        full_reindex_seconds = 0.0
+        if full_reindex:
+            stage_started = time.time()
+            self.clear_repo_code_graph(repo_path)
+            full_reindex_seconds = time.time() - stage_started
 
         stage_started = time.time()
         changed_paths = self.pass_1_structure_scan(
@@ -1996,6 +2065,8 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         _safe_print(f"⏱️  Total Time: {elapsed:.2f} seconds")
         _safe_print(f"🗂️  Changed Files: {changed_file_count:,}")
         _safe_print(f"🧱 Setup Database: {setup_database_seconds:.2f} seconds")
+        if full_reindex:
+            _safe_print(f"🧹 Repo Graph Reset: {full_reindex_seconds:.2f} seconds")
         _safe_print(f"📂 Pass 1 Scan: {pass_1_seconds:.2f} seconds")
         _safe_print(f"🧠 Pass 2 Entities/Chunks: {pass_2_seconds:.2f} seconds")
         _safe_print(f"🔗 Pass 3 Imports: {pass_3_seconds:.2f} seconds")
@@ -2008,9 +2079,11 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
         _safe_print("=" * 60)
 
         logger.info(
-            "Pipeline timing summary | changed_files=%s setup=%.2fs pass1=%.2fs pass2=%.2fs pass3=%.2fs total=%.2fs",
+            "Pipeline timing summary | full_reindex=%s changed_files=%s setup=%.2fs reset=%.2fs pass1=%.2fs pass2=%.2fs pass3=%.2fs total=%.2fs",
+            full_reindex,
             changed_file_count,
             setup_database_seconds,
+            full_reindex_seconds,
             pass_1_seconds,
             pass_2_seconds,
             pass_3_seconds,
@@ -2019,8 +2092,10 @@ class KnowledgeGraphBuilder(BaseIngestionPipeline):
 
         return {
             "elapsed_seconds": elapsed,
+            "full_reindex": full_reindex,
             "changed_files": changed_file_count,
             "setup_database_seconds": setup_database_seconds,
+            "full_reindex_seconds": full_reindex_seconds,
             "pass_1_seconds": pass_1_seconds,
             "pass_2_seconds": pass_2_seconds,
             "pass_3_seconds": pass_3_seconds,

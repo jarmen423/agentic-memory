@@ -1,6 +1,6 @@
 """``python -m codememory`` entry point.
 
-Runs the same CLI as ``agentic-memory`` by delegating to
+Runs the same CLI as ``agent-memory`` by delegating to
 ``agentic_memory.cli.main``. This keeps the historical ``codememory`` package
 name usable as a module runner without duplicating argument parsing or commands.
 

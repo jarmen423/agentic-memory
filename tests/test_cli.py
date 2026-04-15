@@ -148,7 +148,7 @@ def test_status_json_success_envelope(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
     monkeypatch.setattr(cli, "KnowledgeGraphBuilder", Mock(return_value=mock_builder))
 
-    cli.cmd_status(argparse.Namespace(json=True))
+    cli.cmd_status(argparse.Namespace(json=True, global_status=False))
 
     payload = _parse_json_stdout(capsys)
     assert payload["ok"] is True
@@ -156,12 +156,30 @@ def test_status_json_success_envelope(monkeypatch, capsys, tmp_path):
     assert payload["metrics"] == {}
     assert payload["data"]["repository"] == str(repo_root)
     assert payload["data"]["stats"] == {
+        "scope": "repository",
         "files": 3,
         "functions": 7,
         "classes": 2,
         "chunks": 11,
         "last_sync": "2026-02-01T00:00:00Z",
     }
+    expected_repo_id = str(repo_root)
+    session.run.assert_any_call(
+        "MATCH (f:File {repo_id: $repo_id}) RETURN count(f) as count",
+        repo_id=expected_repo_id,
+    )
+    session.run.assert_any_call(
+        "MATCH (fn:Function {repo_id: $repo_id}) RETURN count(fn) as count",
+        repo_id=expected_repo_id,
+    )
+    session.run.assert_any_call(
+        "MATCH (c:Class {repo_id: $repo_id}) RETURN count(c) as count",
+        repo_id=expected_repo_id,
+    )
+    session.run.assert_any_call(
+        "MATCH (ch:Chunk {repo_id: $repo_id}) RETURN count(ch) as count",
+        repo_id=expected_repo_id,
+    )
 
 
 def test_status_json_missing_config_exits_nonzero(monkeypatch, capsys, tmp_path):
@@ -175,7 +193,7 @@ def test_status_json_missing_config_exits_nonzero(monkeypatch, capsys, tmp_path)
     monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
 
     with pytest.raises(SystemExit) as exc:
-        cli.cmd_status(argparse.Namespace(json=True))
+        cli.cmd_status(argparse.Namespace(json=True, global_status=False))
 
     assert exc.value.code == 1
     payload = _parse_json_stdout(capsys)
@@ -183,6 +201,50 @@ def test_status_json_missing_config_exits_nonzero(monkeypatch, capsys, tmp_path)
     assert payload["data"] is None
     assert payload["metrics"] == {}
     assert "not initialized" in payload["error"].lower()
+
+
+def test_status_json_global_success_envelope(monkeypatch, capsys, tmp_path):
+    """Global status should report whole-database totals when explicitly requested."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    mock_cfg = _mock_config(exists=True)
+    mock_builder = Mock()
+    session = Mock()
+    session_context = Mock()
+    session_context.__enter__ = Mock(return_value=session)
+    session_context.__exit__ = Mock(return_value=None)
+    mock_builder.driver.session.return_value = session_context
+    session.run.side_effect = [
+        _result({"count": 1387}),
+        _result({"count": 6038}),
+        _result({"count": 229}),
+        _result({"count": 7732}),
+        _result({"last_updated": "2026-04-15T01:00:00Z"}),
+    ]
+
+    monkeypatch.setattr(cli, "find_repo_root", Mock(return_value=repo_root))
+    monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
+    monkeypatch.setattr(cli, "KnowledgeGraphBuilder", Mock(return_value=mock_builder))
+
+    cli.cmd_status(argparse.Namespace(json=True, global_status=True))
+
+    payload = _parse_json_stdout(capsys)
+    assert payload["ok"] is True
+    assert payload["error"] is None
+    assert payload["data"]["repository"] == str(repo_root)
+    assert payload["data"]["stats"] == {
+        "scope": "global",
+        "files": 1387,
+        "functions": 6038,
+        "classes": 229,
+        "chunks": 7732,
+        "last_sync": "2026-04-15T01:00:00Z",
+    }
+    session.run.assert_any_call("MATCH (f:File) RETURN count(f) as count")
+    session.run.assert_any_call("MATCH (fn:Function) RETURN count(fn) as count")
+    session.run.assert_any_call("MATCH (c:Class) RETURN count(c) as count")
+    session.run.assert_any_call("MATCH (ch:Chunk) RETURN count(ch) as count")
 
 
 def test_index_json_success_envelope(monkeypatch, capsys, tmp_path):
@@ -193,6 +255,8 @@ def test_index_json_success_envelope(monkeypatch, capsys, tmp_path):
     mock_cfg = _mock_config(exists=True)
     mock_builder = Mock()
     mock_builder.run_pipeline.return_value = {
+        "full_reindex": False,
+        "full_reindex_seconds": 0.0,
         "embedding_calls": 42,
         "cost_usd": 1.2345,
     }
@@ -201,16 +265,54 @@ def test_index_json_success_envelope(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
     monkeypatch.setattr(cli, "KnowledgeGraphBuilder", Mock(return_value=mock_builder))
 
-    cli.cmd_index(argparse.Namespace(json=True, quiet=False))
+    cli.cmd_index(argparse.Namespace(json=True, quiet=False, full=False))
 
     payload = _parse_json_stdout(capsys)
     assert payload["ok"] is True
     assert payload["error"] is None
     assert payload["data"] == {"repository": str(repo_root)}
     assert payload["metrics"] == {
+        "full_reindex": False,
+        "full_reindex_seconds": 0.0,
         "embedding_calls": 42,
         "cost_usd": 1.2345,
     }
+    mock_builder.run_pipeline.assert_called_once_with(
+        repo_root,
+        supported_extensions={".py"},
+        full_reindex=False,
+    )
+
+
+def test_index_full_passes_repo_rebuild_flag(monkeypatch, capsys, tmp_path):
+    """`index --full` should request a repo-scoped wipe before rebuilding."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    mock_cfg = _mock_config(exists=True)
+    mock_builder = Mock()
+    mock_builder.run_pipeline.return_value = {
+        "full_reindex": True,
+        "full_reindex_seconds": 2.5,
+        "embedding_calls": 7,
+        "cost_usd": 0.12,
+    }
+
+    monkeypatch.setattr(cli, "find_repo_root", Mock(return_value=repo_root))
+    monkeypatch.setattr(cli, "Config", Mock(return_value=mock_cfg))
+    monkeypatch.setattr(cli, "KnowledgeGraphBuilder", Mock(return_value=mock_builder))
+
+    cli.cmd_index(argparse.Namespace(json=True, quiet=False, full=True))
+
+    payload = _parse_json_stdout(capsys)
+    assert payload["ok"] is True
+    assert payload["metrics"]["full_reindex"] is True
+    assert payload["metrics"]["full_reindex_seconds"] == 2.5
+    mock_builder.run_pipeline.assert_called_once_with(
+        repo_root,
+        supported_extensions={".py"},
+        full_reindex=True,
+    )
 
 
 def test_build_calls_json_success(monkeypatch, capsys, tmp_path):
@@ -271,6 +373,8 @@ def test_index_loads_gemini_key_from_agentic_memory_dotenv(monkeypatch, tmp_path
 
     mock_builder = Mock()
     mock_builder.run_pipeline.return_value = {
+        "full_reindex": False,
+        "full_reindex_seconds": 0.0,
         "embedding_calls": 1,
         "cost_usd": 0.0,
     }
@@ -280,7 +384,7 @@ def test_index_loads_gemini_key_from_agentic_memory_dotenv(monkeypatch, tmp_path
     monkeypatch.setattr(cli, "KnowledgeGraphBuilder", Mock(return_value=mock_builder))
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
 
-    cli.cmd_index(argparse.Namespace(json=False, quiet=True))
+    cli.cmd_index(argparse.Namespace(json=False, quiet=True, full=False))
 
     assert os.environ.get("GEMINI_API_KEY") == "from-index-dotenv"
     cli.KnowledgeGraphBuilder.assert_called_once_with(

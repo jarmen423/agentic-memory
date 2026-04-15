@@ -40,7 +40,11 @@ def test_search_code_uses_baseline_semantic_search_when_ppr_disabled():
     assert rows[0]["sig"] == "pkg/auth.py::login"
     assert rows[0]["retrieval_provenance"]["policy"] == "auto"
     assert rows[0]["retrieval_provenance"]["graph_reranking_applied"] is False
-    graph.semantic_search.assert_called_once_with("login flow", limit=1)
+    graph.semantic_search.assert_called_once_with(
+        "login flow",
+        limit=1,
+        repo_id="repo-alpha",
+    )
 
 
 def test_search_code_uses_explicit_repo_scope_for_baseline_search():
@@ -133,7 +137,11 @@ def test_search_code_ppr_reranks_with_structural_scores(monkeypatch):
         "HAS_METHOD",
         "DEFINES",
     ]
-    graph.semantic_search.assert_called_once_with("shared helper", limit=6)
+    graph.semantic_search.assert_called_once_with(
+        "shared helper",
+        limit=6,
+        repo_id="repo-alpha",
+    )
 
 
 def test_search_code_without_repo_context_falls_back_to_baseline():
@@ -173,7 +181,11 @@ def test_search_code_safe_policy_ignores_graph_reranking():
 
     assert rows[0]["retrieval_provenance"]["policy"] == "safe"
     assert rows[0]["retrieval_provenance"]["graph_reranking_applied"] is False
-    graph.semantic_search.assert_called_once_with("login flow", limit=1)
+    graph.semantic_search.assert_called_once_with(
+        "login flow",
+        limit=1,
+        repo_id="repo-alpha",
+    )
 
 
 def test_search_code_applies_learned_reranking(monkeypatch):

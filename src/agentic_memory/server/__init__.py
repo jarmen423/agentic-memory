@@ -29,7 +29,7 @@ Extended layout:
     schedules it, keeping the event loop responsive at the decorator level.
 
 Role:
-    Consumed by the ``agentic-memory serve`` CLI command (via ``app.run_server``)
+    Consumed by the ``agent-memory serve`` CLI command (via ``app.run_server``)
     and by integrations (for example browser-side MCP bridges) that attach to the
     same tool surface.
 

@@ -14,7 +14,9 @@ class TestToolkit:
     @pytest.fixture
     def mock_graph(self):
         """Create a mock graph builder."""
-        return Mock()
+        graph = Mock()
+        graph.repo_id = None
+        return graph
 
     @pytest.fixture
     def toolkit(self, mock_graph):
@@ -291,7 +293,8 @@ class TestSearchCodebase:
     def test_search_codebase_success(self):
         """Test successful search."""
         mock_graph = Mock()
-        mock_graph.semantic_search.return_value = [
+        mock_graph.repo_id = None
+        fake_rows = [
             {
                 "name": "fn",
                 "score": 0.9,
@@ -299,10 +302,19 @@ class TestSearchCodebase:
                 "sig": "a.py:fn",
                 "path": "a.py",
                 "labels": ["Function"],
+                "retrieval_provenance": {
+                    "policy": "safe",
+                    "mode": "semantic_only",
+                    "graph_reranking_applied": False,
+                    "graph_edge_types_used": [],
+                },
             }
         ]
 
-        with patch("agentic_memory.server.app.graph", mock_graph):
+        with (
+            patch("agentic_memory.server.app.graph", mock_graph),
+            patch("agentic_memory.server.app.search_code", return_value=fake_rows) as mock_search,
+        ):
             from agentic_memory.server.app import search_codebase
 
             result = search_codebase("test query", limit=10)
@@ -310,7 +322,34 @@ class TestSearchCodebase:
             assert "Found 1 relevant code result(s)" in result
             assert "Policy: `safe`" in result
             assert "`CALLS` edges used for ranking: `False`" in result
-            mock_graph.semantic_search.assert_called_once_with("test query", limit=10)
+            mock_search.assert_called_once_with(
+                mock_graph,
+                query="test query",
+                limit=10,
+                repo_id=None,
+                retrieval_policy="safe",
+            )
+
+    def test_search_codebase_uses_graph_repo_scope_when_repo_not_explicit(self):
+        """Code search should inherit the active graph repo when repo_id is omitted."""
+        mock_graph = Mock()
+        mock_graph.repo_id = "repo-alpha"
+
+        with (
+            patch("agentic_memory.server.app.graph", mock_graph),
+            patch("agentic_memory.server.app.search_code", return_value=[]) as mock_search,
+        ):
+            from agentic_memory.server.app import search_codebase
+
+            search_codebase("test query", limit=3)
+
+            mock_search.assert_called_once_with(
+                mock_graph,
+                query="test query",
+                limit=3,
+                repo_id="repo-alpha",
+                retrieval_policy="safe",
+            )
 
     def test_search_codebase_error(self):
         """Test search error handling."""

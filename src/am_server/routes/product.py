@@ -33,11 +33,20 @@ router = APIRouter(dependencies=[Depends(require_auth)])
 
 
 def _package_version() -> str:
-    """Return the installed agentic-memory package version."""
-    try:
-        return importlib.metadata.version("agentic-memory")
-    except importlib.metadata.PackageNotFoundError:
-        return "unknown"
+    """Return the installed package version for the current public distribution.
+
+    Why this tries multiple names:
+        The project historically used an unpublished/local-only package identity
+        while the first public PyPI release is being published as
+        ``agent-memory-labs``. Checking both names keeps local editable installs
+        and released environments reporting a useful version string.
+    """
+    for package_name in ("agent-memory-labs", "agentic-memory"):
+        try:
+            return importlib.metadata.version(package_name)
+        except importlib.metadata.PackageNotFoundError:
+            continue
+    return "unknown"
 
 
 @router.get("/product/status")

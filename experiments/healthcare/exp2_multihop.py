@@ -97,7 +97,7 @@ ORDER BY encounter_count DESC
 _VECTOR_SEARCH_CYPHER = """\
 CALL db.index.vector.queryNodes('healthcare_embeddings', $top_k, $query_vector)
 YIELD node, score
-WHERE node:Memory:Healthcare:Encounter AND score >= $min_score
+WHERE node:Encounter AND score >= $min_score
 RETURN DISTINCT node.provider_id AS provider_id, max(score) AS max_score
 ORDER BY max_score DESC
 """

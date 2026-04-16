@@ -159,23 +159,39 @@ class SyntheaFHIRLoader:
         Each sub-tarball contains a fhir/ directory with one JSON per patient.
         This method handles both levels of nesting.
 
+        Streaming semantics:
+            We iterate ``for member in outer:`` rather than calling
+            ``outer.getmembers()``. ``getmembers()`` forces a full scan of the
+            outer tar index before the first record can be yielded. On a
+            multi-GB Synthea tarball served from a slow-random-read filesystem
+            (Colab + Google Drive is the motivating case), that single call
+            adds minutes of latency before ingest can start. Direct iteration
+            hands us the first sub-tarball as soon as its header has streamed
+            through, and ``extractfile()`` on the just-yielded member is the
+            tarfile module's supported streaming access pattern.
+
+            The tradeoff is loss of lexicographic sub-tarball ordering. Synthea
+            packs sub-tarballs in a deterministic order already (``output_1``,
+            ``output_2``, …), so this is effectively unchanged in practice.
+            Downstream ingest does not assume a particular sub-tarball order.
+
         Args:
             tarball_path: Path to the outer .tar.gz file.
 
         Yields:
             Parsed FHIR Bundle dicts.
         """
-        logger.info("Opening outer tarball: %s", tarball_path)
-        with tarfile.open(tarball_path, "r:gz") as outer:
-            members = outer.getmembers()
-            sub_tarballs = sorted(
-                [m for m in members if m.name.endswith(".tar.gz")],
-                key=lambda m: m.name,
-            )
-            logger.info("Found %d sub-tarballs.", len(sub_tarballs))
-
-            for sub_member in sub_tarballs:
-                logger.info("Processing sub-tarball: %s", sub_member.name)
+        logger.info("Opening outer tarball (streaming): %s", tarball_path)
+        sub_tarball_count = 0
+        with tarfile.open(tarball_path, "r|gz") as outer:
+            # "r|gz" is the explicit streaming mode: forward-only reads, no
+            # seeks, no full index scan. Must use ``for m in outer`` rather
+            # than ``getmembers()`` / ``getnames()`` with this mode.
+            for sub_member in outer:
+                if not sub_member.name.endswith(".tar.gz"):
+                    continue
+                sub_tarball_count += 1
+                logger.info("Processing sub-tarball #%d: %s", sub_tarball_count, sub_member.name)
                 sub_fh = outer.extractfile(sub_member)
                 if sub_fh is None:
                     continue
@@ -183,7 +199,13 @@ class SyntheaFHIRLoader:
                     fileobj=sub_fh, label=sub_member.name
                 )
                 if self._max_patients and len(self._processed_patients) >= self._max_patients:
+                    logger.info(
+                        "max_patients=%d reached after %d sub-tarballs; stopping outer stream.",
+                        self._max_patients,
+                        sub_tarball_count,
+                    )
                     return
+        logger.info("Outer tarball exhausted after %d sub-tarballs.", sub_tarball_count)
 
     def _iter_bundles_from_inner_tarball(
         self, fileobj: io.BufferedIOBase, label: str
@@ -209,8 +231,12 @@ class SyntheaFHIRLoader:
             Parsed FHIR Bundle dicts.
         """
         count = 0
-        with tarfile.open(fileobj=fileobj, mode="r:gz") as inner:
-            for member in inner.getmembers():
+        # "r|gz" matches the outer-tarball streaming semantics: forward-only,
+        # no index scan. See ``_iter_bundles_from_outer_tarball`` for why this
+        # matters on Colab/Drive. ``extractfile()`` is valid on the member
+        # just yielded by the iterator.
+        with tarfile.open(fileobj=fileobj, mode="r|gz") as inner:
+            for member in inner:
                 # Only process files inside the fhir/ subdirectory
                 # Path pattern: output_N/fhir/PatientName.json
                 path_parts = Path(member.name).parts
@@ -233,6 +259,17 @@ class SyntheaFHIRLoader:
                         count += 1
                 except (json.JSONDecodeError, UnicodeDecodeError) as exc:
                     logger.warning("Failed to parse %s: %s", member.name, exc)
+
+                # Honour max_patients early to avoid reading the whole sub-tar
+                # when we already have enough bundles. _parse_bundle() is what
+                # actually increments ``_processed_patients``, so we check that
+                # set here rather than ``count``.
+                if self._max_patients and len(self._processed_patients) >= self._max_patients:
+                    logger.info(
+                        "  %s: max_patients=%d reached, stopping inner stream (%d bundles read).",
+                        label, self._max_patients, count,
+                    )
+                    return
 
         logger.info("  %s: %d patient bundles read.", label, count)
 
@@ -260,17 +297,17 @@ class SyntheaFHIRLoader:
         logger.info("Streaming %s from nested tarballs...", csv_filename)
         total = 0
 
-        with tarfile.open(outer_tarball, "r:gz") as outer:
-            sub_tarballs = sorted(
-                [m for m in outer.getmembers() if m.name.endswith(".tar.gz")],
-                key=lambda m: m.name,
-            )
-            for sub_member in sub_tarballs:
+        # Streaming mode ("r|gz") for the same Drive/Colab latency reasons as
+        # ``_iter_bundles_from_outer_tarball``.
+        with tarfile.open(outer_tarball, "r|gz") as outer:
+            for sub_member in outer:
+                if not sub_member.name.endswith(".tar.gz"):
+                    continue
                 sub_fh = outer.extractfile(sub_member)
                 if sub_fh is None:
                     continue
-                with tarfile.open(fileobj=sub_fh, mode="r:gz") as inner:
-                    for member in inner.getmembers():
+                with tarfile.open(fileobj=sub_fh, mode="r|gz") as inner:
+                    for member in inner:
                         # Match output_N/csv/{table}.csv
                         parts = Path(member.name).parts
                         if len(parts) == 3 and parts[1] == "csv" and parts[2] == csv_filename:
@@ -282,7 +319,13 @@ class SyntheaFHIRLoader:
                             for row in reader:
                                 yield {k: (v.strip() or None) for k, v in row.items()}
                                 total += 1
-                            break  # Found the file in this sub-tarball; move to next
+                            # Python's tarfile streaming mode skips any unread
+                            # bytes of the current member when advancing to the
+                            # next one, so breaking out of the inner loop is
+                            # safe even though we have not read the remaining
+                            # inner members. This preserves the original
+                            # "one csv file per sub-tar" efficiency.
+                            break
 
         logger.info("  %s: %d rows total across all sub-tarballs.", csv_filename, total)
 

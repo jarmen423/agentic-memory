@@ -28,10 +28,13 @@ Environment Variables:
     NEO4J_PASSWORD: When set, replaces ``config["neo4j"]["password"]``.
 
 Note:
-    Vector index definitions in :meth:`ConnectionManager.setup_database` use
-    3072 dimensions for ``Memory:Code``, ``Memory:Research``, and
-    ``Memory:Conversation`` embeddings; they must stay consistent with the
-    embedding model dimensionality used when writing those nodes.
+    Vector index definitions in :meth:`ConnectionManager.setup_database`
+    default to 3072 dimensions for ``Memory:Code``, ``Memory:Research``,
+    ``Memory:Conversation``, and ``Memory:Healthcare`` embeddings, matching
+    OpenAI ``text-embedding-3-large`` and Gemini Embedding 2 preview.
+    ``setup_database`` now accepts an ``embedding_dim`` keyword so
+    experiments using different embedding models (for example Nemotron at
+    2048d) can reconcile index dimensionality without hand-written DDL.
 """
 
 import logging
@@ -115,57 +118,137 @@ class ConnectionManager:
         with self.driver.session() as s:
             yield s
 
-    def setup_database(self) -> None:
+    # Vector index targets used by :meth:`setup_database`.
+    # Each tuple is (index_name, node_label, embedding_property).
+    # Kept as a class-level constant so tests and migrations can reuse it.
+    _VECTOR_INDEX_TARGETS: tuple[tuple[str, str, str], ...] = (
+        ("code_embeddings", "Code", "embedding"),
+        ("research_embeddings", "Research", "embedding"),
+        ("chat_embeddings", "Conversation", "embedding"),
+        # Healthcare vector index — cosine similarity over Synthea embeddings.
+        ("healthcare_embeddings", "Healthcare", "embedding"),
+    )
+
+    def setup_database(self, *, embedding_dim: int = 3072) -> None:
         """Ensure required vector indexes and the entity uniqueness constraint exist.
 
-        Executes five idempotent Cypher DDL statements in one session: four
-        ``CREATE VECTOR INDEX ... IF NOT EXISTS`` definitions for
-        ``Memory:Code``, ``Memory:Research``, ``Memory:Conversation``, and
-        ``Memory:Healthcare`` embeddings (3072-dimensional cosine indexes), and
-        ``CREATE CONSTRAINT ... IF NOT EXISTS`` enforcing uniqueness on
-        ``(Entity.name, Entity.type)``.
+        Creates (or, when the stored dimensionality has drifted from
+        ``embedding_dim``, drops and recreates) the four memory-layer vector
+        indexes — ``code_embeddings``, ``research_embeddings``,
+        ``chat_embeddings``, ``healthcare_embeddings`` — and applies the
+        ``entity_unique`` uniqueness constraint on ``(Entity.name, Entity.type)``.
 
-        Safe to run at startup or deploy; existing objects are left unchanged.
+        Safe to run at startup or deploy; existing, correctly-dimensioned
+        objects are left unchanged. This is a change from the older plain
+        ``CREATE ... IF NOT EXISTS`` behaviour: we now actively reconcile
+        dimensionality, so a healthcare experiment switching from a 3072d
+        provider (Gemini) to a 2048d provider (Nemotron) no longer silently
+        writes vectors that the existing index cannot accept.
+
+        Args:
+            embedding_dim: Target dimensionality for all four vector indexes.
+                Defaults to 3072 to preserve historical behaviour. Pass the
+                value that matches your configured :class:`EmbeddingService`
+                (for example 2048 for Nemotron multimodal, 3072 for OpenAI
+                ``text-embedding-3-large`` or Gemini Embedding 2 preview).
+
+        Reconciliation rules per index:
+            - Index missing → ``CREATE`` with the target dimension.
+            - Index present with the same dimension → no-op.
+            - Index present with a different dimension → ``DROP`` then
+              ``CREATE`` with the target dimension. A warning is logged so
+              the drop is visible in operator logs.
 
         Note:
-            ``IF NOT EXISTS`` means a wrong-dimension index that already exists
-            will not be altered—use :meth:`fix_vector_index_dimensions` for the
-            research/chat repair path.
+            Dropping a vector index deletes its HNSW graph but does **not**
+            delete the node-level ``embedding`` properties. Re-ingest (or
+            run ``db.awaitIndex``) after a recreate to have the new index
+            fully populated.
         """
-        # IF NOT EXISTS keeps startup safe under concurrent deploys and replays.
-        statements = [
-            (
-                "CREATE VECTOR INDEX code_embeddings IF NOT EXISTS "
-                "FOR (n:Memory:Code) ON n.embedding "
-                "OPTIONS { indexConfig: { `vector.dimensions`: 3072, `vector.similarity_function`: 'cosine' }}"
-            ),
-            (
-                "CREATE VECTOR INDEX research_embeddings IF NOT EXISTS "
-                "FOR (n:Memory:Research) ON n.embedding "
-                "OPTIONS { indexConfig: { `vector.dimensions`: 3072, `vector.similarity_function`: 'cosine' }}"
-            ),
-            (
-                "CREATE VECTOR INDEX chat_embeddings IF NOT EXISTS "
-                "FOR (n:Memory:Conversation) ON n.embedding "
-                "OPTIONS { indexConfig: { `vector.dimensions`: 3072, `vector.similarity_function`: 'cosine' }}"
-            ),
-            # Healthcare vector index — supports cosine similarity search over
-            # Synthea encounter/condition/medication/observation embeddings.
-            # Dimensions match the shared 3072d embedding model.
-            (
-                "CREATE VECTOR INDEX healthcare_embeddings IF NOT EXISTS "
-                "FOR (n:Memory:Healthcare) ON n.embedding "
-                "OPTIONS { indexConfig: { `vector.dimensions`: 3072, `vector.similarity_function`: 'cosine' }}"
-            ),
-            (
+        # Resolve the current dimensionality of each vector index that exists.
+        # Missing indexes return no row; mismatched ones drive a drop+create.
+        existing = self._existing_vector_index_dims()
+        to_drop: list[str] = []
+        to_create: list[tuple[str, str, str, int]] = []
+
+        for name, label, prop in self._VECTOR_INDEX_TARGETS:
+            current = existing.get(name)
+            if current is None:
+                to_create.append((name, label, prop, embedding_dim))
+            elif current != embedding_dim:
+                logger.warning(
+                    "Vector index %s exists at %dd but target is %dd; "
+                    "dropping and recreating.",
+                    name, current, embedding_dim,
+                )
+                to_drop.append(name)
+                to_create.append((name, label, prop, embedding_dim))
+            # else: dimension already correct, leave the index alone
+
+        with self.session() as s:
+            for name in to_drop:
+                s.run(f"DROP INDEX {name} IF EXISTS")
+            for name, label, prop, dim in to_create:
+                # Index/label/property names are hard-coded in
+                # ``_VECTOR_INDEX_TARGETS`` so we control the interpolated
+                # identifiers here; ``dim`` is an int. No injection surface.
+                s.run(
+                    f"CREATE VECTOR INDEX {name} IF NOT EXISTS "
+                    f"FOR (n:{label}) ON n.{prop} "
+                    "OPTIONS { indexConfig: { "
+                    f"`vector.dimensions`: {int(dim)}, "
+                    "`vector.similarity_function`: 'cosine' "
+                    "}}"
+                )
+            s.run(
                 "CREATE CONSTRAINT entity_unique IF NOT EXISTS "
                 "FOR (e:Entity) REQUIRE (e.name, e.type) IS UNIQUE"
-            ),
-        ]
-        with self.session() as s:
-            for stmt in statements:
-                s.run(stmt)
-        logger.info("Database setup complete: indexes and constraints created (if not existing).")
+            )
+
+        logger.info(
+            "Database setup complete (embedding_dim=%d): "
+            "%d existing indexes, %d recreated, %d created.",
+            embedding_dim, len(existing), len(to_drop),
+            len(to_create) - len(to_drop),
+        )
+
+    def _existing_vector_index_dims(self) -> dict[str, int]:
+        """Return ``{index_name: current_dimensions}`` for existing vector indexes.
+
+        Queries Neo4j's system information (``SHOW INDEXES``) and reads
+        ``options.indexConfig["vector.dimensions"]`` for each vector index.
+        Indexes that are still building or lack an options map are skipped —
+        we only report indexes whose dimensionality is known.
+
+        Returns:
+            A dict keyed by index name. Empty when no vector indexes exist
+            (fresh database) or when the current Neo4j version does not
+            expose vector index metadata in the expected shape.
+        """
+        result: dict[str, int] = {}
+        query = "SHOW INDEXES YIELD name, type, options WHERE type = 'VECTOR'"
+        try:
+            with self.session() as s:
+                for record in s.run(query):
+                    name = record.get("name")
+                    options = record.get("options") or {}
+                    index_config = options.get("indexConfig") or {}
+                    # Neo4j reports this key with a literal dot in the name.
+                    dim = index_config.get("vector.dimensions")
+                    if isinstance(name, str) and isinstance(dim, (int, float)):
+                        result[name] = int(dim)
+        except Exception as exc:  # pragma: no cover — version/compat fallback
+            # Older Neo4j versions or locked-down permissions may not expose
+            # this query. Falling back to an empty dict means ``setup_database``
+            # behaves like the pre-reconciliation implementation: ``CREATE ...
+            # IF NOT EXISTS`` for everything, no drops. That preserves the
+            # strictly-additive legacy behaviour when introspection fails.
+            logger.debug(
+                "Could not introspect existing vector index dimensions (%s); "
+                "falling back to CREATE IF NOT EXISTS semantics.",
+                exc,
+            )
+        return result
 
     def fix_vector_index_dimensions(self) -> None:
         """Drop and recreate research/chat vector indexes at the canonical 3072d.
@@ -188,12 +271,12 @@ class ConnectionManager:
         create_statements = [
             (
                 "CREATE VECTOR INDEX research_embeddings "
-                "FOR (n:Memory:Research) ON n.embedding "
+                "FOR (n:Research) ON n.embedding "
                 "OPTIONS { indexConfig: { `vector.dimensions`: 3072, `vector.similarity_function`: 'cosine' }}"
             ),
             (
                 "CREATE VECTOR INDEX chat_embeddings "
-                "FOR (n:Memory:Conversation) ON n.embedding "
+                "FOR (n:Conversation) ON n.embedding "
                 "OPTIONS { indexConfig: { `vector.dimensions`: 3072, `vector.similarity_function`: 'cosine' }}"
             ),
         ]

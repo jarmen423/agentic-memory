@@ -38,13 +38,33 @@ from dataclasses import dataclass
 import logging
 import os
 import time
-from typing import Any
+from typing import Any, Protocol
 
 from google import genai
 from google.genai import types as genai_types
 from openai import OpenAI
 
 logger = logging.getLogger(__name__)
+
+
+# Environment variables for the local-GPU provider (nemotron_local). Kept as
+# module-level constants so tests and Colab notebooks can reference them by
+# symbol rather than magic strings.
+_ENV_LOCAL_EMBED_MODEL = "AM_LOCAL_EMBED_MODEL"
+_ENV_LOCAL_EMBED_MAX_SEQ = "AM_LOCAL_EMBED_MAX_SEQ"
+_ENV_LOCAL_EMBED_BATCH_SIZE = "AM_LOCAL_EMBED_BATCH_SIZE"
+_ENV_LOCAL_EMBED_POOLING = "AM_LOCAL_EMBED_POOLING"  # 'mean' (default) | 'cls'
+
+# Default local model. Chosen because:
+#   - Publicly available on HuggingFace without gated access.
+#   - Known-good GPU footprint on Colab T4/G4 (fits comfortably in fp16 VRAM).
+#   - Strong retrieval benchmarks (top of MTEB for its size class).
+# Override via ``AM_LOCAL_EMBED_MODEL`` to swap in an NVIDIA Nemotron
+# retriever or any other HuggingFace text encoder once the scale experiments
+# settle on a specific checkpoint. The actual output dimension is detected
+# at load time from a probe forward pass, so this default is decoupled from
+# the Neo4j vector index dimension.
+_DEFAULT_LOCAL_EMBED_MODEL = "intfloat/multilingual-e5-large-instruct"
 
 # Default Gemini API ceilings (overridable for different billing tiers).
 _ENV_MAX_RPM = "AGENTIC_MEMORY_GEMINI_MAX_RPM"
@@ -156,7 +176,8 @@ class EmbeddingMetadata:
         total_tokens: Total token count when the provider exposes it.
         estimated_cost_usd: Best-effort input-side cost estimate for this call.
         transport: Operational path used to reach the provider, such as
-            ``developer_api`` or ``vertex_ai`` for Gemini.
+            ``developer_api`` or ``vertex_ai`` for Gemini, or ``local_gpu``
+            for the in-process HuggingFace provider.
     """
 
     provider: str
@@ -165,6 +186,187 @@ class EmbeddingMetadata:
     total_tokens: int | None = None
     estimated_cost_usd: float | None = None
     transport: str | None = None
+
+
+class _LocalEmbedder(Protocol):
+    """Minimal interface any local-inference embedder must satisfy.
+
+    The scale-experiments pipeline talks to the local model through this
+    Protocol so the concrete implementation (HuggingFace transformers today,
+    possibly vLLM or a quantized runtime later) can be swapped without
+    changing :class:`EmbeddingService`.
+    """
+
+    dimensions: int
+    model_name: str
+
+    def encode(self, texts: list[str]) -> list[list[float]]:
+        """Return one L2-normalized embedding per input text."""
+        ...
+
+
+class _LocalGPUEmbedder:
+    """Local HuggingFace encoder wrapped for the ``nemotron_local`` provider.
+
+    Responsibilities:
+        - Lazy-import ``torch`` and ``transformers`` so the wider
+          ``agentic_memory`` import path does not force these heavy deps on
+          callers who only use cloud providers.
+        - Place the model on CUDA (half-precision) when available, otherwise
+          fall back to CPU ``float32`` so local dev still works without a GPU.
+        - Run mean (or CLS) pooling over the final hidden states and L2
+          normalize the resulting vectors. Normalization is required because
+          the Neo4j vector index is configured with cosine similarity: with
+          unit-length vectors, cosine becomes a simple inner product and
+          retrieval scores stay in [-1, 1].
+        - Expose ``self.dimensions`` detected from a warm-up probe call so
+          :class:`EmbeddingService` can reconcile against the Neo4j index
+          dimension before the first write.
+
+    Args:
+        model_name: HuggingFace model id (e.g. ``nvidia/NV-Embed-v2``).
+            Read from ``AM_LOCAL_EMBED_MODEL`` env var by the caller when
+            not passed explicitly.
+        max_seq_length: Input truncation length in tokens. Longer inputs are
+            right-truncated. 512 is a safe default for retrieval encoders.
+        batch_size: Number of texts per forward pass. Tune down to 4 or 8
+            for Colab T4's 15 GB VRAM when using 7B-class models.
+        pooling: ``'mean'`` (default) or ``'cls'``. Mean-pooling weighted by
+            the attention mask matches the convention used by most modern
+            retrieval encoders (e5, gte, BGE, NV-Embed).
+
+    Raises:
+        ImportError: If ``torch`` or ``transformers`` is not installed.
+        RuntimeError: If the model produces no output on the probe call.
+    """
+
+    def __init__(
+        self,
+        model_name: str,
+        *,
+        max_seq_length: int = 512,
+        batch_size: int = 16,
+        pooling: str = "mean",
+    ) -> None:
+        try:
+            import torch  # type: ignore[import-not-found]
+            from transformers import (  # type: ignore[import-not-found]
+                AutoModel,
+                AutoTokenizer,
+            )
+        except ImportError as exc:  # pragma: no cover — environment check
+            raise ImportError(
+                "Local-GPU embedding provider requires 'torch' and "
+                "'transformers'. Install with: "
+                "pip install torch transformers accelerate"
+            ) from exc
+
+        # Hold the torch module so pooling code can reach it without a second
+        # import that might cost 100+ ms on Colab first-run.
+        self._torch = torch
+
+        self.model_name = model_name
+        self.max_seq_length = max_seq_length
+        self.batch_size = batch_size
+        self.pooling = pooling.lower()
+        if self.pooling not in {"mean", "cls"}:
+            raise ValueError(
+                f"Unsupported pooling={pooling!r}; expected 'mean' or 'cls'."
+            )
+
+        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # fp16 on CUDA keeps VRAM usage near the floor for 1–7B-class
+        # encoders. On CPU we stick with fp32 because some architectures
+        # emit NaNs in fp16 without specialized kernels.
+        self._dtype = torch.float16 if self._device.type == "cuda" else torch.float32
+
+        logger.info(
+            "Loading local embedder %s on %s (dtype=%s)...",
+            model_name, self._device.type, self._dtype,
+        )
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_name, trust_remote_code=True
+        )
+        self.model = AutoModel.from_pretrained(
+            model_name,
+            torch_dtype=self._dtype,
+            trust_remote_code=True,
+        ).to(self._device)
+        self.model.eval()
+
+        # Warm-up probe: establishes output dimensionality and triggers any
+        # lazy kernel compilation (e.g. flash-attn) so first real batch does
+        # not pay that cost.
+        probe_vectors = self.encode(["probe"])
+        if not probe_vectors or not probe_vectors[0]:
+            raise RuntimeError(
+                f"Local embedder {model_name!r} returned no vectors on warm-up."
+            )
+        self.dimensions = len(probe_vectors[0])
+        logger.info(
+            "Local embedder ready: model=%s dim=%d batch_size=%d max_seq=%d",
+            model_name, self.dimensions, self.batch_size, self.max_seq_length,
+        )
+
+    def encode(self, texts: list[str]) -> list[list[float]]:
+        """Tokenize, run the model, pool, L2-normalize, return Python lists.
+
+        Operates in ``torch.inference_mode`` to skip autograd bookkeeping
+        entirely — this is faster than ``torch.no_grad`` for pure forward
+        inference and avoids tracker allocation on every call.
+
+        Args:
+            texts: Raw input strings. Any prefixing expected by retrieval
+                models (e.g. ``"query: "`` for e5) must be applied by the
+                caller before passing the string in; this method is prefix-
+                agnostic.
+
+        Returns:
+            One list[float] per input, already L2-normalized.
+        """
+        if not texts:
+            return []
+
+        torch = self._torch
+        all_vectors: list[list[float]] = []
+        for i in range(0, len(texts), self.batch_size):
+            chunk = texts[i : i + self.batch_size]
+            inputs = self.tokenizer(
+                chunk,
+                padding=True,
+                truncation=True,
+                max_length=self.max_seq_length,
+                return_tensors="pt",
+            ).to(self._device)
+
+            with torch.inference_mode():
+                outputs = self.model(**inputs)
+                # Most encoders expose ``last_hidden_state``; some (e.g.
+                # sentence-bert variants with a pooler head) expose a
+                # pooled output on ``pooler_output``. We prefer explicit
+                # pooling over last_hidden_state for reproducibility
+                # across model families.
+                hidden = outputs.last_hidden_state  # [batch, seq, hidden]
+
+                if self.pooling == "cls":
+                    pooled = hidden[:, 0]
+                else:
+                    # Mask-aware mean pooling: zero out padding positions
+                    # before averaging so sequence length does not bias
+                    # the magnitude of short inputs.
+                    mask = inputs["attention_mask"].unsqueeze(-1).to(hidden.dtype)
+                    summed = (hidden * mask).sum(dim=1)
+                    counts = mask.sum(dim=1).clamp(min=1e-9)
+                    pooled = summed / counts
+
+                # Cosine similarity == inner product for unit vectors, so
+                # normalize here and the Neo4j index lookup stays simple.
+                pooled = torch.nn.functional.normalize(pooled, p=2, dim=-1)
+
+            # Move to CPU fp32 for JSON-safe transport back to callers.
+            all_vectors.extend(pooled.float().cpu().tolist())
+
+        return all_vectors
 
 
 class EmbeddingService:
@@ -186,7 +388,18 @@ class EmbeddingService:
     PROVIDERS: dict[str, dict[str, Any]] = {
         "openai": {"model": "text-embedding-3-large", "dimensions": 3072},
         "gemini": {"model": "gemini-embedding-2-preview", "dimensions": 3072},
+        # NVIDIA hosted embedding API (OpenAI-compatible HTTP at
+        # integrate.api.nvidia.com). Use when remote inference is preferred.
         "nemotron": {"model": "nvidia/nv-embedqa-e5-v5", "dimensions": 4096},
+        # In-process local GPU inference via HuggingFace transformers. The
+        # ``dimensions`` value here is only used when the caller does not
+        # override via ``output_dimensions``; the actual dim is detected from
+        # the loaded model's warm-up probe. Model id is read from the
+        # ``AM_LOCAL_EMBED_MODEL`` env var or the ``model`` kwarg.
+        "nemotron_local": {
+            "model": _DEFAULT_LOCAL_EMBED_MODEL,
+            "dimensions": 1024,
+        },
     }
 
     def __init__(
@@ -204,19 +417,31 @@ class EmbeddingService:
         """Initialize the embedding service for the given provider.
 
         Args:
-            provider: One of 'openai', 'gemini', 'nemotron'.
+            provider: One of 'openai', 'gemini', 'nemotron', 'nemotron_local'.
+                The ``nemotron_local`` provider loads a HuggingFace encoder on
+                the local GPU (or CPU) and does not require an API key.
             api_key: API key for the selected provider. Gemini-on-Vertex can use
                 Application Default Credentials instead of an API key.
-            model: Optional model override for the selected provider.
+                Ignored by ``nemotron_local``.
+            model: Optional model override for the selected provider. For
+                ``nemotron_local``, this is the HuggingFace model id and
+                takes precedence over the ``AM_LOCAL_EMBED_MODEL`` env var.
             base_url: Optional base URL override (for Nemotron custom endpoints).
-            output_dimensions: Optional dimension override. Defaults to provider standard.
+                Ignored by ``nemotron_local``.
+            output_dimensions: Optional dimension override. Defaults to provider
+                standard. For ``nemotron_local`` this acts as an assertion: the
+                loaded model must produce vectors of this dimensionality, or
+                ``__init__`` raises ``ValueError``.
             vertexai: Whether Gemini traffic should use the Vertex AI transport.
             project: Google Cloud project for Vertex AI usage.
             location: Vertex AI location. Defaults to ``global`` when omitted.
             api_version: Optional Gen AI SDK API version override for Vertex AI.
 
         Raises:
-            ValueError: If provider is not supported.
+            ValueError: If provider is not supported, or if ``output_dimensions``
+                contradicts the actual dimensionality of a local model.
+            ImportError: When ``provider='nemotron_local'`` and the optional
+                ``torch``/``transformers`` stack is not installed.
         """
         if provider not in self.PROVIDERS:
             supported = ", ".join(self.PROVIDERS.keys())
@@ -232,6 +457,11 @@ class EmbeddingService:
         self.location = location or ("global" if self.vertexai and provider == "gemini" else None)
         self.api_version = api_version
         self._gemini_quota: _GeminiQuotaGate | None = None
+
+        # The local embedder is only constructed for ``nemotron_local``. The
+        # other branches leave it as None so ``_client`` remains the primary
+        # handle for remote providers.
+        self._local_embedder: _LocalEmbedder | None = None
 
         if provider == "gemini":
             self._gemini_quota = _GeminiQuotaGate.from_environment()
@@ -256,6 +486,42 @@ class EmbeddingService:
                 api_key=api_key,
                 base_url=base_url or "https://integrate.api.nvidia.com/v1",
             )
+        elif provider == "nemotron_local":
+            # Resolve model id and runtime knobs, preferring explicit kwargs
+            # over environment variables over the PROVIDERS default. This
+            # mirrors the override chain used elsewhere in agentic_memory so
+            # ops docs can stay simple: "set AM_LOCAL_EMBED_MODEL" is enough
+            # for Colab, and unit tests can still pass ``model=`` directly.
+            resolved_model = (
+                model
+                or os.environ.get(_ENV_LOCAL_EMBED_MODEL)
+                or self.PROVIDERS["nemotron_local"]["model"]
+            )
+            max_seq = int(os.environ.get(_ENV_LOCAL_EMBED_MAX_SEQ, "512"))
+            batch = int(os.environ.get(_ENV_LOCAL_EMBED_BATCH_SIZE, "16"))
+            pooling = os.environ.get(_ENV_LOCAL_EMBED_POOLING, "mean")
+
+            self._local_embedder = _LocalGPUEmbedder(
+                resolved_model,
+                max_seq_length=max_seq,
+                batch_size=batch,
+                pooling=pooling,
+            )
+            self._client = None
+            # The warm-up probe in ``_LocalGPUEmbedder.__init__`` determined
+            # the true output dimensionality. Reconcile against any caller
+            # expectation so we fail loudly rather than silently writing
+            # mismatched vectors into the Neo4j index.
+            detected = self._local_embedder.dimensions
+            if output_dimensions is not None and output_dimensions != detected:
+                raise ValueError(
+                    f"output_dimensions={output_dimensions} was requested for "
+                    f"nemotron_local, but model {resolved_model!r} produces "
+                    f"{detected}-dim vectors. Update Neo4j index or choose a "
+                    "model whose output dimensionality matches."
+                )
+            self.dimensions = detected
+            self.model = resolved_model
         else:
             # openai
             self._client = OpenAI(api_key=api_key)
@@ -360,6 +626,51 @@ class EmbeddingService:
             return cleaned_instruction.format(content=text, title="none")
         return f"{cleaned_instruction}\n\n{text}"
 
+    @staticmethod
+    def _apply_task_instruction(text: str, task_instruction: str | None) -> str:
+        """Apply an optional retrieval task instruction to a raw text.
+
+        Shared between the local-GPU and Gemini branches. The same format
+        template conventions used for Gemini Embedding 2 (``{content}``,
+        ``{title}``) also work for retrieval models like e5 and bge that
+        expect a ``"query: ..."`` or ``"passage: ..."`` prefix on the
+        input. Unifying the logic avoids drift between provider branches.
+
+        Args:
+            text: Raw input text.
+            task_instruction: Optional template or literal prefix. ``None``
+                or empty string → return ``text`` unchanged.
+
+        Returns:
+            The formatted text, ready for tokenization.
+        """
+        if not task_instruction:
+            return text
+        cleaned = task_instruction.strip()
+        if not cleaned:
+            return text
+        if "{content}" in cleaned or "{title}" in cleaned:
+            return cleaned.format(content=text, title="none")
+        return f"{cleaned}\n\n{text}"
+
+    def _local_gpu_metadata(self, texts: list[str]) -> EmbeddingMetadata:
+        """Build an :class:`EmbeddingMetadata` record for a local GPU call.
+
+        Local inference has no billable-token concept, so we report a
+        character-based token estimate (chars/4) for observability parity
+        with the remote providers. ``estimated_cost_usd`` is explicitly
+        ``0.0`` because the GPU time is already paid for upstream.
+        """
+        tokens_approx = sum(max(1, len(t) // 4) for t in texts)
+        return EmbeddingMetadata(
+            provider=self.provider,
+            model=self.model,
+            prompt_tokens=tokens_approx,
+            total_tokens=tokens_approx,
+            estimated_cost_usd=0.0,
+            transport="local_gpu",
+        )
+
     def embed_with_metadata(
         self,
         text: str,
@@ -370,12 +681,22 @@ class EmbeddingService:
 
         Args:
             text: Input text to embed.
-            task_instruction: Optional Gemini Embedding 2 custom task
-                instruction. Ignored by non-Gemini providers.
+            task_instruction: Optional retrieval task instruction. Applied
+                for Gemini (per the Embeddings 2 format) and for the
+                local-GPU provider (as a prefix template). Ignored by the
+                remote NVIDIA and OpenAI providers.
 
         Returns:
             Tuple of ``(embedding_vector, normalized_metadata)``.
         """
+        if self.provider == "nemotron_local":
+            assert self._local_embedder is not None, (
+                "Local embedder not initialized for nemotron_local provider."
+            )
+            prepared = self._apply_task_instruction(text, task_instruction)
+            vectors = self._local_embedder.encode([prepared])
+            return vectors[0], self._local_gpu_metadata([prepared])
+
         if self.provider == "gemini":
             # CRITICAL: Always pass output_dimensionality explicitly.
             # Gemini default is 3072d but we may need 768d for web/chat indexes.
@@ -469,6 +790,20 @@ class EmbeddingService:
         """
         if not texts:
             return [], None
+
+        if self.provider == "nemotron_local":
+            assert self._local_embedder is not None, (
+                "Local embedder not initialized for nemotron_local provider."
+            )
+            # Apply the task instruction once per text up-front. The local
+            # embedder's own batching then controls GPU memory use — we do
+            # not need a second-level batch loop here because
+            # ``_LocalGPUEmbedder.encode`` already chunks by ``batch_size``.
+            prepared = [
+                self._apply_task_instruction(t, task_instruction) for t in texts
+            ]
+            vectors = self._local_embedder.encode(prepared)
+            return vectors, self._local_gpu_metadata(prepared)
 
         if self.provider == "gemini":
             assert self._gemini_quota is not None

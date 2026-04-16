@@ -209,6 +209,13 @@ class TemporalBridge:
         if self._config.disabled_reason is not None:
             raise TemporalBridgeUnavailableError(self._config.disabled_reason)
 
+        # Force UTF-8 on the subprocess pipes. The Node helper emits UTF-8
+        # (valid bytes like 0x8f can appear in JSON response payloads or in
+        # stack traces). Without an explicit encoding Python falls back to
+        # ``locale.getpreferredencoding(False)``, which is cp1252 on Windows
+        # and raises UnicodeDecodeError on anything outside the Windows-1252
+        # range. ``errors="replace"`` protects us from malformed mid-stream
+        # bytes surfacing as hard crashes.
         process = subprocess.Popen(
             self._config.command,
             cwd=self._config.cwd,
@@ -217,6 +224,8 @@ class TemporalBridge:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
         )
         self._process = process

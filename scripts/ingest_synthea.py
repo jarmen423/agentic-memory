@@ -44,7 +44,23 @@ import sys
 from pathlib import Path
 
 # Allow running from the repo root without installing the package
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_REPO_ROOT / "src"))
+
+# Auto-load .env from repo root so the script works without manually sourcing it.
+# python-dotenv is a dev dependency; if absent we fall through silently.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(_REPO_ROOT / ".env", override=False)
+except ImportError:
+    pass
+
+# STDB_BINDINGS_MODULE is stored as a relative path in .env.
+# The bridge subprocess resolves it with path.resolve() from its CWD, so we
+# convert it to absolute here before any subprocess is spawned.
+_bindings = os.environ.get("STDB_BINDINGS_MODULE", "")
+if _bindings and not os.path.isabs(_bindings):
+    os.environ["STDB_BINDINGS_MODULE"] = str(_REPO_ROOT / _bindings)
 
 from agentic_memory.core.connection import ConnectionManager
 from agentic_memory.core.embedding import EmbeddingService

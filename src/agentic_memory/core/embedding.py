@@ -392,6 +392,8 @@ class EmbeddingService:
                 contents=prepared,
                 config={"output_dimensionality": self.dimensions},
             )
+            if not response.embeddings:
+                raise RuntimeError("Gemini embed_content returned no embeddings")
             meta = self._build_gemini_metadata(response)
             self._gemini_quota.record_completed_request(
                 prompt_tokens=meta.prompt_tokens or meta.total_tokens,
@@ -488,18 +490,54 @@ class EmbeddingService:
                     contents=prepared,
                     config={"output_dimensionality": self.dimensions},
                 )
-                all_embeddings.extend(list(e.values) for e in result.embeddings)
-                meta = self._build_gemini_metadata(result)
-                self._gemini_quota.record_completed_request(
-                    prompt_tokens=meta.prompt_tokens or meta.total_tokens,
-                    fallback_tokens=est,
-                )
-                if meta.prompt_tokens is not None:
-                    agg_prompt = (agg_prompt or 0) + meta.prompt_tokens
-                if meta.total_tokens is not None:
-                    agg_total = (agg_total or 0) + meta.total_tokens
-                if meta.estimated_cost_usd is not None:
-                    agg_cost += meta.estimated_cost_usd
+                # Some google-genai / API combinations return fewer embedding objects than
+                # inputs (e.g. 1 for 4) while still HTTP 200 — fall back to one HTTP call
+                # per text so Pass 2 always gets len(vectors) == len(chunk).
+                emb_in = result.embeddings
+                batch_metas: list[EmbeddingMetadata] = []
+                if emb_in is not None and len(emb_in) == len(prepared):
+                    for e in emb_in:
+                        if e.values is None:
+                            raise RuntimeError("Gemini returned an embedding without values")
+                        all_embeddings.append(list(e.values))
+                    meta = self._build_gemini_metadata(result)
+                    batch_metas.append(meta)
+                    self._gemini_quota.record_completed_request(
+                        prompt_tokens=meta.prompt_tokens or meta.total_tokens,
+                        fallback_tokens=est,
+                    )
+                else:
+                    logger.warning(
+                        "Gemini batchEmbedContents returned %s embedding object(s) for %s inputs; "
+                        "falling back to sequential embeds for this chunk.",
+                        len(emb_in) if emb_in is not None else 0,
+                        len(prepared),
+                    )
+                    for p in prepared:
+                        est1 = _GeminiQuotaGate.estimate_chars_as_tokens([p])
+                        self._gemini_quota.wait_before_request(estimated_input_tokens=est1)
+                        r1 = self._client.models.embed_content(
+                            model=self.model,
+                            contents=[p],
+                            config={"output_dimensionality": self.dimensions},
+                        )
+                        if not r1.embeddings:
+                            raise RuntimeError("Gemini returned no embeddings for sequential embed")
+                        all_embeddings.append(list(r1.embeddings[0].values))
+                        m1 = self._build_gemini_metadata(r1)
+                        batch_metas.append(m1)
+                        self._gemini_quota.record_completed_request(
+                            prompt_tokens=m1.prompt_tokens or m1.total_tokens,
+                            fallback_tokens=est1,
+                        )
+
+                for meta in batch_metas:
+                    if meta.prompt_tokens is not None:
+                        agg_prompt = (agg_prompt or 0) + meta.prompt_tokens
+                    if meta.total_tokens is not None:
+                        agg_total = (agg_total or 0) + meta.total_tokens
+                    if meta.estimated_cost_usd is not None:
+                        agg_cost += meta.estimated_cost_usd
             combined: EmbeddingMetadata | None = None
             if agg_prompt is not None or agg_total is not None or agg_cost > 0:
                 combined = EmbeddingMetadata(

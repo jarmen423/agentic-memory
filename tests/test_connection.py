@@ -16,7 +16,7 @@ def test_init_creates_driver():
             "bolt://localhost:7687",
             auth=("neo4j", "password"),
             max_connection_pool_size=50,
-            connection_acquisition_timeout=60,
+            connection_acquisition_timeout=10,
             connection_timeout=30,
             max_transaction_retry_time=30.0,
         )
@@ -28,7 +28,9 @@ def test_session_context_manager():
     """conn.session() yields a neo4j session via driver.session()."""
     with patch("agentic_memory.core.connection.neo4j.GraphDatabase.driver") as mock_driver:
         mock_session = MagicMock()
-        mock_driver.return_value.session.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_driver.return_value.session.return_value.__enter__ = MagicMock(
+            return_value=mock_session
+        )
         mock_driver.return_value.session.return_value.__exit__ = MagicMock(return_value=False)
 
         conn = ConnectionManager("bolt://localhost:7687", "neo4j", "password")
@@ -42,7 +44,9 @@ def test_setup_database_runs_all_queries():
     """setup_database() executes all vector index CREATE statements and entity uniqueness constraint."""
     with patch("agentic_memory.core.connection.neo4j.GraphDatabase.driver") as mock_driver:
         mock_session = MagicMock()
-        mock_driver.return_value.session.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_driver.return_value.session.return_value.__enter__ = MagicMock(
+            return_value=mock_session
+        )
         mock_driver.return_value.session.return_value.__exit__ = MagicMock(return_value=False)
 
         conn = ConnectionManager("bolt://localhost:7687", "neo4j", "password")
@@ -90,7 +94,7 @@ def test_from_config(monkeypatch):
             "bolt://myhost:7687",
             auth=("admin", "secret"),
             max_connection_pool_size=50,
-            connection_acquisition_timeout=60,
+            connection_acquisition_timeout=10,
             connection_timeout=30,
             max_transaction_retry_time=30.0,
         )
@@ -116,7 +120,7 @@ def test_from_config_env_var_fallback(monkeypatch):
             "bolt://envhost:7687",
             auth=("envuser", "envpass"),
             max_connection_pool_size=50,
-            connection_acquisition_timeout=60,
+            connection_acquisition_timeout=10,
             connection_timeout=30,
             max_transaction_retry_time=30.0,
         )

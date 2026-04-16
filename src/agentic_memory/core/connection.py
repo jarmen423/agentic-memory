@@ -118,10 +118,10 @@ class ConnectionManager:
     def setup_database(self) -> None:
         """Ensure required vector indexes and the entity uniqueness constraint exist.
 
-        Executes four idempotent Cypher DDL statements in one session: three
+        Executes five idempotent Cypher DDL statements in one session: four
         ``CREATE VECTOR INDEX ... IF NOT EXISTS`` definitions for
-        ``Memory:Code``, ``Memory:Research``, and ``Memory:Conversation``
-        embeddings (3072-dimensional cosine indexes), and
+        ``Memory:Code``, ``Memory:Research``, ``Memory:Conversation``, and
+        ``Memory:Healthcare`` embeddings (3072-dimensional cosine indexes), and
         ``CREATE CONSTRAINT ... IF NOT EXISTS`` enforcing uniqueness on
         ``(Entity.name, Entity.type)``.
 
@@ -147,6 +147,14 @@ class ConnectionManager:
             (
                 "CREATE VECTOR INDEX chat_embeddings IF NOT EXISTS "
                 "FOR (n:Memory:Conversation) ON n.embedding "
+                "OPTIONS { indexConfig: { `vector.dimensions`: 3072, `vector.similarity_function`: 'cosine' }}"
+            ),
+            # Healthcare vector index — supports cosine similarity search over
+            # Synthea encounter/condition/medication/observation embeddings.
+            # Dimensions match the shared 3072d embedding model.
+            (
+                "CREATE VECTOR INDEX healthcare_embeddings IF NOT EXISTS "
+                "FOR (n:Memory:Healthcare) ON n.embedding "
                 "OPTIONS { indexConfig: { `vector.dimensions`: 3072, `vector.similarity_function`: 'cosine' }}"
             ),
             (

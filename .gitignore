@@ -3,7 +3,6 @@ __pycache__/
 *.pyc
 *.pyo
 .venv/
-.venv-agentic-memory/
 venv/
 .pytest_cache/
 pytest-cache-files-*/
@@ -40,7 +39,3 @@ npm-debug.log*
 # Local agent/editor artifacts
 .claude/worktrees/
 ~/.config/cursor/
-docs/notebooklm/
-repomix-output.md
-.mcp.json
-.claude/

@@ -26,6 +26,7 @@ import os
 from pathlib import Path
 import shutil
 import sys
+import time
 from typing import Any, Iterable, Iterator
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -241,12 +242,20 @@ def flush_embedding_batch(
     pending_records: list[tuple[dict[str, Any], HealthcareEmbeddingPayload]],
     completed_rows: list[dict[str, Any]],
     project_id: str,
-) -> None:
-    """Embed the pending records and append export-ready dicts to ``completed_rows``."""
-    if not pending_records:
-        return
+) -> tuple[int, float]:
+    """Embed one pending batch and append export-ready dicts to ``completed_rows``.
 
+    Returns:
+        Tuple of ``(records_embedded, embed_seconds)`` so the caller can keep
+        real throughput stats instead of inferring performance from VRAM alone.
+    """
+    if not pending_records:
+        return 0, 0.0
+
+    batch_size = len(pending_records)
+    embed_started = time.monotonic()
     vectors = embedder.embed_batch([payload.enriched_text for _, payload in pending_records])
+    embed_seconds = time.monotonic() - embed_started
     if len(vectors) != len(pending_records):
         raise RuntimeError(
             f"Embedding batch size mismatch: got {len(vectors)} vectors for "
@@ -272,6 +281,7 @@ def flush_embedding_batch(
             }
         )
     pending_records.clear()
+    return batch_size, embed_seconds
 
 
 def main() -> None:
@@ -300,6 +310,9 @@ def main() -> None:
     completed_rows: list[dict[str, Any]] = []
     chunk_index = 0
     total_rows = 0
+    total_embed_seconds = 0.0
+    total_write_seconds = 0.0
+    run_started = time.monotonic()
 
     manifest: dict[str, Any] = {
         "project_id": args.project_id,
@@ -327,47 +340,105 @@ def main() -> None:
         total_rows += 1
 
         if len(pending_records) >= args.embed_batch_size:
-            flush_embedding_batch(
+            embedded_count, embed_seconds = flush_embedding_batch(
                 embedder=embedder,
                 pending_records=pending_records,
                 completed_rows=completed_rows,
                 project_id=args.project_id,
+            )
+            total_embed_seconds += embed_seconds
+            elapsed = time.monotonic() - run_started
+            rows_per_sec = total_rows / elapsed if elapsed > 0 else 0.0
+            logger.info(
+                "BATCH embedded=%d total_rows=%d elapsed_min=%.1f rows_per_sec=%.1f embed_sec=%.1f",
+                embedded_count,
+                total_rows,
+                elapsed / 60,
+                rows_per_sec,
+                embed_seconds,
             )
 
         if len(completed_rows) >= args.chunk_records:
             chunk_index += 1
             chunk_rows = completed_rows[: args.chunk_records]
             del completed_rows[: args.chunk_records]
+            write_started = time.monotonic()
             chunk_path = write_chunk(output_dir, chunk_index=chunk_index, rows=chunk_rows)
+            write_seconds = time.monotonic() - write_started
+            total_write_seconds += write_seconds
             manifest["chunks"].append({"path": str(chunk_path), "records": len(chunk_rows)})
+            elapsed = time.monotonic() - run_started
+            rows_per_sec = total_rows / elapsed if elapsed > 0 else 0.0
             logger.info(
-                "Wrote %s with %d records (rows_seen=%d)",
+                "CHUNK path=%s chunk_records=%d total_rows=%d elapsed_min=%.1f rows_per_sec=%.1f write_sec=%.1f embed_sec_total=%.1f write_sec_total=%.1f",
                 chunk_path.name,
                 len(chunk_rows),
                 total_rows,
+                elapsed / 60,
+                rows_per_sec,
+                write_seconds,
+                total_embed_seconds,
+                total_write_seconds,
             )
 
-    flush_embedding_batch(
+    embedded_count, embed_seconds = flush_embedding_batch(
         embedder=embedder,
         pending_records=pending_records,
         completed_rows=completed_rows,
         project_id=args.project_id,
     )
+    total_embed_seconds += embed_seconds
+    if embedded_count:
+        elapsed = time.monotonic() - run_started
+        rows_per_sec = total_rows / elapsed if elapsed > 0 else 0.0
+        logger.info(
+            "BATCH embedded=%d total_rows=%d elapsed_min=%.1f rows_per_sec=%.1f embed_sec=%.1f",
+            embedded_count,
+            total_rows,
+            elapsed / 60,
+            rows_per_sec,
+            embed_seconds,
+        )
 
     if completed_rows:
         chunk_index += 1
+        write_started = time.monotonic()
         chunk_path = write_chunk(output_dir, chunk_index=chunk_index, rows=completed_rows)
+        write_seconds = time.monotonic() - write_started
+        total_write_seconds += write_seconds
         manifest["chunks"].append({"path": str(chunk_path), "records": len(completed_rows)})
+        elapsed = time.monotonic() - run_started
+        rows_per_sec = total_rows / elapsed if elapsed > 0 else 0.0
         logger.info(
-            "Wrote %s with %d records (final chunk)",
+            "CHUNK path=%s chunk_records=%d total_rows=%d elapsed_min=%.1f rows_per_sec=%.1f write_sec=%.1f embed_sec_total=%.1f write_sec_total=%.1f final=true",
             chunk_path.name,
             len(completed_rows),
+            total_rows,
+            elapsed / 60,
+            rows_per_sec,
+            write_seconds,
+            total_embed_seconds,
+            total_write_seconds,
         )
 
     manifest["total_rows"] = total_rows
+    manifest["total_embed_seconds"] = round(total_embed_seconds, 3)
+    manifest["total_write_seconds"] = round(total_write_seconds, 3)
+    manifest["elapsed_seconds"] = round(time.monotonic() - run_started, 3)
     manifest_path = output_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    logger.info("Export complete: rows=%d chunks=%d manifest=%s", total_rows, chunk_index, manifest_path)
+    elapsed = time.monotonic() - run_started
+    rows_per_sec = total_rows / elapsed if elapsed > 0 else 0.0
+    logger.info(
+        "Export complete: rows=%d chunks=%d elapsed_min=%.1f rows_per_sec=%.1f embed_sec_total=%.1f write_sec_total=%.1f manifest=%s",
+        total_rows,
+        chunk_index,
+        elapsed / 60,
+        rows_per_sec,
+        total_embed_seconds,
+        total_write_seconds,
+        manifest_path,
+    )
 
 
 if __name__ == "__main__":

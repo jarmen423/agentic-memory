@@ -6,6 +6,68 @@ import { pathToFileURL } from "node:url";
 
 import { hashU128, normalizeName, normalizePredicate } from "../src/lib/hash";
 
+/**
+ * SpacetimeDB's generated JS client currently expects ``Promise.withResolvers``
+ * to exist. That helper shipped in newer Node releases than some of our
+ * operator environments. We polyfill it here before importing generated
+ * bindings so the bridge can run consistently across Node versions.
+ */
+const ensurePromiseWithResolvers = (): void => {
+  const promiseCtor = Promise as PromiseConstructor & {
+    withResolvers?<T>(): {
+      promise: Promise<T>;
+      resolve: (value: T | PromiseLike<T>) => void;
+      reject: (reason?: unknown) => void;
+    };
+  };
+
+  if (typeof promiseCtor.withResolvers === "function") {
+    return;
+  }
+
+  promiseCtor.withResolvers = function withResolvers<T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  };
+};
+
+/**
+ * The Python bridge treats stdout as a strict JSON-lines protocol. Some
+ * upstream SpacetimeDB client code emits connection notices via console
+ * methods, which corrupts stdout and breaks the first request. Redirect all
+ * human-readable console chatter to stderr so stdout stays protocol-only.
+ */
+const redirectConsoleToStderr = (): void => {
+  const toStderr = (...args: unknown[]): void => {
+    const rendered = args
+      .map((value) => {
+        if (typeof value === "string") {
+          return value;
+        }
+        try {
+          return JSON.stringify(value);
+        } catch {
+          return String(value);
+        }
+      })
+      .join(" ");
+    process.stderr.write(`${rendered}\n`);
+  };
+
+  console.log = toStderr;
+  console.info = toStderr;
+  console.debug = toStderr;
+  console.warn = toStderr;
+};
+
+ensurePromiseWithResolvers();
+redirectConsoleToStderr();
+
 type SeedEntity = {
   name: string;
   kind?: string | null;

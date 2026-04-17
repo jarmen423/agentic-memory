@@ -35,6 +35,11 @@ from fastapi.responses import PlainTextResponse
 from am_server.auth import (
     deployment_mode,
     expected_api_keys_for_surface,
+    oauth_authorization_endpoint,
+    oauth_issuer_url,
+    oauth_resource_url,
+    oauth_token_endpoint,
+    public_oauth_enabled,
     require_auth,
     strict_mcp_auth_enabled,
 )
@@ -110,6 +115,41 @@ def _service_from_component(
     )
 
 
+def _configured_exact_key_count(*, multi_env: str, single_env: str) -> int:
+    """Count explicitly configured secrets for one env-var pair.
+
+    This helper avoids the surface fallback behavior in
+    ``expected_api_keys_for_surface`` so onboarding can distinguish a dedicated
+    reviewer-key setup from the general backend API key.
+    """
+
+    raw_multi = os.environ.get(multi_env, "")
+    multi_keys = {item.strip() for item in raw_multi.split(",") if item.strip()}
+    if multi_keys:
+        return len(multi_keys)
+    return 1 if str(os.environ.get(single_env, "")).strip() else 0
+
+
+def _oauth_bootstrap_user_count() -> int:
+    """Count operator-configured OAuth bootstrap users from env.
+
+    OAuth users are seeded lazily when the auth routes are used, but the health
+    contract should still be able to report whether the server has any obvious
+    credential source for a reviewer/demo login.
+    """
+
+    raw = os.environ.get("AM_SERVER_OAUTH_BOOTSTRAP_USERS", "").strip()
+    if not raw:
+        return 0
+
+    count = 0
+    for entry in [item.strip() for item in raw.split(",") if item.strip()]:
+        parts = [item.strip() for item in entry.split(":")]
+        if len(parts) >= 3 and parts[0] and parts[1] and parts[2]:
+            count += 1
+    return count
+
+
 def _build_onboarding_contract() -> OpenClawOnboardingContractModel:
     """Assemble the whole-stack onboarding contract exposed to shell/plugin flows.
 
@@ -126,11 +166,33 @@ def _build_onboarding_contract() -> OpenClawOnboardingContractModel:
     api_key_count = len(expected_api_keys_for_surface("api"))
     public_mcp_key_count = len(expected_api_keys_for_surface("mcp_public"))
     internal_mcp_key_count = len(expected_api_keys_for_surface("mcp_internal"))
+    dedicated_public_mcp_key_count = _configured_exact_key_count(
+        multi_env="AM_SERVER_PUBLIC_MCP_API_KEYS",
+        single_env="AM_SERVER_PUBLIC_MCP_API_KEY",
+    )
     strict_mcp = strict_mcp_auth_enabled()
     current_deployment_mode = deployment_mode()
     hosted_base_url = str(os.environ.get("AGENTIC_MEMORY_HOSTED_BASE_URL", "")).strip() or None
     auth_strategy = "workspace_api_key" if current_deployment_mode == "managed" else "shared_api_key"
     provider_key_mode = "managed" if current_deployment_mode == "managed" else "operator_managed"
+    oauth_enabled = public_oauth_enabled()
+    oauth_issuer = oauth_issuer_url()
+    oauth_resource = oauth_resource_url()
+    oauth_authorize = oauth_authorization_endpoint()
+    oauth_token = oauth_token_endpoint()
+    state_payload = get_product_store().status_payload()
+    oauth_summary = state_payload.get("oauth", {}) if isinstance(state_payload, dict) else {}
+    persisted_oauth_user_count = int(oauth_summary.get("oauth_user_count") or 0)
+    bootstrap_oauth_user_count = _oauth_bootstrap_user_count()
+    oauth_user_source_ready = (persisted_oauth_user_count + bootstrap_oauth_user_count) > 0
+    oauth_publication_ready = bool(
+        oauth_enabled
+        and oauth_issuer
+        and oauth_resource
+        and oauth_authorize
+        and oauth_token
+        and oauth_user_source_ready
+    )
 
     required_services = [
         OpenClawOnboardingServiceModel(
@@ -256,6 +318,45 @@ def _build_onboarding_contract() -> OpenClawOnboardingContractModel:
                 "internal_mcp_key_count": internal_mcp_key_count,
             },
         ),
+        OpenClawOnboardingServiceModel(
+            service_id="public_mcp_oauth",
+            label="Public MCP OAuth publication auth",
+            required=False,
+            status=(
+                "healthy"
+                if oauth_publication_ready
+                else "missing_config"
+                if oauth_enabled
+                else "unknown"
+            ),
+            summary=(
+                "OAuth 2.0 authorization code flow is configured for hosted public MCP publication."
+                if oauth_publication_ready
+                else "OAuth is enabled but not fully configured for public publication yet."
+                if oauth_enabled
+                else "OAuth is not enabled; the live reviewer dry run still depends on bearer-key auth."
+            ),
+            depends_on=["mcp_surfaces"],
+            details={
+                "enabled": oauth_enabled,
+                "issuer_url": oauth_issuer,
+                "resource_url": oauth_resource,
+                "authorization_endpoint": oauth_authorize,
+                "token_endpoint": oauth_token,
+                "persisted_oauth_user_count": persisted_oauth_user_count,
+                "bootstrap_oauth_user_count": bootstrap_oauth_user_count,
+                "user_source_ready": oauth_user_source_ready,
+                "publication_ready": oauth_publication_ready,
+                "dedicated_public_mcp_key_count": dedicated_public_mcp_key_count,
+                "current_reviewer_fallback": (
+                    "dedicated_public_mcp_key"
+                    if dedicated_public_mcp_key_count
+                    else "shared_backend_api_key_fallback"
+                    if public_mcp_key_count
+                    else "none"
+                ),
+            },
+        ),
     ]
 
     required_healthy = sum(service.status == "healthy" for service in required_services)
@@ -309,6 +410,11 @@ def _build_onboarding_contract() -> OpenClawOnboardingContractModel:
             "The backend can be reachable without being honestly ready for plugin setup; API auth and memory capture must both be healthy.",
             "Capture-only is the minimum supported onboarding mode. Augment-context additionally requires the context engine.",
             "Temporal services, Grafana, and the desktop shell are helpful but must not be treated as hidden prerequisites.",
+            (
+                "Public MCP publication can now use OAuth when enabled, but reviewer-key fallback may still exist during rollout."
+                if oauth_enabled
+                else "Public MCP publication still reports bearer-key reviewer auth as the live dry-run path until OAuth is enabled."
+            ),
             (
                 "Managed mode means Agentic Memory owns backend API keys, provider keys, and database operations."
                 if current_deployment_mode == "managed"

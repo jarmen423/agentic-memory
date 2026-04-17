@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -49,8 +50,9 @@ class AuthContext:
     """Resolved authentication context for one request.
 
     Attributes:
-        auth_type: ``operator`` for legacy/shared admin keys or ``workspace``
-            for hosted managed-beta workspace-bound keys.
+        auth_type: ``operator`` for legacy/shared admin keys, ``workspace``
+            for hosted managed-beta workspace-bound keys, or ``oauth`` for
+            public OAuth access tokens.
         raw_token: The validated bearer token string.
         workspace_id: Present only for workspace-bound hosted keys.
         key_id: Stable store id for a hosted workspace key when applicable.
@@ -61,6 +63,10 @@ class AuthContext:
     raw_token: str
     workspace_id: str | None = None
     key_id: str | None = None
+    user_id: str | None = None
+    username: str | None = None
+    client_id: str | None = None
+    scopes: tuple[str, ...] = ()
     source: str = "env"
 
 
@@ -90,6 +96,75 @@ def deployment_mode() -> str:
     if mode == "managed":
         return "managed"
     return "self_hosted"
+
+
+def public_oauth_enabled() -> bool:
+    """Return whether OAuth is enabled for hosted public MCP surfaces."""
+
+    return _truthy_env(os.environ.get("AM_SERVER_PUBLIC_OAUTH_ENABLED"))
+
+
+def oauth_issuer_url() -> str | None:
+    """Return the canonical OAuth issuer URL for the hosted public surface."""
+
+    raw = (
+        os.environ.get("AM_SERVER_OAUTH_ISSUER_URL")
+        or os.environ.get("AM_PUBLIC_BASE_URL")
+        or ""
+    ).strip()
+    if not raw:
+        return None
+    return raw.rstrip("/")
+
+
+def oauth_resource_url() -> str | None:
+    """Return the resource/audience URL for public MCP access tokens."""
+
+    raw = (os.environ.get("AM_SERVER_OAUTH_RESOURCE_URL") or "").strip()
+    if raw:
+        return raw.rstrip("/")
+    return oauth_issuer_url()
+
+
+def oauth_supported_scopes() -> tuple[str, ...]:
+    """Return the configured OAuth scopes for the public MCP surface."""
+
+    raw = os.environ.get("AM_SERVER_OAUTH_SCOPES", "mcp:tools")
+    scopes = tuple(item.strip() for item in raw.replace(",", " ").split() if item.strip())
+    return scopes or ("mcp:tools",)
+
+
+def oauth_authorization_endpoint() -> str | None:
+    """Return the absolute authorization endpoint URL."""
+
+    issuer = oauth_issuer_url()
+    return f"{issuer}/oauth/authorize" if issuer else None
+
+
+def oauth_token_endpoint() -> str | None:
+    """Return the absolute token endpoint URL."""
+
+    issuer = oauth_issuer_url()
+    return f"{issuer}/oauth/token" if issuer else None
+
+
+def oauth_protected_resource_metadata_url() -> str | None:
+    """Return the absolute OAuth Protected Resource Metadata document URL."""
+
+    issuer = oauth_issuer_url()
+    return f"{issuer}/.well-known/oauth-protected-resource" if issuer else None
+
+
+def oauth_www_authenticate_header(*, include_scope: bool = True) -> str:
+    """Return the Bearer challenge header for OAuth-protected public MCP paths."""
+
+    parts = ['Bearer realm="mcp"']
+    resource_metadata = oauth_protected_resource_metadata_url()
+    if resource_metadata:
+        parts.append(f'resource_metadata="{resource_metadata}"')
+    if include_scope and oauth_supported_scopes():
+        parts.append(f'scope="{" ".join(oauth_supported_scopes())}"')
+    return ", ".join(parts)
 
 
 def _parse_api_keys(raw_multi: str, raw_single: str) -> set[str]:
@@ -198,7 +273,9 @@ def validate_surface_token(token: str | None, surface: str) -> tuple[int, str, s
     """
 
     expected_keys = expected_api_keys_for_surface(surface)
-    if not expected_keys:
+    oauth_enabled_for_surface = surface == "mcp_public" and public_oauth_enabled()
+
+    if not expected_keys and not oauth_enabled_for_surface:
         if surface in {"mcp_public", "mcp_internal"} and strict_mcp_auth_enabled():
             return (
                 503,
@@ -208,10 +285,18 @@ def validate_surface_token(token: str | None, surface: str) -> tuple[int, str, s
         return 503, "auth_not_configured", "No backend API key is configured."
     if token is None:
         return 401, "auth_missing_api_key", "Missing API key."
-    # Plain set membership; not constant-time (acceptable for configured API keys).
-    if token not in expected_keys:
-        return 401, "auth_invalid_api_key", "Invalid API key."
-    return 200, "ok", "ok"
+    if token in expected_keys:
+        return 200, "ok", "ok"
+
+    if oauth_enabled_for_surface:
+        oauth_record = get_product_store().lookup_oauth_access_token(
+            token,
+            resource=oauth_resource_url(),
+        )
+        if oauth_record:
+            return 200, "ok", "ok"
+
+    return 401, "auth_invalid_api_key", "Invalid API key."
 
 
 def _resolve_auth_context(raw_token: str) -> AuthContext | None:
@@ -225,15 +310,32 @@ def _resolve_auth_context(raw_token: str) -> AuthContext | None:
         return None
 
     record = get_product_store().lookup_hosted_workspace_api_key(raw_token)
-    if not record:
+    if record:
+        return AuthContext(
+            auth_type="workspace",
+            raw_token=raw_token,
+            workspace_id=str(record.get("workspace_id") or "").strip() or None,
+            key_id=str(record.get("key_id") or "").strip() or None,
+            source="product_state",
+        )
+
+    oauth_record = get_product_store().lookup_oauth_access_token(
+        raw_token,
+        resource=oauth_resource_url(),
+    )
+    if not oauth_record:
         return None
 
     return AuthContext(
-        auth_type="workspace",
+        auth_type="oauth",
         raw_token=raw_token,
-        workspace_id=str(record.get("workspace_id") or "").strip() or None,
-        key_id=str(record.get("key_id") or "").strip() or None,
-        source="product_state",
+        workspace_id=str(oauth_record.get("workspace_id") or "").strip() or None,
+        key_id=str(oauth_record.get("token_id") or "").strip() or None,
+        user_id=str(oauth_record.get("user_id") or "").strip() or None,
+        username=str(oauth_record.get("username") or "").strip() or None,
+        client_id=str(oauth_record.get("client_id") or "").strip() or None,
+        scopes=tuple(str(item).strip() for item in oauth_record.get("scopes", []) if str(item).strip()),
+        source="product_state_oauth",
     )
 
 
@@ -337,4 +439,27 @@ def require_auth(
     request.state.agentic_memory_auth = context
     if context.auth_type == "workspace" and context.key_id:
         get_product_store().touch_hosted_workspace_api_key_use(context.key_id)
+    if context.auth_type == "oauth" and context.key_id:
+        get_product_store().touch_oauth_access_token_use(context.key_id)
     return context
+
+
+def oauth_client_metadata_supported() -> bool:
+    """Return whether the auth server advertises Client ID Metadata Documents support."""
+
+    return True
+
+
+def validate_https_client_metadata_url(client_id: str) -> str | None:
+    """Return a normalized client-id metadata URL, or ``None`` if invalid."""
+
+    normalized = client_id.strip()
+    if not normalized:
+        return None
+    try:
+        parsed = urlsplit(normalized)
+    except ValueError:
+        return None
+    if parsed.scheme != "https" or not parsed.netloc or not parsed.path:
+        return None
+    return normalized

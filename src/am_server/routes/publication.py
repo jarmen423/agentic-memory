@@ -26,6 +26,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from am_server.auth import public_oauth_enabled
 from am_server.publication_config import (
     MCP_CLAUDE_PATH,
     MCP_CODEX_PATH,
@@ -43,6 +44,14 @@ router = APIRouter(tags=["publication"])
 
 REPOSITORY_URL = "https://github.com/jarmen423/agentic-memory"
 ISSUES_URL = f"{REPOSITORY_URL}/issues"
+
+
+def _oauth_publication_bullet() -> str:
+    """Return the truthful current auth story for the public overview page."""
+
+    if public_oauth_enabled():
+        return "Public MCP surfaces support OAuth 2.0 authorization code flow with PKCE, while dedicated bearer keys can still be used for reviewer and beta access."
+    return "The chosen authenticated publication model is OAuth 2.0 authorization code flow once public auth is enabled."
 
 
 def _page_html(*, title: str, description: str, body: str) -> HTMLResponse:
@@ -256,7 +265,7 @@ def publication_website() -> HTMLResponse:
   <li>Public read tools cover code search, dependency lookup, execution tracing, unified memory search, web-memory search, and conversation retrieval.</li>
   <li>Public write tools are limited to private Agentic Memory backend state.</li>
   <li>The public connector surface does not publish to the public internet.</li>
-  <li>The chosen authenticated publication model is OAuth 2.0 authorization code flow once public auth is enabled.</li>
+  <li>{_oauth_publication_bullet()}</li>
   <li>Claude Code support should only be claimed after the direct OAuth/network path is validated.</li>
 </ul>
 <h2>Operational links</h2>

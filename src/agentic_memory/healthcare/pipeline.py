@@ -50,6 +50,10 @@ from agentic_memory.core.embedding import EmbeddingService
 from agentic_memory.core.entity_extraction import EntityExtractionService, build_embed_text
 from agentic_memory.core.graph_writer import GraphWriter
 from agentic_memory.core.registry import register_source
+from agentic_memory.healthcare.embedding_payloads import (
+    build_healthcare_embedding_payload,
+    derive_healthcare_entities_from_fields,
+)
 from agentic_memory.healthcare.embed_text import (
     build_condition_embed_text,
     build_encounter_embed_text,
@@ -201,16 +205,19 @@ class HealthcareIngestionPipeline(BaseIngestionPipeline):
         content_hash = self._hash_fields(encounter_id)
         now = self._now()
 
-        embed_text = build_encounter_embed_text(row)
-        entities = self._extract_entities_from_fields(row, "encounter")
-        enriched_text = build_embed_text(embed_text, entities)
-        embedding = self._embedder.embed(enriched_text)
+        payload = build_healthcare_embedding_payload(row, "encounter")
+        embed_text = payload.embed_text
+        entities = payload.entities
+        embedding, embedding_model = self._resolve_embedding(
+            row, payload.enriched_text
+        )
 
         props = self._base_props(
             source_key=source_key,
             content_hash=content_hash,
             embed_text=embed_text,
             embedding=embedding,
+            embedding_model=embedding_model,
             entities=entities,
             now=now,
             extra={
@@ -284,10 +291,12 @@ class HealthcareIngestionPipeline(BaseIngestionPipeline):
         )
         now = self._now()
 
-        embed_text = build_condition_embed_text(row)
-        entities = self._extract_entities_from_fields(row, "condition")
-        enriched_text = build_embed_text(embed_text, entities)
-        embedding = self._embedder.embed(enriched_text)
+        payload = build_healthcare_embedding_payload(row, "condition")
+        embed_text = payload.embed_text
+        entities = payload.entities
+        embedding, embedding_model = self._resolve_embedding(
+            row, payload.enriched_text
+        )
 
         stop_iso = self._date_to_iso(row.get("STOP"))
         props = self._base_props(
@@ -295,6 +304,7 @@ class HealthcareIngestionPipeline(BaseIngestionPipeline):
             content_hash=content_hash,
             embed_text=embed_text,
             embedding=embedding,
+            embedding_model=embedding_model,
             entities=entities,
             now=now,
             extra={
@@ -377,10 +387,12 @@ class HealthcareIngestionPipeline(BaseIngestionPipeline):
         )
         now = self._now()
 
-        embed_text = build_medication_embed_text(row)
-        entities = self._extract_entities_from_fields(row, "medication")
-        enriched_text = build_embed_text(embed_text, entities)
-        embedding = self._embedder.embed(enriched_text)
+        payload = build_healthcare_embedding_payload(row, "medication")
+        embed_text = payload.embed_text
+        entities = payload.entities
+        embedding, embedding_model = self._resolve_embedding(
+            row, payload.enriched_text
+        )
 
         stop_iso = self._date_to_iso(row.get("STOP"))
         props = self._base_props(
@@ -388,6 +400,7 @@ class HealthcareIngestionPipeline(BaseIngestionPipeline):
             content_hash=content_hash,
             embed_text=embed_text,
             embedding=embedding,
+            embedding_model=embedding_model,
             entities=entities,
             now=now,
             extra={
@@ -465,16 +478,19 @@ class HealthcareIngestionPipeline(BaseIngestionPipeline):
         )
         now = self._now()
 
-        embed_text = build_observation_embed_text(row)
-        entities = self._extract_entities_from_fields(row, "observation")
-        enriched_text = build_embed_text(embed_text, entities)
-        embedding = self._embedder.embed(enriched_text)
+        payload = build_healthcare_embedding_payload(row, "observation")
+        embed_text = payload.embed_text
+        entities = payload.entities
+        embedding, embedding_model = self._resolve_embedding(
+            row, payload.enriched_text
+        )
 
         props = self._base_props(
             source_key=source_key,
             content_hash=content_hash,
             embed_text=embed_text,
             embedding=embedding,
+            embedding_model=embedding_model,
             entities=entities,
             now=now,
             extra={
@@ -526,16 +542,19 @@ class HealthcareIngestionPipeline(BaseIngestionPipeline):
         )
         now = self._now()
 
-        embed_text = build_procedure_embed_text(row)
-        entities = self._extract_entities_from_fields(row, "procedure")
-        enriched_text = build_embed_text(embed_text, entities)
-        embedding = self._embedder.embed(enriched_text)
+        payload = build_healthcare_embedding_payload(row, "procedure")
+        embed_text = payload.embed_text
+        entities = payload.entities
+        embedding, embedding_model = self._resolve_embedding(
+            row, payload.enriched_text
+        )
 
         props = self._base_props(
             source_key=source_key,
             content_hash=content_hash,
             embed_text=embed_text,
             embedding=embedding,
+            embedding_model=embedding_model,
             entities=entities,
             now=now,
             extra={
@@ -579,6 +598,7 @@ class HealthcareIngestionPipeline(BaseIngestionPipeline):
         content_hash: str,
         embed_text: str,
         embedding: list[float],
+        embedding_model: str,
         entities: list[dict[str, Any]],
         now: str,
         extra: dict[str, Any],
@@ -593,6 +613,9 @@ class HealthcareIngestionPipeline(BaseIngestionPipeline):
             content_hash: SHA-256 composite hash.
             embed_text: The prose string that was embedded.
             embedding: Vector from EmbeddingService.
+            embedding_model: Concrete embedding model identifier for the stored
+                vector. This may come either from the live embedder or from a
+                precomputed-export payload imported later on a VM.
             entities: List of {name, type} dicts.
             now: ISO-8601 ingestion timestamp.
             extra: Domain-specific properties to merge in.
@@ -605,7 +628,7 @@ class HealthcareIngestionPipeline(BaseIngestionPipeline):
             "content_hash": content_hash,
             "content": embed_text,  # prose summary stored as node content
             "embedding": embedding,
-            "embedding_model": "gemini-embedding-2-preview",
+            "embedding_model": embedding_model,
             "entities": [e["name"] for e in entities],
             "entity_types": [e["type"] for e in entities],
             "ingested_at": now,
@@ -647,35 +670,48 @@ class HealthcareIngestionPipeline(BaseIngestionPipeline):
             text = build_fn_map[record_type](row)
             return self._extractor.extract(text)
 
-        # Structured field extraction — no LLM required
-        entities: list[dict[str, Any]] = []
+        return derive_healthcare_entities_from_fields(row, record_type)
 
-        patient_id = row.get("PATIENT")
-        if patient_id:
-            entities.append({"name": patient_id, "type": "patient"})
+    def _resolve_embedding(
+        self,
+        row: dict[str, Any],
+        enriched_text: str,
+    ) -> tuple[list[float], str]:
+        """Return ``(vector, model_name)`` for one healthcare row.
 
-        provider_id = row.get("PROVIDER")
-        if provider_id:
-            entities.append({"name": provider_id, "type": "provider"})
+        The default path calls the live embedder. The split Colab→VM workflow
+        can instead pass ``precomputed_embedding`` on the row so the importer
+        writes graph structure without recomputing vectors.
 
-        if record_type == "condition":
-            desc = row.get("DESCRIPTION")
-            if desc:
-                entities.append({"name": desc, "type": "diagnosis"})
+        Args:
+            row: Source row being ingested. May include precomputed embedding
+                fields from ``scripts/export_embedded_synthea.py``.
+            enriched_text: Final text that would otherwise be embedded live.
 
-        elif record_type == "medication":
-            desc = row.get("DESCRIPTION")
-            if desc:
-                entities.append({"name": desc, "type": "medication"})
+        Returns:
+            Tuple of ``(embedding_vector, embedding_model_name)``.
+        """
+        precomputed = row.get("precomputed_embedding") or row.get(
+            "_precomputed_embedding"
+        )
+        if precomputed is not None:
+            if not isinstance(precomputed, list) or not precomputed:
+                raise ValueError(
+                    "precomputed_embedding must be a non-empty list of floats."
+                )
+            model_name = str(
+                row.get("precomputed_embedding_model")
+                or row.get("_precomputed_embedding_model")
+                or "precomputed"
+            )
+            return [float(value) for value in precomputed], model_name
 
-        elif record_type == "procedure":
-            desc = row.get("DESCRIPTION")
-            if desc:
-                entities.append({"name": desc, "type": "procedure"})
-
-        # Observations carry no standalone entity beyond patient/encounter
-
-        return entities
+        model_name = str(
+            getattr(self._embedder, "model", None)
+            or getattr(self._embedder, "model_name", None)
+            or getattr(self._embedder, "provider", "unknown")
+        )
+        return self._embedder.embed(enriched_text), model_name
 
     def _shadow_write_claim(self, claim: dict[str, Any]) -> bool:
         """Best-effort write of a temporal claim to SpacetimeDB.

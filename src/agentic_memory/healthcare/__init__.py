@@ -16,6 +16,7 @@ temporal layer. It is the foundation for two experiments:
 Modules:
   csv_loader      — SyntheaCSVLoader: reads all 7 Synthea CSV tables
   embed_text      — build_*_embed_text(): constructs prose summaries for embedding
+  embedding_payloads — reusable row → embedding-input helpers for export/import
   temporal_mapper — condition/medication/observation → SpacetimeDB claim dicts
   graph_writer_hc — HealthcareGraphWriter: clinical relationship patterns
   pipeline        — HealthcareIngestionPipeline: main orchestration class

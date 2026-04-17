@@ -1,11 +1,39 @@
 """Unit tests for EmbeddingService — all API clients mocked."""
 
+from contextlib import nullcontext
+import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agentic_memory.core.embedding import EmbeddingService
+from agentic_memory.core.embedding import (
+    EmbeddingService,
+    _LocalGPUEmbedder,
+    _default_nemotron_local_max_seq_and_batch,
+)
+
+
+class TestNemotronLocalVramTiers:
+    """VRAM-tier defaults for ``nemotron_local`` (no real GPU required)."""
+
+    def test_tier_roughly_96_gib(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        mock_torch = MagicMock()
+        mock_torch.cuda.is_available.return_value = True
+        mock_torch.cuda.get_device_properties.return_value = MagicMock(
+            total_memory=int(96 * 1024**3)
+        )
+        monkeypatch.setitem(sys.modules, "torch", mock_torch)
+        assert _default_nemotron_local_max_seq_and_batch() == (8192, 256)
+
+    def test_tier_small_discrete_gpu(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        mock_torch = MagicMock()
+        mock_torch.cuda.is_available.return_value = True
+        mock_torch.cuda.get_device_properties.return_value = MagicMock(
+            total_memory=int(7 * 1024**3)
+        )
+        monkeypatch.setitem(sys.modules, "torch", mock_torch)
+        assert _default_nemotron_local_max_seq_and_batch() == (512, 16)
 
 
 class TestEmbeddingServiceInit:
@@ -91,6 +119,89 @@ class TestEmbeddingServiceInit:
                 model="text-embedding-3-small",
             )
             assert service.model == "text-embedding-3-small"
+
+
+class TestLocalNemotronVlCompatibility:
+    """Compatibility coverage for the native Nemotron VL text API."""
+
+    def test_local_gpu_embedder_uses_native_encode_documents_api(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Nemotron VL-style models can return embeddings without last_hidden_state."""
+
+        class FakeTensor:
+            def __init__(self, data: list[list[float]] | list[float]) -> None:
+                self.data = data
+
+            @property
+            def ndim(self) -> int:
+                return 1 if self.data and isinstance(self.data[0], float) else 2
+
+            def unsqueeze(self, dim: int) -> "FakeTensor":
+                assert dim == 0
+                return FakeTensor([self.data])  # type: ignore[list-item]
+
+            def float(self) -> "FakeTensor":
+                return self
+
+            def cpu(self) -> "FakeTensor":
+                return self
+
+            def tolist(self) -> list[list[float]] | list[float]:
+                return self.data
+
+        class FakeInputs(dict):
+            def to(self, device: object) -> "FakeInputs":
+                return self
+
+        class FakeTokenizer:
+            def __call__(self, *args: object, **kwargs: object) -> FakeInputs:
+                return FakeInputs()
+
+        class FakeProcessor:
+            def __init__(self) -> None:
+                self.p_max_length: int | None = None
+
+        class FakeModel:
+            def __init__(self) -> None:
+                self.processor = FakeProcessor()
+
+            def to(self, device: object) -> "FakeModel":
+                return self
+
+            def eval(self) -> "FakeModel":
+                return self
+
+            def encode_documents(self, *, texts: list[str]) -> FakeTensor:
+                return FakeTensor([[0.1, 0.2, 0.3] for _ in texts])
+
+        fake_torch = MagicMock()
+        fake_torch.cuda.is_available.return_value = False
+        fake_torch.device.side_effect = lambda name: MagicMock(type=name)
+        fake_torch.float16 = "float16"
+        fake_torch.float32 = "float32"
+        fake_torch.Tensor = FakeTensor
+        fake_torch.as_tensor.side_effect = lambda data, device=None: FakeTensor(data)
+        fake_torch.inference_mode.side_effect = lambda: nullcontext()
+        fake_torch.nn.functional.normalize.side_effect = lambda tensor, p, dim: tensor
+
+        fake_transformers = MagicMock()
+        fake_transformers.AutoTokenizer.from_pretrained.return_value = FakeTokenizer()
+        fake_transformers.AutoModel.from_pretrained.return_value = FakeModel()
+
+        monkeypatch.setitem(sys.modules, "torch", fake_torch)
+        monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+
+        embedder = _LocalGPUEmbedder(
+            "nvidia/llama-nemotron-embed-vl-1b-v2",
+            max_seq_length=8192,
+            batch_size=2,
+        )
+
+        assert embedder.dimensions == 3
+        assert embedder.model.processor.p_max_length == 8192
+        vectors = embedder.encode(["a", "b"])
+        assert vectors == [[0.1, 0.2, 0.3], [0.1, 0.2, 0.3]]
 
 
 class TestEmbedMethod:

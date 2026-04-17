@@ -76,16 +76,16 @@ logger = logging.getLogger("exp2_multihop")
 #   Patient → PRESCRIBED → Medication (filter by description)
 #   Patient → HAD_ENCOUNTER → Encounter → TREATED_BY → Provider
 _COHORT_CYPHER = """\
-MATCH (pat:Entity:Patient)-[:DIAGNOSED_WITH]->(cond:Memory:Healthcare:Condition)
+MATCH (pat:Entity:Patient)-[:DIAGNOSED_WITH]->(cond:Memory:Healthcare:Condition {project_id: $project_id})
 WHERE toLower(cond.description) CONTAINS toLower($condition_description)
 WITH collect(DISTINCT pat.name) AS cond_patients
 
-MATCH (pat2:Entity:Patient)-[:PRESCRIBED]->(med:Memory:Healthcare:Medication)
+MATCH (pat2:Entity:Patient)-[:PRESCRIBED]->(med:Memory:Healthcare:Medication {project_id: $project_id})
 WHERE toLower(med.description) CONTAINS toLower($medication_description)
   AND pat2.name IN cond_patients
 WITH collect(DISTINCT pat2.name) AS matched_patients
 
-MATCH (enc:Memory:Healthcare:Encounter)-[:TREATED_BY]->(prov:Entity:Provider)
+MATCH (enc:Memory:Healthcare:Encounter {project_id: $project_id})-[:TREATED_BY]->(prov:Entity:Provider)
 MATCH (pat3:Entity:Patient)-[:HAD_ENCOUNTER]->(enc)
 WHERE pat3.name IN matched_patients
 RETURN DISTINCT prov.name AS provider_id, count(enc) AS encounter_count
@@ -97,7 +97,7 @@ ORDER BY encounter_count DESC
 _VECTOR_SEARCH_CYPHER = """\
 CALL db.index.vector.queryNodes('healthcare_embeddings', $top_k, $query_vector)
 YIELD node, score
-WHERE node:Encounter AND score >= $min_score
+WHERE node:Encounter AND node.project_id = $project_id AND score >= $min_score
 RETURN DISTINCT node.provider_id AS provider_id, max(score) AS max_score
 ORDER BY max_score DESC
 """
@@ -147,6 +147,7 @@ def parse_args() -> argparse.Namespace:
 def retrieve_cypher_multihop(
     conn,
     task: dict[str, Any],
+    project_id: str,
 ) -> tuple[list[str], float]:
     """Run the multi-hop Cypher query for a cohort task.
 
@@ -162,6 +163,7 @@ def retrieve_cypher_multihop(
         with conn.session() as s:
             result = s.run(
                 _COHORT_CYPHER,
+                project_id=project_id,
                 condition_description=task["condition_description"],
                 medication_description=task["medication_description"],
             )
@@ -181,6 +183,7 @@ def retrieve_vector_only(
     conn,
     embedder,
     task: dict[str, Any],
+    project_id: str,
     top_k: int,
     min_score: float,
 ) -> tuple[list[str], float]:
@@ -207,6 +210,7 @@ def retrieve_vector_only(
         with conn.session() as s:
             result = s.run(
                 _VECTOR_SEARCH_CYPHER,
+                project_id=project_id,
                 query_vector=query_vector,
                 top_k=top_k,
                 min_score=min_score,
@@ -262,9 +266,9 @@ def run_experiment(args: argparse.Namespace) -> None:
 
     # --- Method A: Cypher multi-hop ---
     cypher_results: list[EvalResult] = []
-    cypher_config = {"method": "cypher_multihop", "hops": 3}
+    cypher_config = {"method": "cypher_multihop", "hops": 3, "project_id": args.project_id}
     for task in tasks:
-        providers, latency = retrieve_cypher_multihop(conn, task)
+        providers, latency = retrieve_cypher_multihop(conn, task, args.project_id)
         result = score_cohort_task(
             task=task,
             retrieved_provider_ids=providers,
@@ -290,10 +294,16 @@ def run_experiment(args: argparse.Namespace) -> None:
         "method": "vector_only",
         "top_k": args.top_k,
         "min_score": args.min_score,
+        "project_id": args.project_id,
     }
     for task in tasks:
         providers, latency = retrieve_vector_only(
-            conn, embedder, task, top_k=args.top_k, min_score=args.min_score
+            conn,
+            embedder,
+            task,
+            args.project_id,
+            top_k=args.top_k,
+            min_score=args.min_score,
         )
         result = score_cohort_task(
             task=task,

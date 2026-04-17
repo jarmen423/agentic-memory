@@ -55,16 +55,58 @@ _ENV_LOCAL_EMBED_MAX_SEQ = "AM_LOCAL_EMBED_MAX_SEQ"
 _ENV_LOCAL_EMBED_BATCH_SIZE = "AM_LOCAL_EMBED_BATCH_SIZE"
 _ENV_LOCAL_EMBED_POOLING = "AM_LOCAL_EMBED_POOLING"  # 'mean' (default) | 'cls'
 
-# Default local model. Chosen because:
-#   - Publicly available on HuggingFace without gated access.
-#   - Known-good GPU footprint on Colab T4/G4 (fits comfortably in fp16 VRAM).
-#   - Strong retrieval benchmarks (top of MTEB for its size class).
-# Override via ``AM_LOCAL_EMBED_MODEL`` to swap in an NVIDIA Nemotron
-# retriever or any other HuggingFace text encoder once the scale experiments
-# settle on a specific checkpoint. The actual output dimension is detected
-# at load time from a probe forward pass, so this default is decoupled from
-# the Neo4j vector index dimension.
-_DEFAULT_LOCAL_EMBED_MODEL = "intfloat/multilingual-e5-large-instruct"
+# Default local model for healthcare / scale experiments: NVIDIA's multimodal
+# retriever (2048-dim). May be gated on HuggingFace — authenticate with
+# ``huggingface-cli login`` or set ``HF_TOKEN`` when downloads fail.
+# Override via ``AM_LOCAL_EMBED_MODEL`` for a smaller public encoder (for
+# example ``intfloat/multilingual-e5-large-instruct``, 1024-dim) if VRAM is
+# tight. Output dimension is always taken from a warm-up probe, so Neo4j
+# index ``embedding_dim`` must match the resolved model (this default → 2048).
+_DEFAULT_LOCAL_EMBED_MODEL = "nvidia/llama-nemotron-embed-vl-1b-v2"
+
+
+def _default_nemotron_local_max_seq_and_batch() -> tuple[int, int]:
+    """Return ``(max_seq_length, batch_size)`` when env vars are unset.
+
+    Historically we pinned 512×16 for Colab T4 (~15 GiB). Large VRAM hosts
+    (workstations and high-memory cloud GPUs) should not leave the GPU idle
+    while Neo4j batches stream in — we scale context length and micro-batch
+    size by ``torch.cuda.get_device_properties(0).total_memory``.
+
+    Operators can always pin behavior with ``AM_LOCAL_EMBED_MAX_SEQ`` and
+    ``AM_LOCAL_EMBED_BATCH_SIZE``. CPU-only fallbacks keep the small defaults.
+    """
+    _gib = 1024**3
+    seq512_batch16: tuple[int, int] = (512, 16)
+    try:
+        import torch  # type: ignore[import-not-found]
+
+        if not torch.cuda.is_available():
+            return seq512_batch16
+        total = int(torch.cuda.get_device_properties(0).total_memory)
+    except Exception:
+        return seq512_batch16
+
+    # Tiers scale batch×seq with VRAM. Ultra-high tiers (85+ GiB) suit 96 GiB
+    # class GPUs so large Synthea runs are not GPU-starved; lower tiers keep
+    # Colab-sized cards safe. Operators can raise ``AM_LOCAL_EMBED_BATCH_SIZE``
+    # after profiling if a model leaves VRAM headroom.
+    if total >= 85 * _gib:
+        return (8192, 256)
+    if total >= 70 * _gib:
+        return (8192, 192)
+    if total >= 38 * _gib:
+        return (8192, 96)
+    if total >= 24 * _gib:
+        return (8192, 48)
+    # Keep 11–23 GiB class cards (many 12–16 GiB laptop / entry GPUs) below
+    # long-context × wide batches so a 1B-class encoder does not OOM by default.
+    if total >= 18 * _gib:
+        return (4096, 32)
+    if total >= 11 * _gib:
+        return (2048, 24)
+    return seq512_batch16
+
 
 # Default Gemini API ceilings (overridable for different billing tiers).
 _ENV_MAX_RPM = "AGENTIC_MEMORY_GEMINI_MAX_RPM"
@@ -228,9 +270,11 @@ class _LocalGPUEmbedder:
             Read from ``AM_LOCAL_EMBED_MODEL`` env var by the caller when
             not passed explicitly.
         max_seq_length: Input truncation length in tokens. Longer inputs are
-            right-truncated. 512 is a safe default for retrieval encoders.
-        batch_size: Number of texts per forward pass. Tune down to 4 or 8
-            for Colab T4's 15 GB VRAM when using 7B-class models.
+            right-truncated. When constructed via :class:`EmbeddingService`
+            with ``provider='nemotron_local'``, defaults scale with GPU VRAM
+            unless ``AM_LOCAL_EMBED_MAX_SEQ`` is set.
+        batch_size: Number of texts per forward pass. Same VRAM-tier logic as
+            ``max_seq_length`` unless ``AM_LOCAL_EMBED_BATCH_SIZE`` is set.
         pooling: ``'mean'`` (default) or ``'cls'``. Mean-pooling weighted by
             the attention mask matches the convention used by most modern
             retrieval encoders (e5, gte, BGE, NV-Embed).
@@ -293,6 +337,17 @@ class _LocalGPUEmbedder:
             trust_remote_code=True,
         ).to(self._device)
         self.model.eval()
+        self._uses_native_text_encode = (
+            hasattr(self.model, "encode_documents")
+            and callable(getattr(self.model, "encode_documents"))
+        )
+        if self._uses_native_text_encode and hasattr(self.model, "processor"):
+            # Nemotron VL models expose a processor with a text-length knob.
+            # Clamp it to this embedder's configured max sequence length so
+            # Colab-side config remains the single source of truth.
+            processor = self.model.processor
+            if hasattr(processor, "p_max_length"):
+                processor.p_max_length = self.max_seq_length
 
         # Warm-up probe: establishes output dimensionality and triggers any
         # lazy kernel compilation (e.g. flash-attn) so first real batch does
@@ -328,6 +383,9 @@ class _LocalGPUEmbedder:
             return []
 
         torch = self._torch
+        if self._uses_native_text_encode:
+            return self._encode_with_native_text_api(texts)
+
         all_vectors: list[list[float]] = []
         for i in range(0, len(texts), self.batch_size):
             chunk = texts[i : i + self.batch_size]
@@ -368,6 +426,35 @@ class _LocalGPUEmbedder:
 
         return all_vectors
 
+    def _encode_with_native_text_api(self, texts: list[str]) -> list[list[float]]:
+        """Encode text through a model's native document-embedding API.
+
+        Some custom-code embedding models, notably NVIDIA's multimodal
+        Nemotron VL checkpoints, do not expose ``last_hidden_state`` on the
+        plain forward pass. Instead they provide higher-level helpers such as
+        ``encode_documents(texts=[...])`` that return already pooled text
+        embeddings. This path is isolated to those models so encoder-style
+        checkpoints continue using the simpler HuggingFace forward contract.
+        """
+        torch = self._torch
+        all_vectors: list[list[float]] = []
+        for i in range(0, len(texts), self.batch_size):
+            chunk = texts[i : i + self.batch_size]
+            with torch.inference_mode():
+                encoded = self.model.encode_documents(texts=chunk)
+
+            if isinstance(encoded, torch.Tensor):
+                pooled = encoded
+            else:
+                pooled = torch.as_tensor(encoded, device=self._device)
+
+            if pooled.ndim == 1:
+                pooled = pooled.unsqueeze(0)
+            pooled = torch.nn.functional.normalize(pooled, p=2, dim=-1)
+            all_vectors.extend(pooled.float().cpu().tolist())
+
+        return all_vectors
+
 
 class EmbeddingService:
     """Provider-dispatching embedding service.
@@ -398,7 +485,9 @@ class EmbeddingService:
         # ``AM_LOCAL_EMBED_MODEL`` env var or the ``model`` kwarg.
         "nemotron_local": {
             "model": _DEFAULT_LOCAL_EMBED_MODEL,
-            "dimensions": 1024,
+            # Placeholder until ``nemotron_local`` warm-up probe sets real dim
+            # (2048 for the default Nemotron VL checkpoint above).
+            "dimensions": 2048,
         },
     }
 
@@ -497,9 +586,22 @@ class EmbeddingService:
                 or os.environ.get(_ENV_LOCAL_EMBED_MODEL)
                 or self.PROVIDERS["nemotron_local"]["model"]
             )
-            max_seq = int(os.environ.get(_ENV_LOCAL_EMBED_MAX_SEQ, "512"))
-            batch = int(os.environ.get(_ENV_LOCAL_EMBED_BATCH_SIZE, "16"))
+            tier_max_seq, tier_batch = _default_nemotron_local_max_seq_and_batch()
+            max_seq = int(os.environ.get(_ENV_LOCAL_EMBED_MAX_SEQ, str(tier_max_seq)))
+            batch = int(os.environ.get(_ENV_LOCAL_EMBED_BATCH_SIZE, str(tier_batch)))
             pooling = os.environ.get(_ENV_LOCAL_EMBED_POOLING, "mean")
+            if (
+                _ENV_LOCAL_EMBED_MAX_SEQ not in os.environ
+                or _ENV_LOCAL_EMBED_BATCH_SIZE not in os.environ
+            ):
+                logger.info(
+                    "nemotron_local: max_seq_length=%d batch_size=%d "
+                    "(VRAM-tier defaults; set %s / %s to override)",
+                    max_seq,
+                    batch,
+                    _ENV_LOCAL_EMBED_MAX_SEQ,
+                    _ENV_LOCAL_EMBED_BATCH_SIZE,
+                )
 
             self._local_embedder = _LocalGPUEmbedder(
                 resolved_model,

@@ -5,6 +5,7 @@ Covers all must-have truths from 02-04-PLAN.md.
 
 from __future__ import annotations
 
+from urllib.parse import parse_qs, urlencode, urlparse
 from unittest.mock import MagicMock
 
 import pytest
@@ -14,7 +15,7 @@ from agentic_memory.core.connection import ConnectionManager
 from am_server import dependencies
 from am_server.app import create_app
 from am_server.mcp_profiles import FULL_MCP_TOOL_NAMES, PUBLIC_MCP_TOOL_NAMES
-from am_server.routes import dashboard, openclaw
+from am_server.routes import dashboard, oauth, openclaw
 
 
 def _iter_result(rows):
@@ -162,6 +163,8 @@ def test_health_onboarding_is_public_and_returns_locked_contract(client):
     assert required["backend_http"]["required"] is True
     assert required["api_auth"]["details"]["configured"] is True
     assert required["openclaw_memory"]["required"] is True
+    assert optional["public_mcp_oauth"]["status"] == "unknown"
+    assert optional["public_mcp_oauth"]["details"]["enabled"] is False
     assert optional["temporal_stack"]["required"] is False
     assert optional["grafana"]["required"] is False
 
@@ -195,6 +198,57 @@ def test_health_onboarding_reports_blocking_memory_pipeline(client):
     optional = {service["service_id"]: service for service in body["optional_services"]}
     assert required["openclaw_memory"]["status"] == "degraded"
     assert optional["openclaw_context_engine"]["status"] == "degraded"
+
+
+def test_health_onboarding_reports_public_oauth_readiness(monkeypatch, tmp_path):
+    """Onboarding truth distinguishes plugin readiness from public OAuth publication readiness."""
+
+    monkeypatch.setenv("AM_SERVER_API_KEY", "test-key-abc")
+    monkeypatch.setenv("AM_SERVER_PUBLIC_OAUTH_ENABLED", "1")
+    monkeypatch.setenv("AM_PUBLIC_BASE_URL", "https://mcp.agentmemorylabs.com")
+    monkeypatch.setenv("AM_SERVER_OAUTH_BOOTSTRAP_USERS", "reviewer:secret-pass:ws_demo:Marketplace Reviewer")
+    monkeypatch.setenv("AM_SERVER_PUBLIC_MCP_API_KEY", "public-reviewer-key")
+    monkeypatch.setenv("NEO4J_URI", "bolt://localhost:7687")
+    monkeypatch.setenv("NEO4J_USER", "neo4j")
+    monkeypatch.setenv("NEO4J_PASSWORD", "test")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini")
+    monkeypatch.setenv("GROQ_API_KEY", "fake-groq")
+    monkeypatch.setenv("CODEMEMORY_PRODUCT_STATE", str(tmp_path / "product-state.json"))
+
+    mock_pipeline = MagicMock()
+    mock_pipeline.ingest.return_value = {"stored": True}
+    monkeypatch.setattr(
+        "am_server.dependencies.ResearchIngestionPipeline",
+        lambda *args, **kwargs: mock_pipeline,
+    )
+
+    mock_conversation_pipeline = MagicMock()
+    mock_conversation_pipeline.ingest.return_value = {"stored": True}
+    monkeypatch.setattr(
+        "am_server.dependencies.ConversationIngestionPipeline",
+        lambda *args, **kwargs: mock_conversation_pipeline,
+    )
+
+    dependencies.get_pipeline.cache_clear()
+    dependencies.get_conversation_pipeline.cache_clear()
+    dependencies.get_product_store.cache_clear()
+    with openclaw._CACHE_LOCK:  # type: ignore[attr-defined]
+        openclaw._PROJECT_STATUS_CACHE.clear()  # type: ignore[attr-defined]
+        openclaw._SEARCH_CACHE.clear()  # type: ignore[attr-defined]
+
+    app = create_app()
+    with TestClient(app, raise_server_exceptions=False) as oauth_health_client:
+        resp = oauth_health_client.get("/health/onboarding")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    optional = {service["service_id"]: service for service in body["optional_services"]}
+    oauth_service = optional["public_mcp_oauth"]
+    assert oauth_service["status"] == "healthy"
+    assert oauth_service["details"]["enabled"] is True
+    assert oauth_service["details"]["publication_ready"] is True
+    assert oauth_service["details"]["bootstrap_oauth_user_count"] == 1
+    assert oauth_service["details"]["current_reviewer_fallback"] == "dedicated_public_mcp_key"
 
 
 def test_health_includes_request_id_header(client):
@@ -1965,3 +2019,319 @@ def test_openclaw_memory_read_rejects_unsupported_paths(client, auth_headers):
         status_code=404,
         message_contains="conversation-turn",
     )
+
+
+def test_public_oauth_metadata_and_mcp_challenge(monkeypatch, tmp_path):
+    """OAuth-enabled public MCP advertises metadata and a resource-aware Bearer challenge."""
+
+    monkeypatch.setenv("AM_SERVER_API_KEY", "shared-api-key")
+    monkeypatch.setenv("AM_SERVER_PUBLIC_OAUTH_ENABLED", "1")
+    monkeypatch.setenv("AM_PUBLIC_BASE_URL", "https://mcp.agentmemorylabs.com")
+    monkeypatch.setenv("AM_SERVER_OAUTH_BOOTSTRAP_USERS", "reviewer:secret-pass:ws_demo:Marketplace Reviewer")
+    monkeypatch.delenv("AM_SERVER_PUBLIC_MCP_API_KEY", raising=False)
+    monkeypatch.delenv("AM_SERVER_PUBLIC_MCP_API_KEYS", raising=False)
+    monkeypatch.setenv("NEO4J_URI", "bolt://localhost:7687")
+    monkeypatch.setenv("NEO4J_USER", "neo4j")
+    monkeypatch.setenv("NEO4J_PASSWORD", "test")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini")
+    monkeypatch.setenv("GROQ_API_KEY", "fake-groq")
+    monkeypatch.setenv("CODEMEMORY_PRODUCT_STATE", str(tmp_path / "product-state.json"))
+
+    monkeypatch.setattr(
+        oauth,
+        "_fetch_client_metadata_document",
+        lambda client_id: {
+            "client_id": client_id,
+            "redirect_uris": ["https://client.example/callback"],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+        },
+    )
+
+    dependencies.get_pipeline.cache_clear()
+    dependencies.get_conversation_pipeline.cache_clear()
+    dependencies.get_product_store.cache_clear()
+    app = create_app()
+    with TestClient(app, raise_server_exceptions=False) as oauth_client:
+        protected_resource = oauth_client.get("/.well-known/oauth-protected-resource")
+        assert protected_resource.status_code == 200
+        assert protected_resource.json()["resource"] == "https://mcp.agentmemorylabs.com"
+
+        authorization_server = oauth_client.get("/.well-known/oauth-authorization-server")
+        assert authorization_server.status_code == 200
+        assert authorization_server.json()["authorization_endpoint"] == (
+            "https://mcp.agentmemorylabs.com/oauth/authorize"
+        )
+        assert authorization_server.json()["registration_endpoint"] == (
+            "https://mcp.agentmemorylabs.com/oauth/register"
+        )
+
+        missing_token = oauth_client.get("/mcp", follow_redirects=False)
+        error = _assert_error_envelope(
+            missing_token,
+            code="auth_missing_api_key",
+            status_code=401,
+        )
+        assert error["details"]["surface"] == "public"
+        assert (
+            missing_token.headers["WWW-Authenticate"]
+            == 'Bearer realm="mcp", resource_metadata="https://mcp.agentmemorylabs.com/.well-known/oauth-protected-resource", scope="mcp:tools"'
+        )
+
+
+def test_public_oauth_authorization_code_flow_and_refresh(monkeypatch, tmp_path):
+    """OAuth login, token exchange, refresh rotation, and MCP access all work end to end."""
+
+    client_id = "https://client.example/metadata.json"
+    redirect_uri = "https://client.example/callback"
+    code_verifier = "reviewer-demo-verifier-123456789"
+    code_challenge = oauth._pkce_s256(code_verifier)
+
+    monkeypatch.setenv("AM_SERVER_API_KEY", "shared-api-key")
+    monkeypatch.setenv("AM_SERVER_PUBLIC_OAUTH_ENABLED", "1")
+    monkeypatch.setenv("AM_PUBLIC_BASE_URL", "https://mcp.agentmemorylabs.com")
+    monkeypatch.setenv("AM_SERVER_OAUTH_BOOTSTRAP_USERS", "reviewer:secret-pass:ws_demo:Marketplace Reviewer")
+    monkeypatch.delenv("AM_SERVER_PUBLIC_MCP_API_KEY", raising=False)
+    monkeypatch.delenv("AM_SERVER_PUBLIC_MCP_API_KEYS", raising=False)
+    monkeypatch.setenv("NEO4J_URI", "bolt://localhost:7687")
+    monkeypatch.setenv("NEO4J_USER", "neo4j")
+    monkeypatch.setenv("NEO4J_PASSWORD", "test")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini")
+    monkeypatch.setenv("GROQ_API_KEY", "fake-groq")
+    monkeypatch.setenv("CODEMEMORY_PRODUCT_STATE", str(tmp_path / "product-state.json"))
+
+    monkeypatch.setattr(
+        oauth,
+        "_fetch_client_metadata_document",
+        lambda requested_client_id: {
+            "client_id": requested_client_id,
+            "redirect_uris": [redirect_uri],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+        },
+    )
+
+    dependencies.get_pipeline.cache_clear()
+    dependencies.get_conversation_pipeline.cache_clear()
+    dependencies.get_product_store.cache_clear()
+    app = create_app()
+    with TestClient(app, raise_server_exceptions=False) as oauth_client:
+        authorize_get = oauth_client.get(
+            "/oauth/authorize",
+            params={
+                "client_id": client_id,
+                "redirect_uri": redirect_uri,
+                "response_type": "code",
+                "scope": "mcp:tools",
+                "state": "opaque-state",
+                "code_challenge": code_challenge,
+                "code_challenge_method": "S256",
+            },
+        )
+        assert authorize_get.status_code == 200
+        assert "Agentic Memory Access" in authorize_get.text
+
+        authorize_post = oauth_client.post(
+            "/oauth/authorize",
+            content=urlencode(
+                {
+                    "client_id": client_id,
+                    "redirect_uri": redirect_uri,
+                    "response_type": "code",
+                    "scope": "mcp:tools",
+                    "state": "opaque-state",
+                    "code_challenge": code_challenge,
+                    "code_challenge_method": "S256",
+                    "username": "reviewer",
+                    "password": "secret-pass",
+                }
+            ),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            follow_redirects=False,
+        )
+        assert authorize_post.status_code == 302
+
+        redirect_target = urlparse(authorize_post.headers["location"])
+        redirect_query = parse_qs(redirect_target.query)
+        assert redirect_target.scheme == "https"
+        assert redirect_target.netloc == "client.example"
+        assert redirect_query["state"] == ["opaque-state"]
+        authorization_code = redirect_query["code"][0]
+
+        token_response = oauth_client.post(
+            "/oauth/token",
+            content=urlencode(
+                {
+                    "grant_type": "authorization_code",
+                    "client_id": client_id,
+                    "redirect_uri": redirect_uri,
+                    "code": authorization_code,
+                    "code_verifier": code_verifier,
+                }
+            ),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        assert token_response.status_code == 200
+        token_payload = token_response.json()
+        assert token_payload["token_type"] == "Bearer"
+        assert token_payload["scope"] == "mcp:tools"
+
+        public_mcp_response = oauth_client.get(
+            "/mcp",
+            follow_redirects=False,
+            headers={"Authorization": f"Bearer {token_payload['access_token']}"},
+        )
+        assert public_mcp_response.status_code != 401
+        assert public_mcp_response.headers["x-agentic-memory-mcp-auth-surface"] == "mcp_public"
+
+        refresh_response = oauth_client.post(
+            "/oauth/token",
+            content=urlencode(
+                {
+                    "grant_type": "refresh_token",
+                    "client_id": client_id,
+                    "refresh_token": token_payload["refresh_token"],
+                }
+            ),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        assert refresh_response.status_code == 200
+        refresh_payload = refresh_response.json()
+        assert refresh_payload["access_token"] != token_payload["access_token"]
+        assert refresh_payload["refresh_token"] != token_payload["refresh_token"]
+
+        old_refresh_response = oauth_client.post(
+            "/oauth/token",
+            content=urlencode(
+                {
+                    "grant_type": "refresh_token",
+                    "client_id": client_id,
+                    "refresh_token": token_payload["refresh_token"],
+                }
+            ),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        _assert_error_envelope(
+            old_refresh_response,
+            code="oauth_invalid_grant",
+            status_code=400,
+        )
+
+
+def test_public_oauth_dynamic_client_registration_and_flow(monkeypatch, tmp_path):
+    """Dynamic client registration issues a client id that works in the OAuth flow."""
+
+    redirect_uri = "https://chatgpt.com/aip/example/oauth/callback"
+    code_verifier = "chatgpt-dcr-verifier-987654321"
+
+    monkeypatch.setenv("AM_SERVER_API_KEY", "shared-api-key")
+    monkeypatch.setenv("AM_SERVER_PUBLIC_OAUTH_ENABLED", "1")
+    monkeypatch.setenv("AM_PUBLIC_BASE_URL", "https://mcp.agentmemorylabs.com")
+    monkeypatch.setenv("AM_SERVER_OAUTH_BOOTSTRAP_USERS", "reviewer:secret-pass:ws_demo:Marketplace Reviewer")
+    monkeypatch.delenv("AM_SERVER_PUBLIC_MCP_API_KEY", raising=False)
+    monkeypatch.delenv("AM_SERVER_PUBLIC_MCP_API_KEYS", raising=False)
+    monkeypatch.setenv("NEO4J_URI", "bolt://localhost:7687")
+    monkeypatch.setenv("NEO4J_USER", "neo4j")
+    monkeypatch.setenv("NEO4J_PASSWORD", "test")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini")
+    monkeypatch.setenv("GROQ_API_KEY", "fake-groq")
+    monkeypatch.setenv("CODEMEMORY_PRODUCT_STATE", str(tmp_path / "product-state.json"))
+
+    dependencies.get_pipeline.cache_clear()
+    dependencies.get_conversation_pipeline.cache_clear()
+    dependencies.get_product_store.cache_clear()
+    app = create_app()
+    with TestClient(
+        app,
+        raise_server_exceptions=False,
+        base_url="https://mcp.agentmemorylabs.com",
+    ) as oauth_client:
+        registration_response = oauth_client.post(
+            "/oauth/register",
+            json={
+                "client_name": "ChatGPT Developer Mode",
+                "redirect_uris": [redirect_uri],
+                "grant_types": ["authorization_code", "refresh_token"],
+                "response_types": ["code"],
+                "token_endpoint_auth_method": "none",
+                "scope": "mcp:tools",
+            },
+        )
+        assert registration_response.status_code == 201
+        registration_payload = registration_response.json()
+        client_id = registration_payload["client_id"]
+        assert client_id.startswith("oauth_client_")
+
+        code_challenge = oauth._pkce_s256(code_verifier)
+        authorize_post = oauth_client.post(
+            "/oauth/authorize",
+            content=urlencode(
+                {
+                    "client_id": client_id,
+                    "redirect_uri": redirect_uri,
+                    "response_type": "code",
+                    "scope": "mcp:tools",
+                    "state": "openai-state",
+                    "code_challenge": code_challenge,
+                    "code_challenge_method": "S256",
+                    "username": "reviewer",
+                    "password": "secret-pass",
+                }
+            ),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            follow_redirects=False,
+        )
+        assert authorize_post.status_code == 302
+        authorization_code = parse_qs(urlparse(authorize_post.headers["location"]).query)["code"][0]
+
+        token_response = oauth_client.post(
+            "/oauth/token",
+            content=urlencode(
+                {
+                    "grant_type": "authorization_code",
+                    "client_id": client_id,
+                    "redirect_uri": redirect_uri,
+                    "code": authorization_code,
+                    "code_verifier": code_verifier,
+                }
+            ),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        assert token_response.status_code == 200
+        token_payload = token_response.json()
+        assert token_payload["token_type"] == "Bearer"
+
+        public_mcp_response = oauth_client.post(
+            "/mcp-openai/",
+            follow_redirects=False,
+            headers={
+                "Authorization": f"Bearer {token_payload['access_token']}",
+                "Accept": "application/json, text/event-stream",
+            },
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {},
+                    "clientInfo": {"name": "chatgpt-dev-mode", "version": "0.1.0"},
+                },
+            },
+        )
+        assert public_mcp_response.status_code == 200
+        assert public_mcp_response.headers.get("mcp-session-id")
+        assert "Agentic Memory Public" in public_mcp_response.text
+
+        tools_list_response = oauth_client.post(
+            "/mcp-openai/",
+            follow_redirects=False,
+            headers={
+                "Authorization": f"Bearer {token_payload['access_token']}",
+                "Accept": "application/json, text/event-stream",
+                "Mcp-Session-Id": str(public_mcp_response.headers["mcp-session-id"]),
+            },
+            json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+        )
+        assert tools_list_response.status_code == 200
+        assert "search_codebase" in tools_list_response.text

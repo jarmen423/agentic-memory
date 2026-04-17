@@ -24,15 +24,22 @@ from __future__ import annotations
 import logging
 import os
 import time
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any, AsyncGenerator
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from mcp.server.transport_security import TransportSecuritySettings
 
-from am_server.auth import resolve_bearer_token, validate_surface_token
+from am_server.auth import (
+    oauth_www_authenticate_header,
+    public_oauth_enabled,
+    resolve_bearer_token,
+    validate_surface_token,
+)
 from am_server.dependencies import get_conversation_pipeline, get_pipeline, get_product_store
 from am_server.mcp_profiles import MCP_MOUNT_PROFILES, profile_for_path
 from am_server.metrics import (
@@ -41,12 +48,14 @@ from am_server.metrics import (
     record_mcp_surface_request,
 )
 from am_server.middleware import REQUEST_ID_HEADER, request_id_middleware
+from am_server.publication_config import public_base_url
 from am_server.routes import (
     conversation,
     dashboard,
     ext,
     health,
     openclaw,
+    oauth,
     product,
     publication,
     research,
@@ -239,7 +248,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.info("am-server: runtime component status published")
     except Exception as exc:  # noqa: BLE001
         logger.warning("am-server: runtime component publish skipped: %s", exc)
-    yield
+
+    # Mounted FastMCP Starlette apps do not automatically get their own lifespan
+    # entered by the parent FastAPI app. Enter each underlying streamable HTTP
+    # session manager once so ChatGPT/Claude can initialize and list tools.
+    streamable_servers = getattr(app.state, "mcp_streamable_servers", [])
+    async with AsyncExitStack() as stack:
+        seen_ids: set[int] = set()
+        for server in streamable_servers:
+            if id(server) in seen_ids:
+                continue
+            seen_ids.add(id(server))
+            session_manager = getattr(server, "_session_manager", None)
+            if session_manager is not None:
+                await stack.enter_async_context(session_manager.run())
+        yield
 
 
 def _route_path_for_metrics(request: Request) -> str:
@@ -465,7 +488,11 @@ def create_app() -> FastAPI:
             }
             # RFC 6750: 401 responses should advertise Bearer scheme for clients.
             if status_code == 401:
-                headers["WWW-Authenticate"] = "Bearer"
+                headers["WWW-Authenticate"] = (
+                    oauth_www_authenticate_header()
+                    if profile.auth_surface == "mcp_public" and public_oauth_enabled()
+                    else "Bearer"
+                )
             details = {
                 "surface": profile.name,
                 "mount_path": profile.mount_path,
@@ -552,15 +579,97 @@ def create_app() -> FastAPI:
     from agentic_memory.server.app import mcp as full_mcp  # noqa: PLC0415
     from agentic_memory.server.public_mcp import public_mcp  # noqa: PLC0415
 
+    # FastMCP server singletons cache one StreamableHTTP session manager instance, but
+    # ``create_app()`` can run multiple times in one Python process during tests. Reset the
+    # lazily created manager so each FastAPI app gets a fresh lifecycle-owned transport.
+    full_mcp._session_manager = None
+    public_mcp._session_manager = None
+
+    def _build_streamable_http_mount(server: Any):
+        """Create one mounted streamable HTTP app whose external path is the mount root.
+
+        FastMCP's default streamable HTTP app exposes its handler at ``/mcp`` inside the
+        returned Starlette app. Because we mount that app at profile paths like
+        ``/mcp-openai``, ChatGPT ends up probing ``/mcp-openai`` while the real handler
+        lives at ``/mcp-openai/mcp``. Override the inner route path to ``/`` at app-build
+        time so the published mount path itself is the canonical MCP endpoint.
+        """
+
+        original_path = server.settings.streamable_http_path
+        try:
+            server.settings.streamable_http_path = "/"
+            return server.streamable_http_app()
+        finally:
+            server.settings.streamable_http_path = original_path
+
+    def _allowed_transport_base_urls(profile) -> tuple[str, ...]:
+        """Return externally valid base URLs that should pass MCP host checks."""
+
+        urls: list[str] = []
+        if profile.auth_surface == "mcp_public":
+            public_url = public_base_url()
+            if public_url:
+                urls.append(public_url)
+        hosted_url = str(os.environ.get("AGENTIC_MEMORY_HOSTED_BASE_URL", "")).strip()
+        if hosted_url:
+            urls.append(hosted_url.rstrip("/"))
+        return tuple(dict.fromkeys(urls))
+
+    def _configure_transport_security(server: Any, *, allowed_base_urls: tuple[str, ...]) -> None:
+        """Extend FastMCP DNS-rebinding allowlists with the real deployed hosts."""
+
+        current = getattr(server.settings, "transport_security", None)
+        if current is None:
+            return
+
+        allowed_hosts = list(current.allowed_hosts)
+        allowed_origins = list(current.allowed_origins)
+        for base_url in allowed_base_urls:
+            parsed = urlparse(base_url)
+            if not parsed.scheme or not parsed.netloc:
+                continue
+            if parsed.netloc not in allowed_hosts:
+                allowed_hosts.append(parsed.netloc)
+            origin = f"{parsed.scheme}://{parsed.netloc}"
+            if origin not in allowed_origins:
+                allowed_origins.append(origin)
+
+        server.settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=current.enable_dns_rebinding_protection,
+            allowed_hosts=allowed_hosts,
+            allowed_origins=allowed_origins,
+        )
+
+    def _mount_aliases(mount_path: str) -> tuple[str, ...]:
+        """Return every concrete path alias that should serve one MCP mount.
+
+        Some MCP clients probe the configured server URL both with and without a
+        trailing slash. FastMCP's streamable HTTP app currently redirects the
+        slashless form and then misses the redirected ``/.../`` variant when we
+        only mount the raw path once. Mounting both aliases keeps the public MCP
+        URL stable for clients like ChatGPT developer mode.
+        """
+
+        normalized = mount_path.rstrip("/") or "/"
+        if normalized == "/":
+            return ("/",)
+        return (normalized, f"{normalized}/")
+
     # Longest mount_path first so nested or overlapping prefixes match the intended profile.
+    mcp_streamable_servers: list[Any] = []
     for profile in sorted(MCP_MOUNT_PROFILES, key=lambda item: len(item.mount_path), reverse=True):
         server = full_mcp if profile.auth_surface == "mcp_internal" else public_mcp
+        _configure_transport_security(server, allowed_base_urls=_allowed_transport_base_urls(profile))
         asgi_app = (
             server.sse_app()
             if profile.transport == "sse"
-            else server.streamable_http_app()
+            else _build_streamable_http_mount(server)
         )
-        app.mount(profile.mount_path, asgi_app)
+        if profile.transport != "sse":
+            mcp_streamable_servers.append(server)
+        for mount_alias in _mount_aliases(profile.mount_path):
+            app.mount(mount_alias, asgi_app)
+    app.state.mcp_streamable_servers = mcp_streamable_servers
 
     # Register routers
     app.include_router(health.router)
@@ -572,5 +681,6 @@ def create_app() -> FastAPI:
     app.include_router(dashboard.router)
     app.include_router(product.router)
     app.include_router(publication.router)
+    app.include_router(oauth.router)
 
     return app

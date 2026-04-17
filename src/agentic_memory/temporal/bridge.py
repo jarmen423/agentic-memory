@@ -188,12 +188,24 @@ class TemporalBridge:
             stdin.write(json.dumps(payload) + "\n")
             stdin.flush()
 
-            line = stdout.readline()
-            if not line:
-                self._reset_process()
-                raise TemporalBridgeError("Temporal bridge exited without a response.")
-
-            response = json.loads(line)
+            # The Node/Spacetime client occasionally emits human-readable
+            # connection notices on stdout before the first JSON RPC response.
+            # The bridge protocol itself is still JSON-lines, so we ignore any
+            # non-JSON preamble lines rather than crashing the whole import on
+            # the very first temporal write attempt.
+            response: dict[str, Any] | None = None
+            while response is None:
+                line = stdout.readline()
+                if not line:
+                    self._reset_process()
+                    raise TemporalBridgeError("Temporal bridge exited without a response.")
+                try:
+                    response = json.loads(line)
+                except json.JSONDecodeError:
+                    message = line.strip()
+                    if message:
+                        logger.info("Temporal bridge stdout: %s", message)
+                    continue
 
         if not response.get("ok", False):
             error = response.get("error") or {}

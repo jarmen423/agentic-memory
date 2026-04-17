@@ -9,8 +9,9 @@ import { hashU128, normalizeName, normalizePredicate } from "../src/lib/hash";
 /**
  * SpacetimeDB's generated JS client currently expects ``Promise.withResolvers``
  * to exist. That helper shipped in newer Node releases than some of our
- * operator environments. We polyfill it here before importing generated
- * bindings so the bridge can run consistently across Node versions.
+ * operator environments, including the Ubuntu VM used for deployment. We
+ * polyfill it here before importing generated bindings so the bridge can run
+ * consistently across Node versions.
  */
 const ensurePromiseWithResolvers = (): void => {
   const promiseCtor = Promise as PromiseConstructor & {

@@ -302,7 +302,7 @@ function resolveBackendUrlDefault(
     return asString(existing.backendUrl)!;
   }
   if (backendKind === "hosted") {
-    return process.env.AGENTIC_MEMORY_HOSTED_BACKEND_URL?.trim() || null;
+    return null;
   }
   return DEFAULT_BACKEND_URL;
 }
@@ -333,7 +333,7 @@ async function resolveSetupValues(
   if (!backendUrlDefault) {
     throw new Error(
       backendKindDefault === "hosted"
-        ? "No hosted backend URL is configured yet. Pass --backend-url or set AGENTIC_MEMORY_HOSTED_BACKEND_URL."
+        ? "No hosted backend URL is configured yet. Pass --backend-url or save one in existing plugin config first."
         : "No self-hosted backend URL is configured yet.",
     );
   }
@@ -481,14 +481,24 @@ function resolveDoctorConfig(
   const existing = resolveExistingPluginConfig(currentConfig);
   const agentId =
     options.agentId?.trim() || asString(existing.agentId) || createDefaultAgentId();
+  const backendKind = resolveBackendKindDefault(currentConfig, options);
+  const backendUrl =
+    options.backendUrl?.trim() ||
+    asString(existing.backendUrl) ||
+    (backendKind === "self_hosted" ? DEFAULT_BACKEND_URL : null);
+
+  if (!backendUrl) {
+    throw new Error(
+      backendKind === "hosted"
+        ? "No hosted backend URL is configured yet. Pass --backend-url or save one in plugin config first."
+        : "No self-hosted backend URL is configured yet.",
+    );
+  }
+
   return {
     schemaVersion: PLUGIN_CONFIG_SCHEMA_VERSION,
-    backendKind: resolveBackendKindDefault(currentConfig, options),
-    backendUrl:
-      options.backendUrl?.trim() ||
-      asString(existing.backendUrl) ||
-      (options.hosted ? process.env.AGENTIC_MEMORY_HOSTED_BACKEND_URL?.trim() : undefined) ||
-      DEFAULT_BACKEND_URL,
+    backendKind,
+    backendUrl,
     apiKey: options.apiKey?.trim() || asString(existing.apiKey) || null,
     workspaceId: resolveWorkspaceIdDefault(existing, options, agentId),
     deviceId: options.deviceId?.trim() || asString(existing.deviceId) || createDefaultDeviceId(),

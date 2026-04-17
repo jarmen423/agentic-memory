@@ -6,6 +6,38 @@ import { pathToFileURL } from "node:url";
 
 import { hashU128, normalizeName, normalizePredicate } from "../src/lib/hash";
 
+/**
+ * SpacetimeDB's generated JS client currently expects ``Promise.withResolvers``
+ * to exist. That helper shipped in newer Node releases than the Ubuntu VM is
+ * currently running. We polyfill it here before importing the generated
+ * bindings so the temporal bridge can run on Node 20 as well as newer runtimes.
+ */
+const ensurePromiseWithResolvers = (): void => {
+  const promiseCtor = Promise as PromiseConstructor & {
+    withResolvers?<T>(): {
+      promise: Promise<T>;
+      resolve: (value: T | PromiseLike<T>) => void;
+      reject: (reason?: unknown) => void;
+    };
+  };
+
+  if (typeof promiseCtor.withResolvers === "function") {
+    return;
+  }
+
+  promiseCtor.withResolvers = function withResolvers<T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  };
+};
+
+ensurePromiseWithResolvers();
+
 type SeedEntity = {
   name: string;
   kind?: string | null;

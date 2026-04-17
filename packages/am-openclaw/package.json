@@ -1,6 +1,6 @@
 {
   "name": "agentic-memory-openclaw",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "OpenClaw memory and context-engine integration for Agentic Memory",
   "author": {

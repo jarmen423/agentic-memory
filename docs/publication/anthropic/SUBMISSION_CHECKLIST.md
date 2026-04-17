@@ -41,8 +41,8 @@ This packet is for the Anthropic public publication path:
 
 ## Gate B: Auth, identity, and reachability
 
-- The current reviewer dry-run auth model is a bearer API key via `AM_SERVER_PUBLIC_MCP_API_KEYS`.
-- The marketplace authenticated publication target is OAuth 2.0 authorization code flow.
+- The current reviewer dry-run fallback auth model is a bearer API key via `AM_SERVER_PUBLIC_MCP_API_KEYS`.
+- The marketplace authenticated publication target is OAuth 2.0 authorization code flow, and the server-side implementation now exists.
 - If OAuth is used, the required callback URLs are allowlisted:
   - `http://localhost:6274/oauth/callback`
   - `http://localhost:6274/oauth/callback/debug`
@@ -96,7 +96,7 @@ This packet is for the Anthropic public publication path:
 
 - The canonical publication URLs and DPA route are live, but the real Claude-connected validation loop is still outstanding.
 - No Anthropic-specific usage examples were checked into the repo before this packet.
-- OAuth remains the marketplace target auth posture, but end-to-end implementation and validation are still outstanding.
+- OAuth is now implemented server-side, but end-to-end Anthropic validation and evidence capture are still outstanding.
 
 ## Exit criteria for W15-PUB-04
 

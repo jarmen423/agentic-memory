@@ -27,7 +27,7 @@ Wave:
 
 ## Shared Blocking Conditions
 
-- OAuth auth posture chosen but not yet implemented
+- OAuth auth posture chosen and initial implementation landed, but live client validation is still incomplete
 - reviewer/demo/test packet, screenshots, and sample data not yet finalized
 - OpenAI submission and publication evidence not yet attached
 - Anthropic submission and listing evidence not yet attached

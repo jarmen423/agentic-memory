@@ -39,10 +39,11 @@ events update these trackers and close gates `G3`, `G4`, and `G5`.
   `https://backend.agentmemorylabs.com`.
 - The public MCP mounts are currently auth-gated with a dedicated reviewer key
   path via `AM_SERVER_PUBLIC_MCP_API_KEYS`.
+- OAuth authorization-code-flow endpoints now exist in `am-server` and can back
+  the public MCP auth path when `AM_SERVER_PUBLIC_OAUTH_ENABLED=1`.
 
 ## Shared Outstanding Items
 
-- Implement OAuth 2.0 authorization code flow in `am-server`.
 - Run real ChatGPT and Claude validation loops against the live public MCP
   surfaces and capture screenshots/examples.
 - Finalize reviewer/demo/test packet materials and key-rotation plan.

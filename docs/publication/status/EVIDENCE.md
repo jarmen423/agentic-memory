@@ -28,7 +28,7 @@ Use this file to capture exact evidence links, dates, and artifacts as review an
 - Publication/legal routes implemented in code: yes
 - Publication/legal routes confirmed live on public host: `TBD`
 - OAuth auth posture chosen: yes
-- OAuth implementation complete: no
+- OAuth implementation complete: partial
 - Reviewer/demo/test accounts provisioned: `TBD`
 - Launch gate closure date: `TBD`
 - Launch gate closure evidence: `TBD`

@@ -39,4 +39,5 @@ npm-debug.log*
 # Local agent/editor artifacts
 .claude/worktrees/
 ~/.config/cursor/
+repomix-output.md
 docs/notebooklm

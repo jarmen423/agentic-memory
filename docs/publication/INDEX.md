@@ -2,6 +2,10 @@
 
 This is the entrypoint for publication work on Agentic Memory.
 
+## Single Source Of Truth
+
+- [Shipment source of truth](SHIPMENT_SOURCE_OF_TRUTH.md)
+
 ## OpenAI / Codex
 
 - [OpenAI submission checklist](openai/SUBMISSION_CHECKLIST.md)

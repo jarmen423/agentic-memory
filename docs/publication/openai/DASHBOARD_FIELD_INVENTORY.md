@@ -24,9 +24,9 @@ This is a normalized field inventory based on OpenAI's current submission docs. 
 | MCP server URL | `https://mcp.agentmemorylabs.com/mcp-openai` | `docs/PLUGIN_GA_PLAN.md` | Ready for use |
 | Transport | Streamable HTTP | `W15-PUB-01` contract lock | Ready |
 | Public auth surface | `mcp_public` | `src/am_server/mcp_profiles.py` | Ready in code |
-| Current dry-run auth | `Bearer API key via AM_SERVER_PUBLIC_MCP_API_KEYS` | Live deployment | Active for reviewer preflight |
-| Auth model | `OAuth 2.0 authorization code flow` | Publication decision | Target only; implementation pending |
-| OAuth client details | `Required for submission once implemented` | OpenAI docs | Implementation pending |
+| Current dry-run auth | `Bearer API key via AM_SERVER_PUBLIC_MCP_API_KEYS` | Live deployment | Active reviewer fallback during rollout |
+| Auth model | `OAuth 2.0 authorization code flow` | `src/am_server/routes/oauth.py` | Implemented in code; live client validation still pending |
+| OAuth client details | `Required for final submission packet` | OpenAI docs | Still needs live validation evidence |
 | CSP / exact domains fetched | `TBD` | OpenAI docs require exact CSP | Missing |
 
 ## App listing metadata

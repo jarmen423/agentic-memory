@@ -7,30 +7,34 @@ access to the currently deployed public MCP surfaces.
 
 ## Current live auth posture
 
-The live preflight/reviewer path today is:
+The live public auth picture now has two layers:
 
+- implemented publication auth
+  - OAuth 2.0 authorization code flow with PKCE
+  - enabled by `AM_SERVER_PUBLIC_OAUTH_ENABLED`
+- reviewer fallback auth
+  - bearer API key on the public MCP surface
+  - `AM_SERVER_PUBLIC_MCP_API_KEYS`
 - transport
   - streamable HTTP
-- auth
-  - bearer API key on the public MCP surface
-- env var
-  - `AM_SERVER_PUBLIC_MCP_API_KEYS`
 
-This is the truthful live state for dry runs and reviewer packet prep.
+This is the truthful mixed state for dry runs and reviewer packet prep:
 
-It is not the same thing as marketplace-ready OAuth.
+- OAuth exists in code and can be enabled for the hosted public surface
+- bearer-key reviewer fallback may still be used during rollout and review prep
 
 ## Publication honesty
 
-Current blocker for full marketplace submission:
+Current remaining blockers for full marketplace submission:
 
-- OAuth 2.0 authorization code flow is still not implemented
+- live ChatGPT validation evidence is still missing
+- live Claude validation evidence is still missing
+- reviewer/demo packet materials still need to be refreshed around the new OAuth path
 
 That means:
 
-- use this packet for internal dry runs and reviewer-style validation now
-- do not claim OAuth-backed production publication is finished until that
-  implementation exists and is validated
+- use this packet for reviewer dry runs now
+- do not claim marketplace-ready OAuth publication until the hosted OAuth path is validated end to end on real clients
 
 ## One supported key split
 
@@ -57,10 +61,11 @@ Prepare one packet per review cycle containing:
   - `https://mcp.agentmemorylabs.com/mcp-openai`
   - `https://mcp.agentmemorylabs.com/mcp-claude`
   - `https://mcp.agentmemorylabs.com/mcp-codex`
-- auth type
-  - `Bearer API key`
+- auth types
+  - `OAuth 2.0 authorization code flow`
+  - `Bearer API key` reviewer fallback during rollout
 - reviewer public MCP key
-  - one value from `AM_SERVER_PUBLIC_MCP_API_KEYS`
+  - one value from `AM_SERVER_PUBLIC_MCP_API_KEYS` when using fallback auth
 - legal/support URLs
   - `https://mcp.agentmemorylabs.com/publication/agentic-memory`
   - `https://mcp.agentmemorylabs.com/publication/privacy`
@@ -75,13 +80,13 @@ The public MCP mounts are streamable HTTP endpoints, not human-readable web
 pages. Use raw `curl` only to smoke-test the auth gate. Use ChatGPT or Claude
 for the real reviewer validation.
 
-First verify the missing-key path still fails:
+First verify the missing-auth path still fails:
 
 ```bash
 curl -i https://mcp.agentmemorylabs.com/mcp-openai
 ```
 
-Then verify that a valid reviewer key changes the auth result:
+Then verify that a valid reviewer key changes the auth result when using fallback auth:
 
 ```bash
 curl -i -H "Authorization: Bearer <public-mcp-reviewer-key>" \
@@ -97,10 +102,17 @@ curl https://mcp.agentmemorylabs.com/health
 
 Expectations:
 
-- missing key should return `401`
+- missing auth should return `401`
 - keyed request should stop failing as `auth_missing_api_key`, but may still
   return redirects or transport-specific responses that are not meaningful to a
   human reader
+
+If validating the OAuth path instead of the fallback key:
+
+- use a real MCP client against `https://mcp.agentmemorylabs.com/mcp-openai`
+- expect the public Bearer challenge to advertise
+  `/.well-known/oauth-protected-resource`
+- verify the client completes the authorization-code flow and reaches the tool list
 
 ## Rotation
 

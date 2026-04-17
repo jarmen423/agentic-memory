@@ -21,9 +21,9 @@ This runbook prepares the remote MCP directory submission for the Anthropic conn
 - Stable privacy, support, and website URLs are ready.
 - Current live reviewer auth packet is prepared from `../shared/REVIEWER_ACCESS_PACKET.md`.
 - If auth is enabled, reviewer credentials and sample data are ready.
-- Marketplace publication still requires OAuth 2.0 authorization code flow; do
-  not mark that blocker closed until it is actually implemented.
-- The live public MCP host currently uses bearer-key reviewer auth, not OAuth.
+- Marketplace publication still requires OAuth 2.0 authorization code flow to
+  be validated on real Anthropic clients before that blocker can be closed.
+- The live public MCP host may still use bearer-key reviewer fallback auth during rollout, even though OAuth is now implemented server-side.
 
 ## Required validation surfaces
 
@@ -60,7 +60,9 @@ Annotation expectations:
 2. Confirm the advertised tool list matches the frozen nine-tool contract.
 3. Run the minimum examples in `USAGE_EXAMPLES.md`.
 4. Confirm error messaging is understandable for auth or backend failures.
-5. If auth is enabled in the live dry run, verify the dedicated bearer-key reviewer path first.
+5. Verify whichever auth path is actually enabled for the live dry run:
+   - OAuth authorization-code flow on the hosted public surface
+   - or the dedicated bearer-key reviewer fallback path
 6. If Claude Code support is claimed, validate a direct Claude Code connection under the same production auth/network assumptions.
 
 ## Anthropic-specific review notes
@@ -68,7 +70,7 @@ Annotation expectations:
 - Streamable HTTP is required.
 - Missing tool annotations are a common rejection cause.
 - Minimum three usage examples are required.
-- The current live reviewer path uses bearer-key auth; OAuth remains the publication target if authenticated marketplace submission is required.
+- OAuth now exists in the hosted backend, but reviewer fallback bearer-key auth may still be used during rollout and evidence prep.
 - If the service is behind a firewall, Anthropic IP ranges must be allowlisted for brokered Claude surfaces.
 - IP allowlisting alone does not support Claude Code.
 

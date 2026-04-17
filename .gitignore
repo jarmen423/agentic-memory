@@ -39,3 +39,4 @@ npm-debug.log*
 # Local agent/editor artifacts
 .claude/worktrees/
 ~/.config/cursor/
+docs/notebooklm

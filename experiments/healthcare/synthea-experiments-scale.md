@@ -259,6 +259,303 @@ Plan B is entirely runnable **up to N=200K** on the existing 200 GB VM.
 For N=1M we need a bigger Neo4j host. Three paths, ordered by
 preference:
 
+---
+
+## Import Acceleration Plan — Preserve Semantics, Change Write Strategy
+
+### Why this section exists
+
+The current two-stage healthcare pipeline is now good enough to prove that:
+
+- export-time embedding on Colab works
+- VM-side graph import works
+- temporal writes can be turned on when needed
+
+But the current VM importer is still too slow for comfortable iteration at the
+`20k patients` tier and becomes unrealistic for larger tiers. The goal of this
+plan is to speed up import **without changing the graph semantics** that the
+experiments depend on.
+
+This means the acceleration work must preserve:
+
+- the same `Memory:Healthcare:*` node families
+- the same `Entity:*` node families
+- the same relationship families
+  - `HAD_ENCOUNTER`
+  - `TREATED_BY`
+  - `DIAGNOSED_WITH`
+  - `PRESCRIBED`
+  - `MENTIONS`
+  - `HAS_CONDITION`
+  - `HAS_OBSERVATION`
+- the same content-hash identity rules
+- the same embedding payload semantics
+- the same downstream benchmark answers
+
+### Current bottlenecks
+
+The current importer path is centered on:
+
+- `D:\code\agentic-memory\scripts\import_embedded_healthcare_chunks.py`
+- `D:\code\agentic-memory\src\agentic_memory\healthcare\pipeline.py`
+- `D:\code\agentic-memory\src\agentic_memory\core\graph_writer.py`
+- `D:\code\agentic-memory\src\agentic_memory\healthcare\graph_writer_hc.py`
+
+Observed write-pattern problems:
+
+1. The importer processes one exported row at a time.
+2. Each row calls `HealthcareIngestionPipeline.ingest(...)`.
+3. That one ingest fans out into multiple writer calls.
+4. Each writer call opens a fresh Neo4j session and runs one small query.
+
+Approximate round-trip fan-out per record in the current design:
+
+- encounter: memory node + patient entity + provider entity + `HAD_ENCOUNTER` + `TREATED_BY`
+- condition: memory node + diagnosis entity + `MENTIONS` + `DIAGNOSED_WITH`
+- medication: memory node + medication entity + `MENTIONS` + `PRESCRIBED`
+- observation: memory node only
+- procedure: memory node + procedure entity
+
+This means the importer is paying transaction/session overhead constantly,
+instead of amortizing it across batches.
+
+### Schema risk to fix before parallelizing
+
+The shared memory writer MERGEs memory nodes on:
+
+- `(source_key, content_hash)`
+
+But `ConnectionManager.setup_database()` currently creates:
+
+- vector indexes
+- `entity_unique` on `(Entity.name, Entity.type)`
+
+It does **not** currently create a uniqueness constraint on:
+
+- `(Memory.source_key, Memory.content_hash)`
+
+That is a problem for two reasons:
+
+1. It likely makes the hottest MERGE path slower than it should be.
+2. It makes aggressive parallelism riskier because duplicate memory nodes are
+   easier to create under concurrency if the graph does not enforce identity.
+
+### Phased acceleration strategy
+
+#### Phase A — low-risk speedup without changing ingestion semantics
+
+Do these first:
+
+1. Audit duplicates for `(source_key, content_hash)` on healthcare memory nodes.
+2. Add a `Memory` uniqueness constraint on `(source_key, content_hash)`.
+3. Refactor the writer layer so `GraphWriter` and `HealthcareGraphWriter` can
+   reuse an existing Neo4j session / transaction instead of opening one per
+   write call.
+4. Change the importer to commit batches of rows in one transaction.
+
+Why this phase matters:
+
+- it keeps the existing pipeline logic almost intact
+- it gives a speedup with low semantic risk
+- it creates the safety rails needed for later parallel work
+
+#### Phase B — bulk-write fast path
+
+After Phase A is stable, build a dedicated healthcare bulk importer.
+
+Instead of:
+
+- `for row: pipeline.ingest(row)`
+
+the fast path should:
+
+1. Read a batch of exported rows.
+2. Normalize them into typed row groups:
+   - encounter memory rows
+   - condition memory rows
+   - medication memory rows
+   - observation memory rows
+   - procedure memory rows
+   - patient entities
+   - provider entities
+   - diagnosis entities
+   - medication entities
+   - procedure entities
+   - relationship rows by relationship family
+3. Write each group using `UNWIND $rows AS row` Cypher batches.
+
+This follows patterns already used elsewhere in the repo for higher-throughput
+graph writes.
+
+#### Phase C — shard by patient and run parallel workers
+
+Once the bulk-write path exists, introduce parallel ingest by sharding exported
+rows on patient identity:
+
+- `hash(patient_id) % N`
+
+Each worker receives a disjoint shard and imports it independently.
+
+Why patient sharding is the right default:
+
+- most clinical records are patient-scoped
+- it minimizes overlap between workers
+- it keeps one patient's timeline on one worker
+- it makes debugging easier than arbitrary chunk-level parallelism
+
+Recommended rollout:
+
+1. validate with `N=1` worker
+2. then `N=4`
+3. then `N=8` if Neo4j still has headroom
+
+#### Phase D — temporal as a backfill, not part of the hot loop
+
+Do **not** put temporal writes in the main graph import path for scale runs.
+
+Instead:
+
+1. finish the graph import first
+2. run a dedicated temporal backfill over the already-exported rows
+
+This separation is important because:
+
+- graph import and temporal posting have different bottlenecks
+- mixing them makes the main ingest wall-clock much worse
+- the experiments do not require temporal writes to happen synchronously with
+  graph creation
+
+### Recommended files to add or modify
+
+Likely modifications:
+
+- `D:\code\agentic-memory\src\agentic_memory\core\connection.py`
+- `D:\code\agentic-memory\src\agentic_memory\core\graph_writer.py`
+- `D:\code\agentic-memory\src\agentic_memory\healthcare\graph_writer_hc.py`
+- `D:\code\agentic-memory\scripts\import_embedded_healthcare_chunks.py`
+
+Likely new files:
+
+- `D:\code\agentic-memory\src\agentic_memory\healthcare\bulk_rows.py`
+- `D:\code\agentic-memory\src\agentic_memory\healthcare\bulk_writer.py`
+- `D:\code\agentic-memory\scripts\repartition_embedded_healthcare_chunks.py`
+- `D:\code\agentic-memory\scripts\backfill_healthcare_temporal.py`
+- `D:\code\agentic-memory\scripts\verify_healthcare_import_parity.py`
+
+### Verification contract — how we prove speed did not break accuracy
+
+The current importer remains the **reference implementation** until the fast
+path proves parity against it.
+
+#### Step 1 — create a gold-standard subset
+
+Use fixed small subsets first:
+
+- 100 patients
+- 500 patients
+
+Import each subset twice into separate `project_id`s:
+
+- once with the current importer
+- once with the new fast importer
+
+#### Step 2 — compare graph counts
+
+Compare node counts for:
+
+- `Memory:Healthcare:Encounter`
+- `Memory:Healthcare:Condition`
+- `Memory:Healthcare:Medication`
+- `Memory:Healthcare:Observation`
+- `Memory:Healthcare:Procedure`
+- `Entity:Patient`
+- `Entity:Provider`
+- `Entity:Diagnosis`
+- `Entity:Medication`
+- `Entity:Procedure`
+
+Compare relationship counts for:
+
+- `HAD_ENCOUNTER`
+- `TREATED_BY`
+- `DIAGNOSED_WITH`
+- `PRESCRIBED`
+- `MENTIONS`
+- `HAS_CONDITION`
+- `HAS_OBSERVATION`
+
+#### Step 3 — compare exact key sets
+
+Compare the full or sampled sets of:
+
+- memory keys: `(source_key, content_hash)`
+- entity keys: `(name, type)`
+
+If these sets differ, the fast importer is not semantically equivalent.
+
+#### Step 4 — compare sampled properties
+
+For sampled memory nodes, compare:
+
+- `project_id`
+- `embedding_model`
+- patient / encounter IDs
+- code and description fields
+- date fields
+- embedding dimension
+
+#### Step 5 — test idempotency
+
+Run the new importer twice on the same shard and verify:
+
+- node counts do not grow unexpectedly
+- relationship counts do not grow unexpectedly
+- duplicate key counts remain zero
+
+#### Step 6 — test parallel determinism
+
+Run the new importer with:
+
+- 1 worker
+- 4 workers
+- 8 workers
+
+The final graph should be identical across worker counts.
+
+#### Step 7 — test benchmark parity
+
+Run the downstream experiment stack against the reference import and the fast
+import:
+
+- `D:\code\agentic-memory\experiments\healthcare\qa_generator.py`
+- `D:\code\agentic-memory\experiments\healthcare\exp2_multihop.py`
+- `D:\code\agentic-memory\experiments\healthcare\exp1_temporal_decay.py`
+  - after the temporal backfill path exists
+
+Pass condition:
+
+- same benchmark answers or the same aggregate benchmark metrics, depending on
+  the experiment
+
+Fail condition:
+
+- any drift in benchmark output that cannot be explained by an intentional,
+  documented semantic change
+
+### Decision rule
+
+The fast importer should only replace the current importer when all of the
+following are true:
+
+1. graph counts match on the gold-standard subsets
+2. key sets match
+3. reruns are idempotent
+4. parallel worker counts converge to the same result
+5. benchmark outputs remain equivalent
+
+If any of those fail, the acceleration path is a performance experiment, not a
+production-ready replacement.
+
 1. **Research-credit GCP/AWS VM.** Spin up ~500 GB disk + 32 GB RAM,
    run the 1M ingest and experiments, shut down. ~$100–200 of credits
    for a concentrated 2–3 day window. No long-term commitment.

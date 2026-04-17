@@ -74,6 +74,7 @@ class HealthcareGraphWriter:
         valid_from: str | None = None,
         valid_to: str | None = None,
         confidence: float = 1.0,
+        runner: Any | None = None,
     ) -> None:
         """Write DIAGNOSED_WITH from Patient entity to Condition memory node.
 
@@ -84,6 +85,7 @@ class HealthcareGraphWriter:
             valid_from: ISO-8601 condition onset. Defaults to now.
             valid_to: ISO-8601 condition resolution date. None = still active.
             confidence: Confidence score (1.0 for Synthea ground truth).
+            runner: Optional shared session/transaction for batched imports.
         """
         resolved_from = valid_from or self._now()
         cypher = (
@@ -98,8 +100,8 @@ class HealthcareGraphWriter:
             "ON MATCH SET  r.support_count = r.support_count + 1,\n"
             "              r.valid_to = $valid_to"
         )
-        with self._conn.session() as s:
-            s.run(
+        if runner is not None:
+            runner.run(
                 cypher,
                 patient_id=patient_id,
                 source_key=condition_source_key,
@@ -108,6 +110,17 @@ class HealthcareGraphWriter:
                 valid_to=valid_to,
                 confidence=confidence,
             )
+        else:
+            with self._conn.session() as s:
+                s.run(
+                    cypher,
+                    patient_id=patient_id,
+                    source_key=condition_source_key,
+                    content_hash=condition_content_hash,
+                    valid_from=resolved_from,
+                    valid_to=valid_to,
+                    confidence=confidence,
+                )
         logger.debug("DIAGNOSED_WITH: patient=%s condition=%s/%s", patient_id, condition_source_key, condition_content_hash)
 
     def write_prescribed(
@@ -119,6 +132,7 @@ class HealthcareGraphWriter:
         valid_from: str | None = None,
         valid_to: str | None = None,
         confidence: float = 1.0,
+        runner: Any | None = None,
     ) -> None:
         """Write PRESCRIBED from Patient entity to Medication memory node.
 
@@ -129,6 +143,7 @@ class HealthcareGraphWriter:
             valid_from: ISO-8601 prescription start. Defaults to now.
             valid_to: ISO-8601 prescription end. None = ongoing.
             confidence: Confidence score.
+            runner: Optional shared session/transaction for batched imports.
         """
         resolved_from = valid_from or self._now()
         cypher = (
@@ -143,8 +158,8 @@ class HealthcareGraphWriter:
             "ON MATCH SET  r.support_count = r.support_count + 1,\n"
             "              r.valid_to = $valid_to"
         )
-        with self._conn.session() as s:
-            s.run(
+        if runner is not None:
+            runner.run(
                 cypher,
                 patient_id=patient_id,
                 source_key=medication_source_key,
@@ -153,6 +168,17 @@ class HealthcareGraphWriter:
                 valid_to=valid_to,
                 confidence=confidence,
             )
+        else:
+            with self._conn.session() as s:
+                s.run(
+                    cypher,
+                    patient_id=patient_id,
+                    source_key=medication_source_key,
+                    content_hash=medication_content_hash,
+                    valid_from=resolved_from,
+                    valid_to=valid_to,
+                    confidence=confidence,
+                )
         logger.debug("PRESCRIBED: patient=%s med=%s/%s", patient_id, medication_source_key, medication_content_hash)
 
     def write_had_encounter(
@@ -163,6 +189,7 @@ class HealthcareGraphWriter:
         encounter_content_hash: str,
         valid_from: str | None = None,
         confidence: float = 1.0,
+        runner: Any | None = None,
     ) -> None:
         """Write HAD_ENCOUNTER from Patient entity to Encounter memory node.
 
@@ -172,6 +199,7 @@ class HealthcareGraphWriter:
             encounter_content_hash: content_hash of the Encounter Memory node.
             valid_from: ISO-8601 encounter start date. Defaults to now.
             confidence: Confidence score.
+            runner: Optional shared session/transaction for batched imports.
         """
         resolved_from = valid_from or self._now()
         cypher = (
@@ -183,8 +211,8 @@ class HealthcareGraphWriter:
             "              r.support_count = 1\n"
             "ON MATCH SET  r.support_count = r.support_count + 1"
         )
-        with self._conn.session() as s:
-            s.run(
+        if runner is not None:
+            runner.run(
                 cypher,
                 patient_id=patient_id,
                 source_key=encounter_source_key,
@@ -192,6 +220,16 @@ class HealthcareGraphWriter:
                 valid_from=resolved_from,
                 confidence=confidence,
             )
+        else:
+            with self._conn.session() as s:
+                s.run(
+                    cypher,
+                    patient_id=patient_id,
+                    source_key=encounter_source_key,
+                    content_hash=encounter_content_hash,
+                    valid_from=resolved_from,
+                    confidence=confidence,
+                )
         logger.debug("HAD_ENCOUNTER: patient=%s enc=%s/%s", patient_id, encounter_source_key, encounter_content_hash)
 
     def write_treated_by(
@@ -202,6 +240,7 @@ class HealthcareGraphWriter:
         provider_id: str,
         valid_from: str | None = None,
         confidence: float = 1.0,
+        runner: Any | None = None,
     ) -> None:
         """Write TREATED_BY from Encounter memory node to Provider entity.
 
@@ -214,6 +253,7 @@ class HealthcareGraphWriter:
             provider_id: Provider UUID (Entity:Provider node name).
             valid_from: ISO-8601 encounter start date. Defaults to now.
             confidence: Confidence score.
+            runner: Optional shared session/transaction for batched imports.
         """
         resolved_from = valid_from or self._now()
         cypher = (
@@ -225,8 +265,8 @@ class HealthcareGraphWriter:
             "              r.support_count = 1\n"
             "ON MATCH SET  r.support_count = r.support_count + 1"
         )
-        with self._conn.session() as s:
-            s.run(
+        if runner is not None:
+            runner.run(
                 cypher,
                 source_key=encounter_source_key,
                 content_hash=encounter_content_hash,
@@ -234,6 +274,16 @@ class HealthcareGraphWriter:
                 valid_from=resolved_from,
                 confidence=confidence,
             )
+        else:
+            with self._conn.session() as s:
+                s.run(
+                    cypher,
+                    source_key=encounter_source_key,
+                    content_hash=encounter_content_hash,
+                    provider_id=provider_id,
+                    valid_from=resolved_from,
+                    confidence=confidence,
+                )
         logger.debug("TREATED_BY: enc=%s/%s provider=%s", encounter_source_key, encounter_content_hash, provider_id)
 
     def write_has_observation(
@@ -245,6 +295,7 @@ class HealthcareGraphWriter:
         obs_content_hash: str,
         valid_from: str | None = None,
         confidence: float = 1.0,
+        runner: Any | None = None,
     ) -> None:
         """Write HAS_OBSERVATION from Encounter node to Observation node.
 
@@ -255,6 +306,7 @@ class HealthcareGraphWriter:
             obs_content_hash: content_hash of the Observation node.
             valid_from: ISO-8601 observation date. Defaults to now.
             confidence: Confidence score.
+            runner: Optional shared session/transaction for batched imports.
         """
         resolved_from = valid_from or self._now()
         cypher = (
@@ -266,8 +318,8 @@ class HealthcareGraphWriter:
             "              r.support_count = 1\n"
             "ON MATCH SET  r.support_count = r.support_count + 1"
         )
-        with self._conn.session() as s:
-            s.run(
+        if runner is not None:
+            runner.run(
                 cypher,
                 enc_sk=encounter_source_key,
                 enc_ch=encounter_content_hash,
@@ -276,6 +328,17 @@ class HealthcareGraphWriter:
                 valid_from=resolved_from,
                 confidence=confidence,
             )
+        else:
+            with self._conn.session() as s:
+                s.run(
+                    cypher,
+                    enc_sk=encounter_source_key,
+                    enc_ch=encounter_content_hash,
+                    obs_sk=obs_source_key,
+                    obs_ch=obs_content_hash,
+                    valid_from=resolved_from,
+                    confidence=confidence,
+                )
 
     def write_encounter_condition(
         self,
@@ -286,6 +349,7 @@ class HealthcareGraphWriter:
         condition_content_hash: str,
         valid_from: str | None = None,
         confidence: float = 1.0,
+        runner: Any | None = None,
     ) -> None:
         """Write HAS_CONDITION from Encounter node to Condition node.
 
@@ -299,6 +363,7 @@ class HealthcareGraphWriter:
             condition_content_hash: content_hash of the Condition node.
             valid_from: ISO-8601 onset date. Defaults to now.
             confidence: Confidence score.
+            runner: Optional shared session/transaction for batched imports.
         """
         resolved_from = valid_from or self._now()
         cypher = (
@@ -310,8 +375,8 @@ class HealthcareGraphWriter:
             "              r.support_count = 1\n"
             "ON MATCH SET  r.support_count = r.support_count + 1"
         )
-        with self._conn.session() as s:
-            s.run(
+        if runner is not None:
+            runner.run(
                 cypher,
                 enc_sk=encounter_source_key,
                 enc_ch=encounter_content_hash,
@@ -320,6 +385,17 @@ class HealthcareGraphWriter:
                 valid_from=resolved_from,
                 confidence=confidence,
             )
+        else:
+            with self._conn.session() as s:
+                s.run(
+                    cypher,
+                    enc_sk=encounter_source_key,
+                    enc_ch=encounter_content_hash,
+                    cond_sk=condition_source_key,
+                    cond_ch=condition_content_hash,
+                    valid_from=resolved_from,
+                    confidence=confidence,
+                )
 
     # ------------------------------------------------------------------
     # Internal helpers

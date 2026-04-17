@@ -29,11 +29,43 @@ class GraphWriter:
         """
         self._conn = connection_manager
 
+    def _run(
+        self,
+        cypher: str,
+        *,
+        runner: Any | None = None,
+        **params: Any,
+    ) -> None:
+        """Execute one Neo4j write either on a shared runner or a fresh session.
+
+        Why this helper exists:
+            The original healthcare import path opened a brand-new session for
+            nearly every small write. That is accurate but expensive. The
+            accelerated importer now passes a shared transaction/runner so a
+            whole batch can amortize session and commit overhead without
+            changing the Cypher semantics.
+
+        Args:
+            cypher: Write query to execute.
+            runner: Optional existing Neo4j ``Session`` or ``Transaction`` with
+                a ``run(...)`` method. When omitted, this helper preserves the
+                historical behavior and uses a short-lived session.
+            **params: Query parameters.
+        """
+        if runner is not None:
+            runner.run(cypher, **params)
+            return
+
+        with self._conn.session() as session:
+            session.run(cypher, **params)
+
     def write_memory_node(
         self,
         labels: list[str],
         properties: dict[str, Any],
         namespace: str | None = None,
+        *,
+        runner: Any | None = None,
     ) -> None:
         """Write (upsert) a Memory node using MERGE on composite key.
 
@@ -51,6 +83,9 @@ class GraphWriter:
             namespace: Optional organizational scope (e.g. "professional",
                 "personal"). When provided, stored as namespace property.
                 When omitted, namespace is not written to the node.
+            runner: Optional existing Neo4j session/transaction. Importers pass
+                this to group many writes into one transaction without changing
+                the node identity or property semantics.
         """
         labels_str = ":".join(labels)
 
@@ -60,29 +95,29 @@ class GraphWriter:
                 "ON CREATE SET m += $props, m.namespace = $namespace\n"
                 "ON MATCH SET m.ingested_at = $ingested_at"
             )
-            with self._conn.session() as session:
-                session.run(
-                    cypher,
-                    source_key=properties["source_key"],
-                    content_hash=properties["content_hash"],
-                    props=properties,
-                    ingested_at=properties["ingested_at"],
-                    namespace=namespace,
-                )
+            self._run(
+                cypher,
+                runner=runner,
+                source_key=properties["source_key"],
+                content_hash=properties["content_hash"],
+                props=properties,
+                ingested_at=properties["ingested_at"],
+                namespace=namespace,
+            )
         else:
             cypher = (
                 f"MERGE (m:{labels_str} {{source_key: $source_key, content_hash: $content_hash}})\n"
                 "ON CREATE SET m += $props\n"
                 "ON MATCH SET m.ingested_at = $ingested_at"
             )
-            with self._conn.session() as session:
-                session.run(
-                    cypher,
-                    source_key=properties["source_key"],
-                    content_hash=properties["content_hash"],
-                    props=properties,
-                    ingested_at=properties["ingested_at"],
-                )
+            self._run(
+                cypher,
+                runner=runner,
+                source_key=properties["source_key"],
+                content_hash=properties["content_hash"],
+                props=properties,
+                ingested_at=properties["ingested_at"],
+            )
 
         logger.debug(
             "Memory node upserted: source_key=%s content_hash=%s labels=%s",
@@ -91,7 +126,13 @@ class GraphWriter:
             labels_str,
         )
 
-    def upsert_entity(self, name: str, entity_type: str) -> None:
+    def upsert_entity(
+        self,
+        name: str,
+        entity_type: str,
+        *,
+        runner: Any | None = None,
+    ) -> None:
         """Upsert an Entity node using MERGE on composite key (name, type).
 
         Applies labels :Entity:{entity_type.capitalize()} to the node.
@@ -99,13 +140,13 @@ class GraphWriter:
         Args:
             name: Entity name (e.g. "FastAPI", "John Doe").
             entity_type: Entity type (e.g. "technology", "person").
+            runner: Optional shared session/transaction for batched imports.
         """
         type_label = entity_type.capitalize()
         cypher = (
             f"MERGE (e:Entity:{type_label} {{name: $name, type: $type}})"
         )
-        with self._conn.session() as session:
-            session.run(cypher, name=name, type=entity_type)
+        self._run(cypher, runner=runner, name=name, type=entity_type)
 
         logger.debug("Entity upserted: name=%s type=%s", name, entity_type)
 
@@ -116,6 +157,8 @@ class GraphWriter:
         entity_name: str,
         entity_type: str,
         rel_type: str = "ABOUT",
+        *,
+        runner: Any | None = None,
     ) -> None:
         """Write a relationship from a Memory node to an Entity node.
 
@@ -129,20 +172,21 @@ class GraphWriter:
             entity_type: type of the Entity node.
             rel_type: Relationship type. Defaults to "ABOUT".
                 Valid values: "ABOUT", "MENTIONS", "BELONGS_TO".
+            runner: Optional shared session/transaction for batched imports.
         """
         cypher = (
             "MATCH (m {source_key: $source_key, content_hash: $content_hash})\n"
             "MATCH (e {name: $entity_name, type: $entity_type})\n"
             f"MERGE (m)-[:{rel_type}]->(e)"
         )
-        with self._conn.session() as session:
-            session.run(
-                cypher,
-                source_key=source_key,
-                content_hash=content_hash,
-                entity_name=entity_name,
-                entity_type=entity_type,
-            )
+        self._run(
+            cypher,
+            runner=runner,
+            source_key=source_key,
+            content_hash=content_hash,
+            entity_name=entity_name,
+            entity_type=entity_type,
+        )
 
         logger.debug(
             "Relationship written: Memory(%s/%s) -[:%s]-> Entity(%s)",
@@ -168,6 +212,8 @@ class GraphWriter:
         confidence: float = 1.0,
         support_count: int = 1,
         contradiction_count: int = 0,
+        *,
+        runner: Any | None = None,
     ) -> None:
         """Write a temporal relationship from a Memory node to an Entity node.
 
@@ -185,6 +231,7 @@ class GraphWriter:
             confidence: Confidence score between 0.0 and 1.0.
             support_count: Initial support count for a new relationship.
             contradiction_count: Initial contradiction count for a new relationship.
+            runner: Optional shared session/transaction for batched imports.
         """
         resolved_valid_from = self._resolve_valid_from(valid_from)
         cypher = (
@@ -201,19 +248,19 @@ class GraphWriter:
             "                                  THEN $confidence\n"
             "                                  ELSE r.confidence END"
         )
-        with self._conn.session() as session:
-            session.run(
-                cypher,
-                source_key=source_key,
-                content_hash=content_hash,
-                entity_name=entity_name,
-                entity_type=entity_type,
-                valid_from=resolved_valid_from,
-                valid_to=valid_to,
-                confidence=confidence,
-                support_count=support_count,
-                contradiction_count=contradiction_count,
-            )
+        self._run(
+            cypher,
+            runner=runner,
+            source_key=source_key,
+            content_hash=content_hash,
+            entity_name=entity_name,
+            entity_type=entity_type,
+            valid_from=resolved_valid_from,
+            valid_to=valid_to,
+            confidence=confidence,
+            support_count=support_count,
+            contradiction_count=contradiction_count,
+        )
         logger.debug(
             "Temporal relationship written: Memory(%s/%s) -[:%s]-> Entity(%s)",
             source_key,

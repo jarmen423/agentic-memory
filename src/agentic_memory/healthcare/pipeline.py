@@ -167,6 +167,24 @@ class HealthcareIngestionPipeline(BaseIngestionPipeline):
         Raises:
             ValueError: If record_type is missing or not a valid value.
         """
+        return self.ingest_with_runner(source, runner=None)
+
+    def ingest_with_runner(
+        self,
+        source: dict[str, Any],
+        *,
+        runner: Any | None,
+    ) -> dict[str, Any]:
+        """Ingest one healthcare row using an optional shared Neo4j runner.
+
+        Args:
+            source: Dict with a ``record_type`` key plus the raw row fields.
+            runner: Optional shared Neo4j session/transaction. The batched
+                importer uses this so many row writes can share one commit.
+
+        Returns:
+            Same summary dict shape as :meth:`ingest`.
+        """
         record_type = source.get("record_type")
         if not record_type or record_type not in _VALID_RECORD_TYPES:
             raise ValueError(
@@ -181,13 +199,18 @@ class HealthcareIngestionPipeline(BaseIngestionPipeline):
             "observation": self._ingest_observation,
             "procedure": self._ingest_procedure,
         }
-        return dispatch[record_type](source)
+        return dispatch[record_type](source, runner=runner)
 
     # ------------------------------------------------------------------
     # Per-record-type ingest methods
     # ------------------------------------------------------------------
 
-    def _ingest_encounter(self, row: dict[str, Any]) -> dict[str, Any]:
+    def _ingest_encounter(
+        self,
+        row: dict[str, Any],
+        *,
+        runner: Any | None = None,
+    ) -> dict[str, Any]:
         """Ingest one encounters.csv row.
 
         Writes an Encounter Memory node, upserts Patient and Provider entities,
@@ -235,28 +258,30 @@ class HealthcareIngestionPipeline(BaseIngestionPipeline):
         )
 
         labels = self.node_labels(source_key)
-        self._writer.write_memory_node(labels, props)
+        self._writer.write_memory_node(labels, props, runner=runner)
 
         # Upsert Patient and Provider entities
         patient_id = row.get("PATIENT")
         provider_id = row.get("PROVIDER")
         if patient_id:
-            self._writer.upsert_entity(patient_id, "patient")
+            self._writer.upsert_entity(patient_id, "patient", runner=runner)
             self._hc_writer.write_had_encounter(
                 patient_id=patient_id,
                 encounter_source_key=source_key,
                 encounter_content_hash=content_hash,
                 valid_from=row.get("START"),
                 confidence=1.0,
+                runner=runner,
             )
         if provider_id:
-            self._writer.upsert_entity(provider_id, "provider")
+            self._writer.upsert_entity(provider_id, "provider", runner=runner)
             self._hc_writer.write_treated_by(
                 encounter_source_key=source_key,
                 encounter_content_hash=content_hash,
                 provider_id=provider_id,
                 valid_from=row.get("START"),
                 confidence=1.0,
+                runner=runner,
             )
 
         logger.debug("Encounter ingested: %s patient=%s", encounter_id, patient_id)
@@ -268,7 +293,12 @@ class HealthcareIngestionPipeline(BaseIngestionPipeline):
             "temporal_written": False,
         }
 
-    def _ingest_condition(self, row: dict[str, Any]) -> dict[str, Any]:
+    def _ingest_condition(
+        self,
+        row: dict[str, Any],
+        *,
+        runner: Any | None = None,
+    ) -> dict[str, Any]:
         """Ingest one conditions.csv row.
 
         Writes a Condition Memory node, upserts Diagnosis entity, wires
@@ -319,14 +349,14 @@ class HealthcareIngestionPipeline(BaseIngestionPipeline):
         )
 
         labels = self.node_labels(source_key)
-        self._writer.write_memory_node(labels, props)
+        self._writer.write_memory_node(labels, props, runner=runner)
 
         patient_id = row.get("PATIENT")
         description = row.get("DESCRIPTION") or row.get("CODE") or "unknown"
 
         # Upsert Diagnosis entity and wire patient-level relationship
         if description:
-            self._writer.upsert_entity(description, "diagnosis")
+            self._writer.upsert_entity(description, "diagnosis", runner=runner)
             self._writer.write_temporal_relationship(
                 source_key=source_key,
                 content_hash=content_hash,
@@ -336,6 +366,7 @@ class HealthcareIngestionPipeline(BaseIngestionPipeline):
                 valid_from=row.get("START"),
                 valid_to=stop_iso,
                 confidence=1.0,
+                runner=runner,
             )
         if patient_id:
             self._hc_writer.write_diagnosed_with(
@@ -345,6 +376,7 @@ class HealthcareIngestionPipeline(BaseIngestionPipeline):
                 valid_from=row.get("START"),
                 valid_to=stop_iso,
                 confidence=1.0,
+                runner=runner,
             )
 
         # Temporal shadow write to SpacetimeDB (best-effort)
@@ -366,7 +398,12 @@ class HealthcareIngestionPipeline(BaseIngestionPipeline):
             "temporal_written": temporal_written,
         }
 
-    def _ingest_medication(self, row: dict[str, Any]) -> dict[str, Any]:
+    def _ingest_medication(
+        self,
+        row: dict[str, Any],
+        *,
+        runner: Any | None = None,
+    ) -> dict[str, Any]:
         """Ingest one medications.csv row.
 
         Writes a Medication Memory node, upserts Medication entity, wires
@@ -417,13 +454,13 @@ class HealthcareIngestionPipeline(BaseIngestionPipeline):
         )
 
         labels = self.node_labels(source_key)
-        self._writer.write_memory_node(labels, props)
+        self._writer.write_memory_node(labels, props, runner=runner)
 
         patient_id = row.get("PATIENT")
         description = row.get("DESCRIPTION") or row.get("CODE") or "unknown"
 
         if description:
-            self._writer.upsert_entity(description, "medication")
+            self._writer.upsert_entity(description, "medication", runner=runner)
             self._writer.write_temporal_relationship(
                 source_key=source_key,
                 content_hash=content_hash,
@@ -433,6 +470,7 @@ class HealthcareIngestionPipeline(BaseIngestionPipeline):
                 valid_from=row.get("START"),
                 valid_to=stop_iso,
                 confidence=1.0,
+                runner=runner,
             )
         if patient_id:
             self._hc_writer.write_prescribed(
@@ -442,6 +480,7 @@ class HealthcareIngestionPipeline(BaseIngestionPipeline):
                 valid_from=row.get("START"),
                 valid_to=stop_iso,
                 confidence=1.0,
+                runner=runner,
             )
 
         temporal_written = self._shadow_write_claim(
@@ -456,7 +495,12 @@ class HealthcareIngestionPipeline(BaseIngestionPipeline):
             "temporal_written": temporal_written,
         }
 
-    def _ingest_observation(self, row: dict[str, Any]) -> dict[str, Any]:
+    def _ingest_observation(
+        self,
+        row: dict[str, Any],
+        *,
+        runner: Any | None = None,
+    ) -> dict[str, Any]:
         """Ingest one observations.csv row.
 
         Writes an Observation Memory node. Point-in-time events (DATE only).
@@ -507,7 +551,7 @@ class HealthcareIngestionPipeline(BaseIngestionPipeline):
         )
 
         labels = self.node_labels(source_key)
-        self._writer.write_memory_node(labels, props)
+        self._writer.write_memory_node(labels, props, runner=runner)
 
         temporal_written = self._shadow_write_claim(
             observation_to_claim(row, self._project_id)
@@ -521,7 +565,12 @@ class HealthcareIngestionPipeline(BaseIngestionPipeline):
             "temporal_written": temporal_written,
         }
 
-    def _ingest_procedure(self, row: dict[str, Any]) -> dict[str, Any]:
+    def _ingest_procedure(
+        self,
+        row: dict[str, Any],
+        *,
+        runner: Any | None = None,
+    ) -> dict[str, Any]:
         """Ingest one procedures.csv row.
 
         Writes a Procedure Memory node and upserts a Procedure entity.
@@ -569,11 +618,11 @@ class HealthcareIngestionPipeline(BaseIngestionPipeline):
         )
 
         labels = self.node_labels(source_key)
-        self._writer.write_memory_node(labels, props)
+        self._writer.write_memory_node(labels, props, runner=runner)
 
         description = row.get("DESCRIPTION") or row.get("CODE") or "unknown"
         if description:
-            self._writer.upsert_entity(description, "procedure")
+            self._writer.upsert_entity(description, "procedure", runner=runner)
 
         temporal_written = self._shadow_write_claim(
             procedure_to_claim(row, self._project_id)

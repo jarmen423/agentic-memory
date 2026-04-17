@@ -136,7 +136,8 @@ class ConnectionManager:
         ``embedding_dim``, drops and recreates) the four memory-layer vector
         indexes — ``code_embeddings``, ``research_embeddings``,
         ``chat_embeddings``, ``healthcare_embeddings`` — and applies the
-        ``entity_unique`` uniqueness constraint on ``(Entity.name, Entity.type)``.
+        ``entity_unique`` uniqueness constraint on ``(Entity.name, Entity.type)``
+        plus ``memory_unique`` on ``(Memory.source_key, Memory.content_hash)``.
 
         Safe to run at startup or deploy; existing, correctly-dimensioned
         objects are left unchanged. This is a change from the older plain
@@ -203,6 +204,15 @@ class ConnectionManager:
             s.run(
                 "CREATE CONSTRAINT entity_unique IF NOT EXISTS "
                 "FOR (e:Entity) REQUIRE (e.name, e.type) IS UNIQUE"
+            )
+            # Healthcare and other memory-domain writers MERGE on
+            # ``(source_key, content_hash)``. Enforcing that identity in the
+            # graph speeds up the hottest write path and makes later importer
+            # parallelism safer because concurrent workers cannot create
+            # duplicate Memory nodes with the same logical key.
+            s.run(
+                "CREATE CONSTRAINT memory_unique IF NOT EXISTS "
+                "FOR (m:Memory) REQUIRE (m.source_key, m.content_hash) IS UNIQUE"
             )
 
         logger.info(

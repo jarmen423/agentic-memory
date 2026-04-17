@@ -78,6 +78,16 @@ def parse_args() -> argparse.Namespace:
         help="Log progress every N imported records.",
     )
     parser.add_argument(
+        "--write-batch-size",
+        type=int,
+        default=250,
+        help=(
+            "How many imported rows to group into one explicit Neo4j "
+            "transaction before committing. Smaller values reduce rollback "
+            "blast radius; larger values reduce per-transaction overhead."
+        ),
+    )
+    parser.add_argument(
         "--enable-temporal",
         action="store_true",
         default=False,
@@ -150,6 +160,75 @@ def first_record_embedding_dim(input_dir: Path) -> tuple[int, dict[str, Any]]:
     return len(vector), first
 
 
+def build_pipeline_row(item: dict[str, Any]) -> dict[str, Any]:
+    """Convert one exported chunk item back into a pipeline-ready row dict."""
+    row = dict(item.get("row") or {})
+    row["record_type"] = item["record_type"]
+    row["precomputed_embedding"] = item["precomputed_embedding"]
+    row["precomputed_embedding_model"] = item.get("precomputed_embedding_model")
+    return row
+
+
+def import_batch(
+    *,
+    conn: ConnectionManager,
+    pipeline: HealthcareIngestionPipeline,
+    batch_items: list[dict[str, Any]],
+) -> tuple[int, int]:
+    """Import one batch inside a shared transaction, with safe fallback.
+
+    Why this helper exists:
+        The importer used to pay one tiny autocommit write path per query.
+        This helper groups many row ingests into one transaction so the writer
+        layer can reuse a single runner/commit. If the batch hits an error, we
+        roll back and replay the batch row-by-row using the legacy path. That
+        keeps correctness and debuggability ahead of raw speed while we harden
+        the accelerated importer.
+
+    Returns:
+        Tuple ``(errors, temporal_written)`` for this batch.
+    """
+    if not batch_items:
+        return 0, 0
+
+    try:
+        with conn.session() as session:
+            tx = session.begin_transaction()
+            temporal_written = 0
+            for item in batch_items:
+                result = pipeline.ingest_with_runner(
+                    build_pipeline_row(item),
+                    runner=tx,
+                )
+                if result.get("temporal_written"):
+                    temporal_written += 1
+            tx.commit()
+            return 0, temporal_written
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Batch import failed for %d rows; retrying row-by-row. Error: %s",
+            len(batch_items),
+            exc,
+        )
+
+    errors = 0
+    temporal_written = 0
+    for item in batch_items:
+        try:
+            result = pipeline.ingest(build_pipeline_row(item))
+            if result.get("temporal_written"):
+                temporal_written += 1
+        except Exception as exc:  # noqa: BLE001
+            errors += 1
+            logger.warning(
+                "Import error for record_type=%s content_hash=%s: %s",
+                item.get("record_type"),
+                item.get("content_hash"),
+                exc,
+            )
+    return errors, temporal_written
+
+
 def main() -> None:
     """Run the VM-side import from chunk files into Neo4j."""
     args = parse_args()
@@ -182,27 +261,22 @@ def main() -> None:
     total = 0
     errors = 0
     temporal_written = 0
+    pending_batch: list[dict[str, Any]] = []
 
     for item in iter_chunk_records(input_dir):
-        row = dict(item.get("row") or {})
-        row["record_type"] = item["record_type"]
-        row["precomputed_embedding"] = item["precomputed_embedding"]
-        row["precomputed_embedding_model"] = item.get("precomputed_embedding_model")
+        pending_batch.append(item)
+        if len(pending_batch) < args.write_batch_size:
+            continue
 
-        try:
-            result = pipeline.ingest(row)
-            if result.get("temporal_written"):
-                temporal_written += 1
-        except Exception as exc:  # noqa: BLE001
-            errors += 1
-            logger.warning(
-                "Import error for record_type=%s content_hash=%s: %s",
-                item.get("record_type"),
-                item.get("content_hash"),
-                exc,
-            )
-        finally:
-            total += 1
+        batch_errors, batch_temporal = import_batch(
+            conn=conn,
+            pipeline=pipeline,
+            batch_items=pending_batch,
+        )
+        total += len(pending_batch)
+        errors += batch_errors
+        temporal_written += batch_temporal
+        pending_batch.clear()
 
         if total % args.batch_log_every == 0:
             logger.info(
@@ -211,6 +285,16 @@ def main() -> None:
                 errors,
                 temporal_written,
             )
+
+    if pending_batch:
+        batch_errors, batch_temporal = import_batch(
+            conn=conn,
+            pipeline=pipeline,
+            batch_items=pending_batch,
+        )
+        total += len(pending_batch)
+        errors += batch_errors
+        temporal_written += batch_temporal
 
     logger.info(
         "Import complete: rows=%d errors=%d temporal=%d",

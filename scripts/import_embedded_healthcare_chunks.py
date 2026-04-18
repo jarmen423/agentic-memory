@@ -99,6 +99,34 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--shard-count",
+        type=int,
+        default=1,
+        help=(
+            "Split chunk files into N deterministic shards based on lexical "
+            "chunk order. This lets multiple importer workers process "
+            "disjoint chunk subsets."
+        ),
+    )
+    parser.add_argument(
+        "--shard-index",
+        type=int,
+        default=0,
+        help=(
+            "Zero-based shard number for this worker. Only chunks where "
+            "(chunk_position %% shard_count) == shard_index will be imported."
+        ),
+    )
+    parser.add_argument(
+        "--max-chunks",
+        type=int,
+        default=None,
+        help=(
+            "Optional cap on the number of selected chunks to import. Useful "
+            "for throughput tests without consuming the full dataset."
+        ),
+    )
+    parser.add_argument(
         "--enable-temporal",
         action="store_true",
         default=False,
@@ -126,12 +154,49 @@ def build_connection_manager() -> ConnectionManager:
     return ConnectionManager(uri, user, password)
 
 
-def iter_chunk_records(input_dir: Path) -> Iterator[dict[str, Any]]:
-    """Yield JSON records from all chunk files in lexical order."""
+def select_chunk_paths(
+    input_dir: Path,
+    *,
+    shard_count: int,
+    shard_index: int,
+    max_chunks: int | None,
+) -> list[Path]:
+    """Choose the chunk files this importer worker is responsible for.
+
+    Why this helper exists:
+        Parallelizing the importer safely is easiest when workers operate on
+        disjoint files. This helper turns the full lexical chunk list into a
+        deterministic shard assignment so multiple workers can be started with
+        ``--shard-count`` / ``--shard-index`` and never compete for the same
+        compressed chunk file.
+    """
+    if shard_count < 1:
+        raise SystemExit("--shard-count must be >= 1")
+    if shard_index < 0 or shard_index >= shard_count:
+        raise SystemExit("--shard-index must be in [0, --shard-count)")
+    if max_chunks is not None and max_chunks < 1:
+        raise SystemExit("--max-chunks must be >= 1 when provided")
+
     chunk_paths = sorted(input_dir.glob("chunk-*.jsonl.gz"))
     if not chunk_paths:
         raise SystemExit(f"No chunk-*.jsonl.gz files found in {input_dir}")
 
+    selected = [
+        path for idx, path in enumerate(chunk_paths) if idx % shard_count == shard_index
+    ]
+    if max_chunks is not None:
+        selected = selected[:max_chunks]
+    if not selected:
+        raise SystemExit(
+            "No chunk files selected after applying shard/max-chunks filters: "
+            f"input_dir={input_dir} shard_count={shard_count} "
+            f"shard_index={shard_index} max_chunks={max_chunks}"
+        )
+    return selected
+
+
+def iter_chunk_records(chunk_paths: list[Path]) -> Iterator[dict[str, Any]]:
+    """Yield JSON records from the selected chunk files in lexical order."""
     for path in chunk_paths:
         logger.info("Importing chunk %s", path.name)
         with gzip.open(path, "rt", encoding="utf-8") as handle:
@@ -160,9 +225,9 @@ def build_temporal_bridge(enable_temporal: bool):
     return bridge
 
 
-def first_record_embedding_dim(input_dir: Path) -> tuple[int, dict[str, Any]]:
-    """Return the vector dimension and first record from the input directory."""
-    first = next(iter(iter_chunk_records(input_dir)))
+def first_record_embedding_dim(chunk_paths: list[Path]) -> tuple[int, dict[str, Any]]:
+    """Return the vector dimension and first record from the selected chunks."""
+    first = next(iter(iter_chunk_records(chunk_paths)))
     vector = first.get("precomputed_embedding")
     if not isinstance(vector, list) or not vector:
         raise RuntimeError(
@@ -262,9 +327,23 @@ def main() -> None:
             "Run graph import first, then temporal as a separate backfill step."
         )
 
-    embedding_dim, first = first_record_embedding_dim(input_dir)
+    chunk_paths = select_chunk_paths(
+        input_dir,
+        shard_count=args.shard_count,
+        shard_index=args.shard_index,
+        max_chunks=args.max_chunks,
+    )
+
+    embedding_dim, first = first_record_embedding_dim(chunk_paths)
     project_id = args.project_id or first.get("project_id") or "synthea-export"
-    logger.info("Importer project_id=%s embedding_dim=%d", project_id, embedding_dim)
+    logger.info(
+        "Importer project_id=%s embedding_dim=%d shard=%d/%d chunks=%d",
+        project_id,
+        embedding_dim,
+        args.shard_index,
+        args.shard_count,
+        len(chunk_paths),
+    )
 
     conn = build_connection_manager()
     conn.setup_database(embedding_dim=embedding_dim)
@@ -285,7 +364,7 @@ def main() -> None:
     temporal_written = 0
     pending_batch: list[dict[str, Any]] = []
 
-    for item in iter_chunk_records(input_dir):
+    for item in iter_chunk_records(chunk_paths):
         pending_batch.append(item)
         if len(pending_batch) < args.write_batch_size:
             continue

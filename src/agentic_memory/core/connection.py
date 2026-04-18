@@ -230,6 +230,14 @@ class ConnectionManager:
                         "Original error: %s",
                         exc,
                     )
+                    # Even when the graph is too dirty for a uniqueness
+                    # constraint, the importer still benefits from a composite
+                    # lookup index for the hot ``MATCH/MERGE (:Memory
+                    # {source_key, content_hash})`` path.
+                    s.run(
+                        "CREATE INDEX memory_lookup IF NOT EXISTS "
+                        "FOR (m:Memory) ON (m.source_key, m.content_hash)"
+                    )
                 else:
                     raise
 

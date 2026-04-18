@@ -175,8 +175,8 @@ class GraphWriter:
             runner: Optional shared session/transaction for batched imports.
         """
         cypher = (
-            "MATCH (m {source_key: $source_key, content_hash: $content_hash})\n"
-            "MATCH (e {name: $entity_name, type: $entity_type})\n"
+            "MATCH (m:Memory {source_key: $source_key, content_hash: $content_hash})\n"
+            "MATCH (e:Entity {name: $entity_name, type: $entity_type})\n"
             f"MERGE (m)-[:{rel_type}]->(e)"
         )
         self._run(
@@ -235,8 +235,8 @@ class GraphWriter:
         """
         resolved_valid_from = self._resolve_valid_from(valid_from)
         cypher = (
-            "MATCH (m {source_key: $source_key, content_hash: $content_hash})\n"
-            "MATCH (e {name: $entity_name, type: $entity_type})\n"
+            "MATCH (m:Memory {source_key: $source_key, content_hash: $content_hash})\n"
+            "MATCH (e:Entity {name: $entity_name, type: $entity_type})\n"
             f"MERGE (m)-[r:{rel_type}]->(e)\n"
             "ON CREATE SET r.valid_from = $valid_from,\n"
             "              r.valid_to = $valid_to,\n"
@@ -289,8 +289,8 @@ class GraphWriter:
             valid_to: ISO-8601 validity end timestamp.
         """
         cypher = (
-            "MATCH (m {source_key: $source_key, content_hash: $content_hash})\n"
-            "MATCH (e {name: $entity_name, type: $entity_type})\n"
+            "MATCH (m:Memory {source_key: $source_key, content_hash: $content_hash})\n"
+            "MATCH (e:Entity {name: $entity_name, type: $entity_type})\n"
             f"MATCH (m)-[r:{rel_type}]->(e)\n"
             "SET r.valid_to = $valid_to"
         )
@@ -322,8 +322,8 @@ class GraphWriter:
             rel_type: Relationship type to update.
         """
         cypher = (
-            "MATCH (m {source_key: $source_key, content_hash: $content_hash})\n"
-            "MATCH (e {name: $entity_name, type: $entity_type})\n"
+            "MATCH (m:Memory {source_key: $source_key, content_hash: $content_hash})\n"
+            "MATCH (e:Entity {name: $entity_name, type: $entity_type})\n"
             f"MATCH (m)-[r:{rel_type}]->(e)\n"
             "SET r.contradiction_count = coalesce(r.contradiction_count, 0) + 1"
         )

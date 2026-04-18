@@ -90,7 +90,7 @@ class HealthcareGraphWriter:
         resolved_from = valid_from or self._now()
         cypher = (
             "MATCH (p:Entity:Patient {name: $patient_id})\n"
-            "MATCH (c {source_key: $source_key, content_hash: $content_hash})\n"
+            "MATCH (c:Memory {source_key: $source_key, content_hash: $content_hash})\n"
             "MERGE (p)-[r:DIAGNOSED_WITH]->(c)\n"
             "ON CREATE SET r.valid_from = $valid_from,\n"
             "              r.valid_to = $valid_to,\n"
@@ -148,7 +148,7 @@ class HealthcareGraphWriter:
         resolved_from = valid_from or self._now()
         cypher = (
             "MATCH (p:Entity:Patient {name: $patient_id})\n"
-            "MATCH (m {source_key: $source_key, content_hash: $content_hash})\n"
+            "MATCH (m:Memory {source_key: $source_key, content_hash: $content_hash})\n"
             "MERGE (p)-[r:PRESCRIBED]->(m)\n"
             "ON CREATE SET r.valid_from = $valid_from,\n"
             "              r.valid_to = $valid_to,\n"
@@ -204,7 +204,7 @@ class HealthcareGraphWriter:
         resolved_from = valid_from or self._now()
         cypher = (
             "MATCH (p:Entity:Patient {name: $patient_id})\n"
-            "MATCH (e {source_key: $source_key, content_hash: $content_hash})\n"
+            "MATCH (e:Memory {source_key: $source_key, content_hash: $content_hash})\n"
             "MERGE (p)-[r:HAD_ENCOUNTER]->(e)\n"
             "ON CREATE SET r.valid_from = $valid_from,\n"
             "              r.confidence = $confidence,\n"
@@ -257,7 +257,7 @@ class HealthcareGraphWriter:
         """
         resolved_from = valid_from or self._now()
         cypher = (
-            "MATCH (e {source_key: $source_key, content_hash: $content_hash})\n"
+            "MATCH (e:Memory {source_key: $source_key, content_hash: $content_hash})\n"
             "MATCH (p:Entity:Provider {name: $provider_id})\n"
             "MERGE (e)-[r:TREATED_BY]->(p)\n"
             "ON CREATE SET r.valid_from = $valid_from,\n"
@@ -310,8 +310,8 @@ class HealthcareGraphWriter:
         """
         resolved_from = valid_from or self._now()
         cypher = (
-            "MATCH (e {source_key: $enc_sk, content_hash: $enc_ch})\n"
-            "MATCH (o {source_key: $obs_sk, content_hash: $obs_ch})\n"
+            "MATCH (e:Memory {source_key: $enc_sk, content_hash: $enc_ch})\n"
+            "MATCH (o:Memory {source_key: $obs_sk, content_hash: $obs_ch})\n"
             "MERGE (e)-[r:HAS_OBSERVATION]->(o)\n"
             "ON CREATE SET r.valid_from = $valid_from,\n"
             "              r.confidence = $confidence,\n"
@@ -367,8 +367,8 @@ class HealthcareGraphWriter:
         """
         resolved_from = valid_from or self._now()
         cypher = (
-            "MATCH (e {source_key: $enc_sk, content_hash: $enc_ch})\n"
-            "MATCH (c {source_key: $cond_sk, content_hash: $cond_ch})\n"
+            "MATCH (e:Memory {source_key: $enc_sk, content_hash: $enc_ch})\n"
+            "MATCH (c:Memory {source_key: $cond_sk, content_hash: $cond_ch})\n"
             "MERGE (e)-[r:HAS_CONDITION]->(c)\n"
             "ON CREATE SET r.valid_from = $valid_from,\n"
             "              r.confidence = $confidence,\n"

@@ -352,7 +352,7 @@ class HealthcareBulkImporter:
             """
             UNWIND $rows AS row
             MATCH (p:Entity:Patient {name: row.patient_id, type: 'patient'})
-            MATCH (e {source_key: row.source_key, content_hash: row.content_hash})
+            MATCH (e:Memory {source_key: row.source_key, content_hash: row.content_hash})
             MERGE (p)-[r:HAD_ENCOUNTER]->(e)
             ON CREATE SET r.valid_from = row.valid_from,
                           r.confidence = row.confidence,
@@ -369,7 +369,7 @@ class HealthcareBulkImporter:
         tx.run(
             """
             UNWIND $rows AS row
-            MATCH (e {source_key: row.source_key, content_hash: row.content_hash})
+            MATCH (e:Memory {source_key: row.source_key, content_hash: row.content_hash})
             MATCH (p:Entity:Provider {name: row.provider_id, type: 'provider'})
             MERGE (e)-[r:TREATED_BY]->(p)
             ON CREATE SET r.valid_from = row.valid_from,
@@ -393,7 +393,7 @@ class HealthcareBulkImporter:
         tx.run(
             """
             UNWIND $rows AS row
-            MATCH (m {source_key: row.source_key, content_hash: row.content_hash})
+            MATCH (m:Memory {source_key: row.source_key, content_hash: row.content_hash})
             MATCH (e:Entity {name: row.entity_name, type: $entity_type})
             MERGE (m)-[r:MENTIONS]->(e)
             ON CREATE SET r.valid_from = row.valid_from,
@@ -418,7 +418,7 @@ class HealthcareBulkImporter:
             """
             UNWIND $rows AS row
             MATCH (p:Entity:Patient {name: row.patient_id, type: 'patient'})
-            MATCH (c {source_key: row.source_key, content_hash: row.content_hash})
+            MATCH (c:Memory {source_key: row.source_key, content_hash: row.content_hash})
             MERGE (p)-[r:DIAGNOSED_WITH]->(c)
             ON CREATE SET r.valid_from = row.valid_from,
                           r.valid_to = row.valid_to,
@@ -439,7 +439,7 @@ class HealthcareBulkImporter:
             """
             UNWIND $rows AS row
             MATCH (p:Entity:Patient {name: row.patient_id, type: 'patient'})
-            MATCH (m {source_key: row.source_key, content_hash: row.content_hash})
+            MATCH (m:Memory {source_key: row.source_key, content_hash: row.content_hash})
             MERGE (p)-[r:PRESCRIBED]->(m)
             ON CREATE SET r.valid_from = row.valid_from,
                           r.valid_to = row.valid_to,

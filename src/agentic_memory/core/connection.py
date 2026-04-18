@@ -215,6 +215,25 @@ class ConnectionManager:
                     "CREATE CONSTRAINT memory_unique IF NOT EXISTS "
                     "FOR (m:Memory) REQUIRE (m.source_key, m.content_hash) IS UNIQUE"
                 )
+            except neo4j.exceptions.ClientError as exc:
+                # Earlier importer iterations created a non-unique composite
+                # index named ``memory_lookup`` as a fallback on dirty graphs.
+                # Once the graph is clean again, that legacy index blocks the
+                # newer uniqueness constraint from being created. Drop the old
+                # lookup index and retry so clean runs automatically converge
+                # on the stronger schema.
+                if "IndexAlreadyExists" in str(exc) and ":Memory {source_key, content_hash}" in str(exc):
+                    logger.info(
+                        "Dropping legacy memory_lookup index so memory_unique "
+                        "constraint can be created on the clean graph."
+                    )
+                    s.run("DROP INDEX memory_lookup IF EXISTS")
+                    s.run(
+                        "CREATE CONSTRAINT memory_unique IF NOT EXISTS "
+                        "FOR (m:Memory) REQUIRE (m.source_key, m.content_hash) IS UNIQUE"
+                    )
+                else:
+                    raise
             except neo4j.exceptions.DatabaseError as exc:
                 # Existing experiment databases may already contain duplicate
                 # Memory nodes from earlier importer iterations. We still want

@@ -210,10 +210,28 @@ class ConnectionManager:
             # graph speeds up the hottest write path and makes later importer
             # parallelism safer because concurrent workers cannot create
             # duplicate Memory nodes with the same logical key.
-            s.run(
-                "CREATE CONSTRAINT memory_unique IF NOT EXISTS "
-                "FOR (m:Memory) REQUIRE (m.source_key, m.content_hash) IS UNIQUE"
-            )
+            try:
+                s.run(
+                    "CREATE CONSTRAINT memory_unique IF NOT EXISTS "
+                    "FOR (m:Memory) REQUIRE (m.source_key, m.content_hash) IS UNIQUE"
+                )
+            except neo4j.exceptions.DatabaseError as exc:
+                # Existing experiment databases may already contain duplicate
+                # Memory nodes from earlier importer iterations. We still want
+                # schema bootstrap to succeed for the batched importer so long
+                # as the rest of the graph is usable. The importer/parity plan
+                # still treats this as a data-quality issue to clean up before
+                # parallel scale runs.
+                if "ConstraintCreationFailed" in str(exc) or "memory_unique" in str(exc):
+                    logger.warning(
+                        "Skipping memory_unique constraint because existing Memory "
+                        "duplicates prevent creation. Clean the graph before "
+                        "treating parallel importer runs as production-safe. "
+                        "Original error: %s",
+                        exc,
+                    )
+                else:
+                    raise
 
         logger.info(
             "Database setup complete (embedding_dim=%d): "

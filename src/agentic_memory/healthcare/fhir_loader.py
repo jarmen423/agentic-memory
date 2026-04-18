@@ -22,6 +22,18 @@ FHIR resource → pipeline row mapping:
   Observation       → {record_type: "observation", DATE, PATIENT, ENCOUNTER, CODE, DESCRIPTION, VALUE, UNITS, TYPE}
   Procedure         → {record_type: "procedure",   DATE, PATIENT, ENCOUNTER, CODE, DESCRIPTION}
 
+FHIR 3.0 / STU3 nuance that matters for this project:
+  - Encounter provider is often stored on ``serviceProvider`` instead of
+    ``participant[].individual``.
+  - Medication requests in the Synthea STU3 export often omit
+    ``medicationCodeableConcept`` entirely and rely on a preceding
+    standalone ``Medication`` resource in the same bundle for the actual
+    code/display payload.
+
+The loader therefore has to preserve enough bundle order to recover medication
+meaning before it normalizes rows into the CSV-like schema expected by the
+ingestion pipeline.
+
 Role in the project:
   Drop-in replacement for SyntheaCSVLoader. scripts/ingest_synthea.py uses
   whichever loader is appropriate for the data format present in --data-dir.
@@ -39,9 +51,22 @@ from typing import Any, Generator, Iterator
 
 logger = logging.getLogger(__name__)
 
-# FHIR resource types we care about (all others in the Bundle are skipped)
+# FHIR resource types we care about (all others in the Bundle are skipped).
+#
+# ``Medication`` is intentionally included even though it does not produce a
+# pipeline row on its own. In the STU3 Synthea bundles it acts as side-channel
+# context for later ``MedicationRequest`` entries whose codeable concept is
+# blank. Dropping it would silently erase medication rows during export.
 _WANTED_RESOURCE_TYPES = frozenset(
-    {"Patient", "Encounter", "Condition", "MedicationRequest", "Observation", "Procedure"}
+    {
+        "Patient",
+        "Encounter",
+        "Condition",
+        "Medication",
+        "MedicationRequest",
+        "Observation",
+        "Procedure",
+    }
 )
 
 # Extension URLs used by Synthea for US Core race/ethnicity
@@ -368,6 +393,9 @@ class SyntheaFHIRLoader:
 
         Extracts the patient ID first, then processes all other resources
         in encounter → condition → medication → observation → procedure order.
+        The bundle's original entry order still matters for medication parsing:
+        STU3 exports often emit a ``Medication`` resource immediately before
+        one or more ``MedicationRequest`` resources that depend on it.
 
         Args:
             bundle: Parsed FHIR Bundle dict.
@@ -376,19 +404,20 @@ class SyntheaFHIRLoader:
             List of row dicts ready for HealthcareIngestionPipeline.ingest().
         """
         entries = bundle.get("entry", [])
-        resources_by_type: dict[str, list[dict[str, Any]]] = {}
+        ordered_resources: list[dict[str, Any]] = []
+        patient_resource: dict[str, Any] | None = None
 
         for entry in entries:
             resource = entry.get("resource", {})
             rtype = resource.get("resourceType", "")
+            if rtype == "Patient" and patient_resource is None:
+                patient_resource = resource
             if rtype in _WANTED_RESOURCE_TYPES:
-                resources_by_type.setdefault(rtype, []).append(resource)
+                ordered_resources.append(resource)
 
         # Get patient ID first (needed as FK for all other rows)
-        patients = resources_by_type.get("Patient", [])
-        if not patients:
+        if not patient_resource:
             return []
-        patient_resource = patients[0]
         patient_id = patient_resource.get("id", "")
 
         if not patient_id:
@@ -403,45 +432,73 @@ class SyntheaFHIRLoader:
                 return []
         self._processed_patients.add(patient_id)
 
-        rows: list[dict[str, Any]] = []
-
         # Build an encounter-id → encounter row dict for FK resolution
         encounter_map: dict[str, dict[str, Any]] = {}
+        encounter_rows: list[dict[str, Any]] = []
+        condition_rows: list[dict[str, Any]] = []
+        medication_rows: list[dict[str, Any]] = []
+        observation_rows: list[dict[str, Any]] = []
+        procedure_rows: list[dict[str, Any]] = []
 
-        # --- Encounters ---
-        for enc in resources_by_type.get("Encounter", []):
-            row = self._parse_encounter(enc, patient_id)
-            if row:
-                rows.append(row)
-                enc_id = enc.get("id", "")
-                if enc_id:
-                    encounter_map[enc_id] = row
+        # In the STU3 export, ``Medication`` resources act like the current
+        # medication cursor for later ``MedicationRequest`` entries. We keep
+        # the latest parsed code/display and let requests reuse it until the
+        # bundle introduces a newer medication resource.
+        current_medication_code_info: dict[str, str] | None = None
 
-        # --- Conditions ---
-        for cond in resources_by_type.get("Condition", []):
-            row = self._parse_condition(cond, patient_id, encounter_map)
-            if row:
-                rows.append(row)
+        for resource in ordered_resources:
+            rtype = resource.get("resourceType", "")
+            if rtype == "Patient":
+                continue
 
-        # --- Medications (MedicationRequest in FHIR R3) ---
-        for med in resources_by_type.get("MedicationRequest", []):
-            row = self._parse_medication(med, patient_id, encounter_map)
-            if row:
-                rows.append(row)
+            if rtype == "Medication":
+                current_medication_code_info = _extract_coding(resource.get("code", {}))
+                continue
 
-        # --- Observations ---
-        for obs in resources_by_type.get("Observation", []):
-            row = self._parse_observation(obs, patient_id, encounter_map)
-            if row:
-                rows.append(row)
+            if rtype == "Encounter":
+                row = self._parse_encounter(resource, patient_id)
+                if row:
+                    encounter_rows.append(row)
+                    enc_id = resource.get("id", "")
+                    if enc_id:
+                        encounter_map[enc_id] = row
+                continue
 
-        # --- Procedures ---
-        for proc in resources_by_type.get("Procedure", []):
-            row = self._parse_procedure(proc, patient_id, encounter_map)
-            if row:
-                rows.append(row)
+            if rtype == "Condition":
+                row = self._parse_condition(resource, patient_id, encounter_map)
+                if row:
+                    condition_rows.append(row)
+                continue
 
-        return rows
+            if rtype == "MedicationRequest":
+                row = self._parse_medication(
+                    resource,
+                    patient_id,
+                    encounter_map,
+                    fallback_code_info=current_medication_code_info,
+                )
+                if row:
+                    medication_rows.append(row)
+                continue
+
+            if rtype == "Observation":
+                row = self._parse_observation(resource, patient_id, encounter_map)
+                if row:
+                    observation_rows.append(row)
+                continue
+
+            if rtype == "Procedure":
+                row = self._parse_procedure(resource, patient_id, encounter_map)
+                if row:
+                    procedure_rows.append(row)
+
+        return (
+            encounter_rows
+            + condition_rows
+            + medication_rows
+            + observation_rows
+            + procedure_rows
+        )
 
     # ------------------------------------------------------------------
     # Per-resource parsers — return row dicts matching CSV column names
@@ -467,12 +524,22 @@ class SyntheaFHIRLoader:
         start = _fhir_date(period.get("start"))
         stop = _fhir_date(period.get("end"))
 
-        # Provider: first participant's individual reference
+        # STU3 exports usually carry the servicing organization on
+        # ``serviceProvider``. Older / other bundle shapes may still use
+        # participant-individual references, so we try both.
         provider_id = ""
         participants = resource.get("participant", [])
         if participants:
-            ref = participants[0].get("individual", {}).get("reference", "")
-            provider_id = _extract_uuid(ref)
+            for participant in participants:
+                ref = (
+                    participant.get("individual", {}).get("reference", "")
+                    or participant.get("actor", {}).get("reference", "")
+                )
+                provider_id = _extract_uuid(ref)
+                if provider_id:
+                    break
+        if not provider_id:
+            provider_id = _extract_uuid(resource.get("serviceProvider", {}).get("reference", ""))
 
         # Reason: first reasonCode display text
         reason_code = ""
@@ -491,6 +558,8 @@ class SyntheaFHIRLoader:
             codings = types[0].get("coding", [])
             if codings:
                 description = codings[0].get("display", "")
+            if not description:
+                description = types[0].get("text", "")
 
         return {
             "record_type": "encounter",
@@ -552,6 +621,7 @@ class SyntheaFHIRLoader:
         resource: dict[str, Any],
         patient_id: str,
         encounter_map: dict[str, dict[str, Any]],
+        fallback_code_info: dict[str, str] | None = None,
     ) -> dict[str, Any] | None:
         """Parse a FHIR MedicationRequest resource.
 
@@ -563,11 +633,16 @@ class SyntheaFHIRLoader:
             resource: FHIR MedicationRequest resource dict.
             patient_id: Patient UUID.
             encounter_map: Encounter FK lookup.
+            fallback_code_info: Code/display metadata copied from the most
+                recent bundle-level ``Medication`` resource when the request
+                itself omits ``medicationCodeableConcept``.
 
         Returns:
             Row dict or None.
         """
         code_info = _extract_coding(resource.get("medicationCodeableConcept", {}))
+        if not code_info:
+            code_info = fallback_code_info
         if not code_info:
             return None
 

@@ -34,6 +34,7 @@ except ImportError:
     pass
 
 from agentic_memory.core.connection import ConnectionManager
+from agentic_memory.healthcare.bulk_import import HealthcareBulkImporter
 from agentic_memory.healthcare.pipeline import HealthcareIngestionPipeline
 
 
@@ -85,6 +86,16 @@ def parse_args() -> argparse.Namespace:
             "How many imported rows to group into one explicit Neo4j "
             "transaction before committing. Smaller values reduce rollback "
             "blast radius; larger values reduce per-transaction overhead."
+        ),
+    )
+    parser.add_argument(
+        "--import-mode",
+        choices=("pipeline", "bulk"),
+        default="pipeline",
+        help=(
+            "Import strategy. 'pipeline' reuses HealthcareIngestionPipeline "
+            "row-by-row inside a shared transaction. 'bulk' groups rows by "
+            "record type and writes them with UNWIND-based bulk Cypher."
         ),
     )
     parser.add_argument(
@@ -173,7 +184,9 @@ def import_batch(
     *,
     conn: ConnectionManager,
     pipeline: HealthcareIngestionPipeline,
+    bulk_importer: HealthcareBulkImporter,
     batch_items: list[dict[str, Any]],
+    import_mode: str,
 ) -> tuple[int, int]:
     """Import one batch inside a shared transaction, with safe fallback.
 
@@ -195,13 +208,16 @@ def import_batch(
         with conn.session() as session:
             tx = session.begin_transaction()
             temporal_written = 0
-            for item in batch_items:
-                result = pipeline.ingest_with_runner(
-                    build_pipeline_row(item),
-                    runner=tx,
-                )
-                if result.get("temporal_written"):
-                    temporal_written += 1
+            if import_mode == "bulk":
+                bulk_importer.import_batch(tx=tx, batch_items=batch_items)
+            else:
+                for item in batch_items:
+                    result = pipeline.ingest_with_runner(
+                        build_pipeline_row(item),
+                        runner=tx,
+                    )
+                    if result.get("temporal_written"):
+                        temporal_written += 1
             tx.commit()
             return 0, temporal_written
     except Exception as exc:  # noqa: BLE001
@@ -240,6 +256,11 @@ def main() -> None:
     input_dir = Path(args.input_dir)
     if not input_dir.is_dir():
         raise SystemExit(f"--input-dir is not a directory: {input_dir}")
+    if args.import_mode == "bulk" and args.enable_temporal:
+        raise SystemExit(
+            "--import-mode bulk does not currently support temporal writes. "
+            "Run graph import first, then temporal as a separate backfill step."
+        )
 
     embedding_dim, first = first_record_embedding_dim(input_dir)
     project_id = args.project_id or first.get("project_id") or "synthea-export"
@@ -257,6 +278,7 @@ def main() -> None:
         project_id=project_id,
         enable_llm_extraction=False,
     )
+    bulk_importer = HealthcareBulkImporter(project_id=project_id)
 
     total = 0
     errors = 0
@@ -271,7 +293,9 @@ def main() -> None:
         batch_errors, batch_temporal = import_batch(
             conn=conn,
             pipeline=pipeline,
+            bulk_importer=bulk_importer,
             batch_items=pending_batch,
+            import_mode=args.import_mode,
         )
         total += len(pending_batch)
         errors += batch_errors
@@ -290,7 +314,9 @@ def main() -> None:
         batch_errors, batch_temporal = import_batch(
             conn=conn,
             pipeline=pipeline,
+            bulk_importer=bulk_importer,
             batch_items=pending_batch,
+            import_mode=args.import_mode,
         )
         total += len(pending_batch)
         errors += batch_errors

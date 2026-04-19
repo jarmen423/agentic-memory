@@ -171,6 +171,71 @@ class TestMemoryIngestResearch:
         from agentic_memory.server import app as app_module
         assert "ALWAYS call this tool" in app_module.memory_ingest_research.__doc__
 
+    def test_memory_ingest_research_normalizes_string_findings(self, monkeypatch):
+        """String findings are coerced into finding objects before ingest."""
+        mock_pipeline = _make_mock_pipeline()
+
+        from agentic_memory.server import app as app_module
+        monkeypatch.setattr(app_module, "_get_research_pipeline", lambda: mock_pipeline)
+
+        app_module.memory_ingest_research(
+            type="report",
+            content="Report body",
+            project_id="proj1",
+            session_id="sess1",
+            source_agent="claude",
+            confidence="high",
+            findings=["First takeaway", "Second takeaway"],
+        )
+
+        call_args = mock_pipeline.ingest.call_args[0][0]
+        assert call_args["findings"] == [
+            {"text": "First takeaway", "confidence": "high", "citations": []},
+            {"text": "Second takeaway", "confidence": "high", "citations": []},
+        ]
+
+    def test_memory_ingest_research_normalizes_url_string_citations(self, monkeypatch):
+        """URL-string citations are coerced into citation objects before ingest."""
+        mock_pipeline = _make_mock_pipeline()
+
+        from agentic_memory.server import app as app_module
+        monkeypatch.setattr(app_module, "_get_research_pipeline", lambda: mock_pipeline)
+
+        app_module.memory_ingest_research(
+            type="finding",
+            content="Atomic fact",
+            project_id="proj1",
+            session_id="sess1",
+            source_agent="claude",
+            citations=["https://example.com/article"],
+        )
+
+        call_args = mock_pipeline.ingest.call_args[0][0]
+        assert call_args["citations"] == [
+            {"url": "https://example.com/article", "title": None, "snippet": None}
+        ]
+
+    def test_memory_ingest_research_rejects_non_url_string_citations(self, monkeypatch):
+        """Malformed citation strings fail fast with a contract error."""
+        mock_pipeline = _make_mock_pipeline()
+
+        from agentic_memory.server import app as app_module
+        monkeypatch.setattr(app_module, "_get_research_pipeline", lambda: mock_pipeline)
+
+        result = app_module.memory_ingest_research(
+            type="finding",
+            content="Atomic fact",
+            project_id="proj1",
+            session_id="sess1",
+            source_agent="claude",
+            citations=["not-a-url"],
+        )
+
+        assert result == (
+            "Error: citations[0] must be an object with url/title/snippet or an http(s) URL string."
+        )
+        mock_pipeline.ingest.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # search_web_memory tests

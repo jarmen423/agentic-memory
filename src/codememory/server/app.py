@@ -931,6 +931,113 @@ def _get_research_pipeline():
 # ---------------------------------------------------------------------------
 
 
+def _normalize_research_citations(
+    citations: list | None,
+    *,
+    field_name: str,
+) -> list[dict[str, Any]] | None:
+    """Normalize MCP citation payloads into the dict shape the pipeline expects.
+
+    The underlying research pipeline indexes into ``citation["url"]`` and
+    writes ``Entity:Source`` nodes keyed by URL. When callers send plain
+    strings, the old code leaked a low-level ``TypeError``. This helper keeps
+    the contract honest: it accepts URL-string shorthand when the string is a
+    valid ``http(s)`` URL, preserves object-shaped citations, and otherwise
+    raises a readable validation error before ingestion starts.
+    """
+    if citations is None:
+        return None
+    if not isinstance(citations, list):
+        raise ValueError(f"{field_name} must be a list of citation objects or URL strings.")
+
+    normalized: list[dict[str, Any]] = []
+    for index, citation in enumerate(citations):
+        item_path = f"{field_name}[{index}]"
+        if isinstance(citation, dict):
+            url = citation.get("url")
+            if not isinstance(url, str) or not url.strip():
+                raise ValueError(f"{item_path}.url must be a non-empty string.")
+            normalized.append(
+                {
+                    "url": url.strip(),
+                    "title": citation.get("title"),
+                    "snippet": citation.get("snippet"),
+                }
+            )
+            continue
+
+        if isinstance(citation, str):
+            url = citation.strip()
+            if not (url.startswith("http://") or url.startswith("https://")):
+                raise ValueError(
+                    f"{item_path} must be an object with url/title/snippet or an http(s) URL string."
+                )
+            normalized.append({"url": url, "title": None, "snippet": None})
+            continue
+
+        raise ValueError(
+            f"{item_path} must be an object with url/title/snippet or an http(s) URL string."
+        )
+
+    return normalized
+
+
+def _normalize_research_findings(
+    findings: list | None,
+    *,
+    default_confidence: str | None,
+) -> list[dict[str, Any]] | None:
+    """Normalize report-inline findings into the pipeline's object contract.
+
+    ``memory_ingest_research`` is often called by other agents, and shorthand
+    ``list[str]`` findings are a reasonable payload to send. We coerce those
+    into ``{"text": ...}`` objects, inherit the parent confidence when useful,
+    and recursively normalize nested citations so the pipeline never receives a
+    shape it cannot index into safely.
+    """
+    if findings is None:
+        return None
+    if not isinstance(findings, list):
+        raise ValueError("findings must be a list of finding objects or strings.")
+
+    normalized: list[dict[str, Any]] = []
+    for index, finding in enumerate(findings):
+        item_path = f"findings[{index}]"
+        if isinstance(finding, str):
+            text = finding.strip()
+            if not text:
+                raise ValueError(f"{item_path} must not be empty.")
+            normalized.append(
+                {
+                    "text": text,
+                    "confidence": default_confidence,
+                    "citations": [],
+                }
+            )
+            continue
+
+        if isinstance(finding, dict):
+            text = finding.get("text")
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError(f"{item_path}.text must be a non-empty string.")
+            normalized.append(
+                {
+                    "text": text.strip(),
+                    "confidence": finding.get("confidence", default_confidence),
+                    "citations": _normalize_research_citations(
+                        finding.get("citations"),
+                        field_name=f"{item_path}.citations",
+                    )
+                    or [],
+                }
+            )
+            continue
+
+        raise ValueError(f"{item_path} must be a finding object or a non-empty string.")
+
+    return normalized
+
+
 @mcp.tool()
 @rate_limit
 @log_tool_call
@@ -974,6 +1081,18 @@ def memory_ingest_research(
             "the configured extraction LLM API key environment variables."
         )
 
+    try:
+        normalized_findings = _normalize_research_findings(
+            findings,
+            default_confidence=confidence,
+        )
+        normalized_citations = _normalize_research_citations(
+            citations,
+            field_name="citations",
+        )
+    except ValueError as contract_error:
+        return f"Error: {contract_error}"
+
     source_dict = {
         "type": type,
         "content": content,
@@ -983,8 +1102,8 @@ def memory_ingest_research(
         "title": title,
         "research_question": research_question,
         "confidence": confidence,
-        "findings": findings,
-        "citations": citations,
+        "findings": normalized_findings,
+        "citations": normalized_citations,
         "ingestion_mode": "active",
     }
 

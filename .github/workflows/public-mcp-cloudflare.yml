@@ -43,11 +43,27 @@ jobs:
       - name: Install Worker dependencies
         run: npm install
 
-      - name: Dry-run Cloudflare deployment
+      - name: Inject deploy-time Worker vars
         env:
-          BACKEND_ORIGIN: ${{ inputs.backend_origin }}
-          PUBLIC_BASE_URL: ${{ inputs.public_base_url }}
-          OPENAI_APPS_CHALLENGE_TOKEN: ${{ inputs.openai_apps_challenge_token }}
+          BACKEND_ORIGIN_INPUT: ${{ inputs.backend_origin }}
+          PUBLIC_BASE_URL_INPUT: ${{ inputs.public_base_url }}
+          OPENAI_APPS_CHALLENGE_TOKEN_INPUT: ${{ inputs.openai_apps_challenge_token }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path("wrangler.jsonc")
+          config = json.loads(path.read_text())
+          config.setdefault("vars", {})
+          config["vars"]["BACKEND_ORIGIN"] = os.environ["BACKEND_ORIGIN_INPUT"]
+          config["vars"]["PUBLIC_BASE_URL"] = os.environ["PUBLIC_BASE_URL_INPUT"]
+          config["vars"]["OPENAI_APPS_CHALLENGE_TOKEN"] = os.environ["OPENAI_APPS_CHALLENGE_TOKEN_INPUT"]
+          path.write_text(json.dumps(config, indent=2) + "\n")
+          PY
+
+      - name: Dry-run Cloudflare deployment
         run: npx wrangler deploy --dry-run
 
   deploy-public-edge:
@@ -70,11 +86,28 @@ jobs:
       - name: Install Worker dependencies
         run: npm install
 
+      - name: Inject deploy-time Worker vars
+        env:
+          BACKEND_ORIGIN_INPUT: ${{ inputs.backend_origin }}
+          PUBLIC_BASE_URL_INPUT: ${{ inputs.public_base_url }}
+          OPENAI_APPS_CHALLENGE_TOKEN_INPUT: ${{ inputs.openai_apps_challenge_token }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path("wrangler.jsonc")
+          config = json.loads(path.read_text())
+          config.setdefault("vars", {})
+          config["vars"]["BACKEND_ORIGIN"] = os.environ["BACKEND_ORIGIN_INPUT"]
+          config["vars"]["PUBLIC_BASE_URL"] = os.environ["PUBLIC_BASE_URL_INPUT"]
+          config["vars"]["OPENAI_APPS_CHALLENGE_TOKEN"] = os.environ["OPENAI_APPS_CHALLENGE_TOKEN_INPUT"]
+          path.write_text(json.dumps(config, indent=2) + "\n")
+          PY
+
       - name: Deploy Cloudflare public edge
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          BACKEND_ORIGIN: ${{ inputs.backend_origin }}
-          PUBLIC_BASE_URL: ${{ inputs.public_base_url }}
-          OPENAI_APPS_CHALLENGE_TOKEN: ${{ inputs.openai_apps_challenge_token }}
         run: npx wrangler deploy

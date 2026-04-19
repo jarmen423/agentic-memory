@@ -4,7 +4,7 @@ milestone: v1.0
 milestone_name: — Full Multi-Module Memory System with Temporal GraphRAG
 current_phase: 17
 status: active
-last_updated: "2026-04-13T22:20:00Z"
+last_updated: "2026-04-19T23:59:00Z"
 progress:
   total_phases: 17
   completed_phases: 14
@@ -14,10 +14,10 @@ progress:
 
 # Agentic Memory — Project State
 
-**Last Updated:** 2026-04-13
+**Last Updated:** 2026-04-19
 **Current Phase:** 17
 **Phase Status:** Phase 17 active; hosted beta platform + dual-mode deployment is now the live OpenClaw delivery track
-**Last Session Stopped At:** Phase 17 has just been locked as the next OpenClaw execution wave. The current focus is turning the GCP VM into the first honest managed beta backend while keeping self-hosted as a verified full-stack fallback. Phase 16 remains archived under `.planning/execution/archive/w16-openclaw-whole-stack-onboarding/`. Phase 10 still needs live manual verification from the runbooks, and Phase 11 remains resumable from `.planning/execution/archive/w11-calls/`.
+**Last Session Stopped At:** Phase 17 is still the active operational track, but the immediate publication state has moved forward: the managed backend and public MCP hosts are live, OAuth-backed OpenAI review flow is working, the ChatGPT app was submitted for OpenAI review on 2026-04-19, and the next publication-critical work is waiting for OpenAI review feedback while Anthropic validation/submission remains outstanding. Phase 16 remains archived under `.planning/execution/archive/w16-openclaw-whole-stack-onboarding/`. Phase 10 still needs live manual verification from the runbooks, and Phase 11 remains resumable from `.planning/execution/archive/w11-calls/`.
 
 ---
 
@@ -25,7 +25,7 @@ progress:
 
 **Phase 16: OpenClaw Whole-Stack Onboarding**
 
-**Next Action:** Execute Phase 17 hosted-beta and dual-mode work. The first contract lock is to freeze managed versus self-hosted behavior before widening backend auth, plugin setup UX, and hosted deployment docs.
+**Next Action:** Keep Phase 17 active, but treat OpenAI review follow-up and Anthropic validation/submission as the immediate publication lane. Do not widen the public tool/auth contract while OpenAI review is pending unless a reviewer issue forces a change.
 
 ---
 

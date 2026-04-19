@@ -10,8 +10,8 @@ Official task:
 
 ## Current Status
 
-- Submission state: not submitted
-- Review state: not started
+- Submission state: submitted
+- Review state: pending
 - Publish state: not published
 
 ## Preconditions
@@ -22,18 +22,20 @@ Official task:
 - Stable publication URLs:
   - confirmed live on `https://mcp.agentmemorylabs.com`
 - Public auth posture:
-  - live reviewer path: bearer API key via `AM_SERVER_PUBLIC_MCP_API_KEYS`
-  - marketplace target: `OAuth 2.0 authorization code flow`
-  - implementation: pending
+  - live reviewer path: OAuth 2.0 authorization code flow with DCR enabled on
+    the public OpenAI surface
+  - fallback reviewer path: dedicated bearer key via
+    `AM_SERVER_PUBLIC_MCP_API_KEYS`
+  - implementation: live in production
 
 ## Submission Metadata
 
-- Submission owner: `TBD`
+- Submission owner: `individual`
 - Verified publisher identity: `TBD`
 - OpenAI project/data residency: `TBD`
-- Canonical MCP endpoint: `https://mcp.agentmemorylabs.com/mcp-openai`
-- Case ID: `TBD`
-- Submission date: `TBD`
+- Canonical MCP endpoint: `https://mcp.agentmemorylabs.com/mcp-openai/`
+- Case ID: `TBD` (dashboard review pending; no case reference captured yet)
+- Submission date: `2026-04-19`
 - Review URL: `TBD`
 - Published listing URL: `TBD`
 - Derived Codex distribution URL: `TBD`
@@ -46,11 +48,22 @@ Official task:
   verified live; public legal pages and `/health` reachable
 - 2026-04-14: dedicated public MCP reviewer-key path configured through
   `AM_SERVER_PUBLIC_MCP_API_KEYS`
-- Next update: replace the placeholders in `Submission Metadata` immediately after submission
+- 2026-04-19: real ChatGPT developer-mode validation completed against
+  `https://mcp.agentmemorylabs.com/mcp-openai/`
+- 2026-04-19: OpenAI dashboard domain verification completed for
+  `mcp.agentmemorylabs.com`
+- 2026-04-19: OpenAI dashboard tool scan succeeded against the live public MCP
+  surface after root/SSE probe aliasing fixes
+- 2026-04-19: reviewer screenshots, example prompts, tool annotations, test
+  cases, and reviewer credentials prepared for the dashboard flow
+- 2026-04-19: app submitted for OpenAI review through the dashboard
+- Next update: replace the remaining metadata placeholders immediately after
+  OpenAI issues a review/case reference or requests revisions
 
 ## Evidence Links
 
-- Submission confirmation email or screenshot: `TBD`
+- Submission confirmation email or screenshot: dashboard submission captured
+  locally on `2026-04-19` (not yet archived into repo)
 - Review case thread export: `TBD`
 - Approval email: `TBD`
 - Published app listing: `TBD`
@@ -68,15 +81,17 @@ Official task:
 
 ## Blocking Items
 
-- OAuth not implemented
-- real ChatGPT developer-mode validation and screenshots not complete
-- reviewer/demo packet not finalized
+- OpenAI has not yet approved or published the listing
+- review/case reference has not yet been captured into the tracker
+- reviewer-facing evidence artifacts are prepared locally but not yet attached in
+  repo-tracked form
+- derived Codex distribution path remains downstream of OpenAI approval
 
 ## Next Action
 
-- Run the real ChatGPT developer-mode validation loop against the live host,
-  capture screenshots, then close the remaining auth and reviewer-packet gaps
-  before submission
+- Wait for OpenAI review feedback, then capture the exact case/reference,
+  archive any reviewer thread, and respond quickly to revision requests if they
+  arrive
 
 ## Notes
 

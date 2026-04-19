@@ -44,7 +44,9 @@ events update these trackers and close gates `G3`, `G4`, and `G5`.
 
 ## Shared Outstanding Items
 
-- Run real ChatGPT and Claude validation loops against the live public MCP
-  surfaces and capture screenshots/examples.
-- Finalize reviewer/demo/test packet materials and key-rotation plan.
-- Record real OpenAI and Anthropic submission evidence.
+- OpenAI submission is now in review; record the case/reference, approval, and
+  publication evidence as it arrives.
+- Run the real Claude validation loop against the live public MCP surface and
+  capture reviewer screenshots/examples.
+- Finalize the post-review reviewer/demo/test packet and key-rotation plan.
+- Record real Anthropic submission evidence.

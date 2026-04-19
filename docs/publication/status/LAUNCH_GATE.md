@@ -7,7 +7,7 @@ Wave:
 ## Current Gate State
 
 - Gate `G2` Submission package readiness: complete
-- Gate `G3` OpenAI approval and publication: not started
+- Gate `G3` OpenAI approval and publication: in review
 - Gate `G4` Anthropic approval and directory listing: not started
 - Gate `G5` Launch integration and closure: in progress
 
@@ -27,10 +27,9 @@ Wave:
 
 ## Shared Blocking Conditions
 
-- OAuth auth posture chosen and initial implementation landed, but live client validation is still incomplete
-- reviewer/demo/test packet, screenshots, and sample data not yet finalized
-- OpenAI submission and publication evidence not yet attached
+- OpenAI submission is in review, but approval/publication evidence is not yet attached
 - Anthropic submission and listing evidence not yet attached
+- shared reviewer artifacts exist locally, but repo-tracked evidence attachment is still incomplete
 
 ## Close Criteria
 
@@ -46,11 +45,11 @@ Wave:
 - Gate owner: `orchestrator`
 - Current closure state: open
 - Closure date: `TBD`
-- OpenAI evidence attached: no
+- OpenAI evidence attached: partial
 - Anthropic evidence attached: no
 - Live publication/legal URLs confirmed: yes
-- Reviewer/demo/test accounts confirmed: no
-- Notes: close this record only after `G3`, `G4`, and `G5` evidence is attached in `EVIDENCE.md`; live public URLs were re-verified on 2026-04-14
+- Reviewer/demo/test accounts confirmed: yes
+- Notes: close this record only after `G3`, `G4`, and `G5` evidence is attached in `EVIDENCE.md`; live public URLs were re-verified on 2026-04-19 and the OpenAI app was submitted the same day
 
 ## Task Closure Note
 

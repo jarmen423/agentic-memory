@@ -9,14 +9,17 @@
 ## Next Session Reminder
 
 - [ ] Finish the current managed-hosted publication wave from the now-live public hosts:
-  - [ ] Run a real ChatGPT developer-mode connection against `https://mcp.agentmemorylabs.com/mcp-openai`
-  - [ ] Capture ChatGPT screenshots from the actual connected surface
+  - [x] Run a real ChatGPT developer-mode connection against `https://mcp.agentmemorylabs.com/mcp-openai`
+  - [x] Capture ChatGPT screenshots from the actual connected surface
+  - [x] Submit the OpenAI app for review
+  - [ ] Record the OpenAI review/case reference once the dashboard or email provides it
+  - [ ] Archive the final OpenAI submission evidence in `docs/publication/status/`
   - [ ] Run a real Claude validation against `https://mcp.agentmemorylabs.com/mcp-claude`
   - [ ] Capture at least three Anthropic reviewer examples based on the live connector
-  - [ ] Decide whether the next step is reviewer-preflight only or full OAuth implementation
-  - [ ] If aiming for marketplace submission, implement OAuth 2.0 authorization code flow in `am-server`
-  - [ ] Finalize the reviewer packet around the dedicated `AM_SERVER_PUBLIC_MCP_API_KEYS` key
-  - [ ] Record real submission / approval evidence in `docs/publication/status/`
+  - [x] Decide whether the next step is reviewer-preflight only or full OAuth implementation
+  - [x] If aiming for marketplace submission, implement OAuth 2.0 authorization code flow in `am-server`
+  - [x] Finalize the reviewer packet around the dedicated `AM_SERVER_PUBLIC_MCP_API_KEYS` key
+  - [ ] Record real approval evidence in `docs/publication/status/`
 
 - [ ] Finish Phase 6 am-ext UAT checks that depend on the Neo4j instance behind `am-server`:
   - [ ] Confirm which Neo4j instance `am-server` is using in the active environment

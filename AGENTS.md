@@ -61,7 +61,7 @@ When exploring this codebase, prefer using the `agentic-memory` MCP tools over n
 ---
 > TODO: Healthcare public-dataset experiment planning lives in `D:\code\agentic-memory\docs\research\healthcare-experiments\README.md`. Before trying to run any MIMIC-backed work, verify whether PhysioNet / MIMIC access is approved and configured on this machine; as of 2026-04-14, no repo-local or user-home credentials or downloaded dataset directories were found.
 >
-> TODO: Managed hosted publication is now live at `https://backend.agentmemorylabs.com` and `https://mcp.agentmemorylabs.com`. Before claiming publication is complete, run real ChatGPT and Claude validations against the public MCP surfaces, capture reviewer screenshots/examples, keep the auth story truthful (`AM_SERVER_PUBLIC_MCP_API_KEYS` bearer key today, OAuth still pending), and update `docs/publication/status/*` with real submission evidence.
+> TODO: Managed hosted publication is now live at `https://backend.agentmemorylabs.com` and `https://mcp.agentmemorylabs.com`. OpenAI submission was sent on 2026-04-19 after real ChatGPT validation, domain verification, tool scan, screenshots, reviewer prompts, and submission assets were completed. Before claiming publication is complete, capture the OpenAI case/reference and approval evidence, run real Claude validations against the public MCP surfaces, and update `docs/publication/status/*` with real approval/listing evidence.
 ---
 # Agentic Memory Repo Guide For Agents
 
@@ -336,17 +336,18 @@ Current managed-hosted/publication reality:
   - `https://mcp.agentmemorylabs.com/publication/privacy`
   - `https://mcp.agentmemorylabs.com/health`
 - current live reviewer auth posture
-  - public MCP is bearer-key protected through `AM_SERVER_PUBLIC_MCP_API_KEYS`
-  - this is the truthful dry-run/reviewer state today
-  - OAuth 2.0 authorization code flow is still not implemented
+  - public MCP now supports OAuth 2.0 authorization code flow for the public
+    OpenAI review surface
+  - reviewer-key fallback still exists through `AM_SERVER_PUBLIC_MCP_API_KEYS`
+  - docs must stay truthful about whether a given surface is using OAuth,
+    bearer fallback, or both
 
 Current publication blockers:
 
-- run a real ChatGPT developer-mode connection against `/mcp-openai`
+- wait for OpenAI review outcome and capture the review/case reference
 - run a real Claude validation against `/mcp-claude`
-- capture final screenshots / usage examples / reviewer evidence
-- implement OAuth before claiming marketplace-ready authenticated publication
-- attach real submission and approval evidence in `docs/publication/status/`
+- attach real OpenAI and Anthropic approval/listing evidence in
+  `docs/publication/status/`
 
 ---
 

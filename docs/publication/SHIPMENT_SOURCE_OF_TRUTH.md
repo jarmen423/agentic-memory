@@ -1,6 +1,6 @@
 # Shipment Source of Truth
 
-Last updated: 2026-04-17
+Last updated: 2026-04-19
 Owner: publication orchestrator
 
 ## Purpose
@@ -27,18 +27,22 @@ If any other publication doc conflicts with this file, this file is the current 
 - Public reviewer auth path exists today via bearer key (`AM_SERVER_PUBLIC_MCP_API_KEYS`).
 - OpenAI and Anthropic submission packets are marked complete in tracker docs.
 - Codex local/preflight bundle is ready.
+- Real ChatGPT developer-mode validation has been completed against
+  `https://mcp.agentmemorylabs.com/mcp-openai/`.
+- OpenAI dashboard domain verification and tool scan both succeeded.
+- The OpenAI app was submitted for review on `2026-04-19`.
 
 ### Not yet true (global blockers)
 
-- OAuth 2.0 authorization code flow is not implemented for public auth posture.
-- Real submission events are not completed for OpenAI or Anthropic.
+- OpenAI review is not yet approved/published.
+- Anthropic submission event is not yet completed.
 - Real approval/listing evidence is not attached.
-- Reviewer/demo/test packet is not finalized with live screenshots/examples.
+- Reviewer/demo/test packet needs final post-review archival and rotation notes.
 
 ## Gate Status (Authoritative)
 
 - G2 Submission package readiness: complete
-- G3 OpenAI approval and publication: not started
+- G3 OpenAI approval and publication: in review
 - G4 Anthropic approval and directory listing: not started
 - G5 Launch integration and closure: in progress
 
@@ -46,10 +50,10 @@ Launch is blocked until G3 + G4 + G5 close.
 
 ## Critical Path Remaining (P0)
 
-1. Implement OAuth 2.0 authorization code flow in hosted `am-server` for public publication paths.
-2. Run real ChatGPT validation against live `/mcp-openai` and capture evidence artifacts.
+1. Keep the live OAuth-backed OpenAI review path stable while review is pending.
+2. Capture the OpenAI review case/reference and archive the submission evidence in repo-tracked form.
 3. Run real Claude validation (Claude.ai and Claude Desktop minimum) against live `/mcp-claude` and capture evidence artifacts.
-4. Submit OpenAI app, track case, pass review, publish listing, confirm derived Codex distribution URL.
+4. Pass OpenAI review, publish listing, confirm derived Codex distribution URL.
 5. Submit Anthropic connector, pass review, confirm directory listing URL.
 6. Attach all evidence to status ledger and close launch gate record.
 
@@ -68,10 +72,10 @@ Status: In progress
 
 Remaining:
 
-- [ ] OAuth authorization code flow implemented and deployed
-- [ ] Auth story switched from reviewer-key-only to truthful publication posture
-- [ ] Reviewer/demo account and key rotation packet finalized
-- [ ] Live validation artifacts captured for each public mount (`/mcp-openai`, `/mcp-codex`, `/mcp-claude`)
+- Keep the deployed OAuth + reviewer-fallback auth posture stable during review
+- Finalize reviewer/demo account and key rotation packet
+- Capture and archive live validation artifacts for each public mount
+  (`/mcp-openai`, `/mcp-codex`, `/mcp-claude`)
 
 Done when:
 
@@ -81,17 +85,15 @@ Done when:
 
 ## 2) OpenAI: ChatGPT App + Derived Codex Distribution
 
-Status: Not submitted
+Status: Submitted; awaiting review
 
 Remaining:
 
-- [ ] Submission owner assigned and publisher identity verified
-- [ ] Real ChatGPT developer-mode run completed against live endpoint
-- [ ] Required screenshots and prompt/response evidence captured
-- [ ] OpenAI submission sent (case id recorded)
-- [ ] Review feedback addressed (if any)
-- [ ] App published and listing URL recorded
-- [ ] Derived Codex distribution confirmed and URL recorded
+- Capture the OpenAI review/case reference once available
+- Archive the final submission evidence in repo-tracked form
+- Review feedback addressed (if any)
+- App published and listing URL recorded
+- Derived Codex distribution confirmed and URL recorded
 
 Done when:
 
@@ -105,8 +107,8 @@ Status: Preflight-ready, publication-derived path pending
 
 Remaining:
 
-- [ ] Confirm final post-publication Codex distribution behavior and support workflow
-- [ ] Record final distribution URL and discovery behavior evidence
+- Confirm final post-publication Codex distribution behavior and support workflow
+- Record final distribution URL and discovery behavior evidence
 
 Done when:
 
@@ -118,12 +120,12 @@ Status: Not submitted
 
 Remaining:
 
-- [ ] Real Claude.ai validation against `/mcp-claude`
-- [ ] Real Claude Desktop validation against `/mcp-claude`
-- [ ] Final truthful support statement for Claude Code compatibility
-- [ ] Submission sent (tracking reference recorded)
-- [ ] Review feedback addressed (if any)
-- [ ] Directory listing published and URL recorded
+- Real Claude.ai validation against `/mcp-claude`
+- Real Claude Desktop validation against `/mcp-claude`
+- Final truthful support statement for Claude Code compatibility
+- Submission sent (tracking reference recorded)
+- Review feedback addressed (if any)
+- Directory listing published and URL recorded
 
 Done when:
 
@@ -136,20 +138,20 @@ Status: Package identity and commands locked; release/listing readiness incomple
 
 Remaining:
 
-- [ ] Final marketplace title
-- [ ] Final marketplace icon/screenshots
-- [ ] Final support contact and issue-routing copy
-- [ ] Final compatibility statement for target OpenClaw host version
-- [ ] Reconcile operator docs to remove placeholder package-name text
-- [ ] Run and pass release gates:
-  - [ ] `npm run build`
-  - [ ] `npm run typecheck`
-  - [ ] `npm run build:openclaw`
-  - [ ] `npm run test:openclaw`
-  - [ ] `npm run typecheck:openclaw`
-  - [ ] `npm run pack:openclaw`
-  - [ ] `npm run validate:release-artifacts`
-- [ ] Confirm real install/doctor/setup evidence from clean host environment
+- Final marketplace title
+- Final marketplace icon/screenshots
+- Final support contact and issue-routing copy
+- Final compatibility statement for target OpenClaw host version
+- Reconcile operator docs to remove placeholder package-name text
+- Run and pass release gates:
+  - `npm run build`
+  - `npm run typecheck`
+  - `npm run build:openclaw`
+  - `npm run test:openclaw`
+  - `npm run typecheck:openclaw`
+  - `npm run pack:openclaw`
+  - `npm run validate:release-artifacts`
+- Confirm real install/doctor/setup evidence from clean host environment
 
 Done when:
 
@@ -161,25 +163,26 @@ Done when:
 
 ## OpenAI evidence
 
-- [ ] Submission confirmation artifact
-- [ ] Review thread archive
-- [ ] Approval artifact
-- [ ] Published listing URL
-- [ ] Derived Codex distribution artifact
+- Submission confirmation artifact
+- Review thread archive
+- Approval artifact
+- Published listing URL
+- Derived Codex distribution artifact
 
 ## Anthropic evidence
 
-- [ ] Submission confirmation artifact
-- [ ] Review thread archive
-- [ ] Approval artifact
-- [ ] Directory listing URL
+- Submission confirmation artifact
+- Review thread archive
+- Approval artifact
+- Directory listing URL
 
 ## Shared evidence
 
-- [ ] OAuth implementation proof (deploy + test evidence)
-- [ ] Live publication/legal URL verification timestamp
-- [ ] Reviewer/demo/test account readiness proof
-- [ ] Launch gate closure record
+- OAuth implementation proof (deploy + test evidence)
+- Live publication/legal URL verification timestamp
+- Reviewer/demo/test account readiness proof
+- Launch gate closure record
+- OpenAI submission/case evidence after dashboard review starts emitting it
 
 ## Launch Decision Rule
 

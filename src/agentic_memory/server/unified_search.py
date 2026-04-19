@@ -34,6 +34,7 @@ from agentic_memory.ingestion.graph import KnowledgeGraphBuilder
 from agentic_memory.server.code_search import SAFE_RETRIEVAL_POLICY, search_code
 from agentic_memory.server.research_search import search_research
 from agentic_memory.server.result_types import UnifiedMemoryHit, UnifiedSearchResponse
+from agentic_memory.server.temporal_contract import TemporalRetrievalRequiredError
 from agentic_memory.server.tools import search_conversation_turns_sync
 from agentic_memory.web.pipeline import ResearchIngestionPipeline
 
@@ -265,6 +266,7 @@ def _search_conversation_structured(
     project_id: str | None,
     limit: int,
     as_of: str | None,
+    temporal_required: bool = False,
 ) -> list[UnifiedMemoryHit]:
     """Run structured conversation search and infer whether temporal reranking applied."""
     results = search_conversation_turns_sync(
@@ -275,6 +277,7 @@ def _search_conversation_structured(
         limit=limit,
         as_of=as_of,
         log_prefix="search_all_memory.conversation",
+        temporal_required=temporal_required,
     )
     provenance = dict((results[0].get("retrieval_provenance") or {})) if results else {}
     temporal_applied = bool(provenance.get("temporal_applied", False))
@@ -311,12 +314,15 @@ def search_all_memory_sync(
     graph: KnowledgeGraphBuilder | None = None,
     research_pipeline: ResearchIngestionPipeline | None = None,
     conversation_pipeline: ConversationIngestionPipeline | None = None,
+    fail_on_temporal_errors: bool = False,
 ) -> UnifiedSearchResponse:
     """Search code, web, and conversation memory; return one normalized response.
 
     This is the synchronous core used by the MCP ``search_all_memory`` tool.
-    Pass ``None`` for any unavailable dependency (for example no graph or no
-    research pipeline); that module is skipped without raising.
+    Pass ``None`` for unavailable dependencies only when the caller is willing
+    to accept partial results. Public hosted surfaces should set
+    ``fail_on_temporal_errors=True`` so research and conversation retrieval fail
+    closed instead of degrading silently.
 
     Args:
         query: Natural-language query shared across enabled modules.
@@ -329,6 +335,10 @@ def search_all_memory_sync(
             for code search; if ``None``, code results are omitted.
         research_pipeline: Ingestion pipeline with embedder and Neo4j connection.
         conversation_pipeline: Conversation pipeline for turn search.
+        fail_on_temporal_errors: When ``True``, temporal-owned modules
+            (research and conversation) raise
+            :class:`TemporalRetrievalRequiredError` instead of being converted
+            into a non-fatal ``errors`` entry.
 
     Returns:
         :class:`~agentic_memory.server.result_types.UnifiedSearchResponse` with
@@ -362,7 +372,18 @@ def search_all_memory_sync(
             logger.warning("search_all_memory code module failed: %s", exc)
             errors.append({"module": "code", "message": str(exc)})
 
-    if "web" in selected_modules and research_pipeline is not None:
+    if "web" in selected_modules and research_pipeline is None:
+        if fail_on_temporal_errors:
+            raise TemporalRetrievalRequiredError(
+                module="web",
+                reason="pipeline_unavailable",
+                message=(
+                    "Temporal-first research retrieval is required for this surface, "
+                    "but the research pipeline is unavailable."
+                ),
+            )
+        errors.append({"module": "web", "message": "research pipeline unavailable"})
+    elif "web" in selected_modules and research_pipeline is not None:
         try:
             hits.extend(
                 _search_research_structured(
@@ -372,11 +393,26 @@ def search_all_memory_sync(
                     as_of=as_of,
                 )
             )
+        except TemporalRetrievalRequiredError:
+            if fail_on_temporal_errors:
+                raise
+            errors.append({"module": "web", "message": "temporal retrieval unavailable"})
         except Exception as exc:  # noqa: BLE001
             logger.warning("search_all_memory web module failed: %s", exc)
             errors.append({"module": "web", "message": str(exc)})
 
-    if "conversation" in selected_modules and conversation_pipeline is not None:
+    if "conversation" in selected_modules and conversation_pipeline is None:
+        if fail_on_temporal_errors:
+            raise TemporalRetrievalRequiredError(
+                module="conversation",
+                reason="pipeline_unavailable",
+                message=(
+                    "Temporal-first conversation retrieval is required for this surface, "
+                    "but the conversation pipeline is unavailable."
+                ),
+            )
+        errors.append({"module": "conversation", "message": "conversation pipeline unavailable"})
+    elif "conversation" in selected_modules and conversation_pipeline is not None:
         try:
             hits.extend(
                 _search_conversation_structured(
@@ -385,8 +421,13 @@ def search_all_memory_sync(
                     project_id=project_id,
                     limit=safe_limit,
                     as_of=as_of,
+                    temporal_required=fail_on_temporal_errors,
                 )
             )
+        except TemporalRetrievalRequiredError:
+            if fail_on_temporal_errors:
+                raise
+            errors.append({"module": "conversation", "message": "temporal retrieval unavailable"})
         except Exception as exc:  # noqa: BLE001
             logger.warning("search_all_memory conversation module failed: %s", exc)
             errors.append({"module": "conversation", "message": str(exc)})

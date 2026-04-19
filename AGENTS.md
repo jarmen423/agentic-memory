@@ -62,6 +62,8 @@ When exploring this codebase, prefer using the `agentic-memory` MCP tools over n
 > TODO: Healthcare public-dataset experiment planning lives in `D:\code\agentic-memory\docs\research\healthcare-experiments\README.md`. Before trying to run any MIMIC-backed work, verify whether PhysioNet / MIMIC access is approved and configured on this machine; as of 2026-04-14, no repo-local or user-home credentials or downloaded dataset directories were found.
 >
 > TODO: Managed hosted publication is now live at `https://backend.agentmemorylabs.com` and `https://mcp.agentmemorylabs.com`. OpenAI submission was sent on 2026-04-19 after real ChatGPT validation, domain verification, tool scan, screenshots, reviewer prompts, and submission assets were completed. Before claiming publication is complete, capture the OpenAI case/reference and approval evidence, run real Claude validations against the public MCP surfaces, and update `docs/publication/status/*` with real approval/listing evidence.
+>
+> TODO: Treat temporal retrieval as a product contract on hosted/public research and conversation surfaces. If a future change reintroduces silent `dense_only` degradation on those paths, fix the architecture and health/readiness reporting before changing marketplace copy.
 ---
 # Agentic Memory Repo Guide For Agents
 

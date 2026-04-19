@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from am_server.auth import require_auth
 from am_server.dependencies import get_conversation_pipeline
 from am_server.models import ConversationIngestRequest
+from agentic_memory.server.temporal_contract import TemporalRetrievalRequiredError
 from agentic_memory.server.tools import search_conversation_turns_sync
 
 logger = logging.getLogger(__name__)
@@ -64,7 +65,7 @@ async def search_conversations(
     limit: int = Query(10, ge=1, le=50, description="Max results to return"),
     as_of: str | None = Query(None, description="Optional ISO-8601 temporal cutoff"),
 ) -> dict:
-    """Search conversation turns by semantic similarity (vector + fallback).
+    """Search conversation turns by semantic similarity with a fail-closed temporal contract.
 
     Embeds ``q`` through the pipeline embedding service, queries the
     ``chat_embeddings`` index, and falls back to text search if embedding
@@ -78,8 +79,7 @@ async def search_conversations(
         as_of: Optional ISO-8601 cutoff for temporal queries.
 
     Returns:
-        Dict with key ``results`` (list of hits). On unexpected errors, logs
-        and returns an empty ``results`` list without raising.
+        Dict with key ``results`` (list of hits).
     """
     pipeline = get_conversation_pipeline()
     try:
@@ -95,11 +95,20 @@ async def search_conversations(
                 limit=limit,
                 as_of=as_of,
                 log_prefix="/search/conversations",
+                temporal_required=True,
             )
 
         results = await loop.run_in_executor(None, lambda: ctx.run(_query))
+    except TemporalRetrievalRequiredError as exc:
+        raise HTTPException(status_code=503, detail=exc.to_http_detail()) from exc
     except Exception:
         logger.exception("search_conversations failed")
-        results = []
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "conversation_search_failed",
+                "message": "Conversation search failed unexpectedly.",
+            },
+        ) from None
 
     return {"results": results}

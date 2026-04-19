@@ -8,6 +8,13 @@
 [ ] Add CLI support for `codememory --version`
 ## Next Session Reminder
 
+- [ ] Make temporal retrieval a true first-class requirement instead of an optional fallback:
+  - [x] Audit every `dense_only` / `temporal_fallback` path under `src/agentic_memory/server/` and decide which routes must fail closed instead of silently degrading
+  - [x] Remove or redesign wording that treats the temporal layer as merely “additive”, “shadow-mode”, or “when the bridge is available” in product-facing docs
+  - [x] Define the required runtime contract for temporal availability in hosted/public surfaces (`am-server`, public MCP, Claude/OpenAI connectors)
+  - [x] Update tests that currently normalize temporal absence as acceptable behavior when that behavior conflicts with product positioning
+  - [x] Capture the cutover plan in `.planning/` before widening marketplace positioning around time-aware memory
+
 - [ ] Finish the current managed-hosted publication wave from the now-live public hosts:
   - [x] Run a real ChatGPT developer-mode connection against `https://mcp.agentmemorylabs.com/mcp-openai`
   - [x] Capture ChatGPT screenshots from the actual connected surface

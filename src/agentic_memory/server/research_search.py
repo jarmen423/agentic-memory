@@ -1,4 +1,16 @@
-"""Research/web retrieval helpers with optional learned reranking."""
+"""Research/web retrieval helpers for temporal-first public retrieval.
+
+The public product contract for research memory is now:
+
+- dense/vector retrieval may still seed the candidate set,
+- temporal graph retrieval is the authoritative ranking path, and
+- public/hosted callers must receive an explicit failure when the temporal path
+  cannot run instead of a success-looking dense fallback.
+
+Internal callers can still decide how to handle the raised
+``TemporalRetrievalRequiredError``; this module no longer hides that failure by
+quietly returning baseline rows.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +23,7 @@ from agentic_memory.server.reranking import (
     candidate_limit_for_domain,
     rerank_documents,
 )
+from agentic_memory.server.temporal_contract import TemporalRetrievalRequiredError
 from agentic_memory.temporal.seeds import (
     collect_seed_entities,
     extract_query_seed_entities,
@@ -196,7 +209,15 @@ def search_research(
     as_of: str | None,
     high_stakes: bool = False,
 ) -> list[dict[str, Any]]:
-    """Run research retrieval with temporal enrichment and optional reranking."""
+    """Run research retrieval with temporal graph ranking as the required path.
+
+    Dense/vector search still generates the initial candidate window because the
+    temporal graph needs seeds to walk from. Once that baseline exists, the
+    temporal path is required for any caller relying on the public research
+    retrieval contract. If the bridge is unavailable, no project scope can be
+    inferred, no temporal seeds can be produced, or the bridge returns no
+    results, this function raises ``TemporalRetrievalRequiredError``.
+    """
 
     safe_limit = max(1, int(limit))
     candidate_limit = candidate_limit_for_domain("web", default=max(safe_limit, 30))
@@ -248,78 +269,12 @@ def search_research(
 
     bridge = pipeline.__dict__.get("_temporal_bridge") if hasattr(pipeline, "__dict__") else None
     project_id = dominant_project_id(baseline_rows)
-    candidate_rows = baseline_rows
-    mode = "dense_only"
-    temporal_applied = False
+    candidate_rows: list[dict[str, Any]] = []
+    mode = "temporal_graph"
+    temporal_applied = True
     notes: list[str] = []
 
-    if bridge is not None and bridge.is_available() and project_id is not None:
-        seeds = collect_seed_entities(baseline_rows, limit=5)
-        if not seeds:
-            try:
-                seeds = extract_query_seed_entities(query, pipeline._extractor)  # type: ignore[attr-defined]
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("search_research query seed extraction failed: %s", exc)
-                seeds = []
-
-        if seeds:
-            try:
-                temporal_payload = bridge.retrieve(
-                    project_id=project_id,
-                    seed_entities=seeds,
-                    as_of_us=parse_as_of_to_micros(as_of),
-                    max_edges=max(candidate_limit * 2, candidate_limit),
-                )
-                temporal_results = temporal_payload.get("results") or []
-                if temporal_results:
-                    candidate_rows = _normalize_temporal_results(
-                        temporal_results,
-                        project_id=project_id,
-                    )
-                    mode = "temporal_graph"
-                    temporal_applied = True
-                    notes.append("Temporal graph enrichment supplied the rerank candidate set.")
-                else:
-                    logger.info(
-                        "web_search_fallback",
-                        extra={
-                            "event": "temporal_fallback",
-                            "request_id": get_request_id(),
-                            "memory_module": "web",
-                            "provider": getattr(pipeline._embedder, "provider", None),
-                            "fallback": "empty_temporal_result",
-                            "error_type": None,
-                        },
-                    )
-                    notes.append("Temporal graph returned no results; dense baseline was used.")
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("search_research falling back after temporal failure: %s", exc)
-                logger.warning(
-                    "web_search_fallback",
-                    extra={
-                        "event": "temporal_fallback",
-                        "request_id": get_request_id(),
-                        "memory_module": "web",
-                        "provider": getattr(pipeline._embedder, "provider", None),
-                        "fallback": "temporal_retrieve_failed",
-                        "error_type": type(exc).__name__,
-                    },
-                )
-                notes.append(f"Temporal retrieval failed; dense baseline was used ({type(exc).__name__}).")
-        else:
-            logger.info(
-                "web_search_fallback",
-                extra={
-                    "event": "temporal_fallback",
-                    "request_id": get_request_id(),
-                    "memory_module": "web",
-                    "provider": getattr(pipeline._embedder, "provider", None),
-                    "fallback": "no_temporal_seeds",
-                    "error_type": None,
-                },
-            )
-            notes.append("No temporal seeds were available; dense baseline was used.")
-    else:
+    def _raise_temporal_error(*, reason: str, message: str, error_type: str | None = None) -> None:
         logger.info(
             "web_search_fallback",
             extra={
@@ -327,11 +282,73 @@ def search_research(
                 "request_id": get_request_id(),
                 "memory_module": "web",
                 "provider": getattr(pipeline._embedder, "provider", None),
-                "fallback": "temporal_bridge_unavailable",
-                "error_type": None,
+                "fallback": reason,
+                "error_type": error_type,
             },
         )
-        notes.append("Temporal bridge unavailable or project scope missing; dense baseline was used.")
+        raise TemporalRetrievalRequiredError(
+            module="web",
+            reason=reason,
+            message=message,
+            details={
+                "project_id": project_id,
+                "as_of": as_of,
+            },
+        )
+
+    if bridge is None or not bridge.is_available():
+        _raise_temporal_error(
+            reason="temporal_bridge_unavailable",
+            message="Temporal research retrieval is required, but the temporal bridge is unavailable.",
+        )
+
+    if project_id is None:
+        _raise_temporal_error(
+            reason="missing_project_scope",
+            message="Temporal research retrieval is required, but no project-scoped research context could be inferred.",
+        )
+
+    seeds = collect_seed_entities(baseline_rows, limit=5)
+    if not seeds:
+        try:
+            seeds = extract_query_seed_entities(query, pipeline._extractor)  # type: ignore[attr-defined]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("search_research query seed extraction failed: %s", exc)
+            seeds = []
+
+    if not seeds:
+        _raise_temporal_error(
+            reason="no_temporal_seeds",
+            message="Temporal research retrieval is required, but no temporal seed entities were available for the query.",
+        )
+
+    try:
+        temporal_payload = bridge.retrieve(
+            project_id=project_id,
+            seed_entities=seeds,
+            as_of_us=parse_as_of_to_micros(as_of),
+            max_edges=max(candidate_limit * 2, candidate_limit),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("search_research failed during temporal retrieval: %s", exc)
+        _raise_temporal_error(
+            reason="temporal_retrieve_failed",
+            message="Temporal research retrieval failed before a ranked result set could be produced.",
+            error_type=type(exc).__name__,
+        )
+
+    temporal_results = temporal_payload.get("results") or []
+    if not temporal_results:
+        _raise_temporal_error(
+            reason="empty_temporal_result",
+            message="Temporal research retrieval completed but returned no temporal results for this query.",
+        )
+
+    candidate_rows = _normalize_temporal_results(
+        temporal_results,
+        project_id=project_id,
+    )
+    notes.append("Temporal graph enrichment supplied the rerank candidate set.")
 
     reranked_rows, rerank_response = _apply_research_rerank(
         query,

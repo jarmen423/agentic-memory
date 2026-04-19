@@ -17,7 +17,7 @@ progress:
 **Last Updated:** 2026-04-19
 **Current Phase:** 17
 **Phase Status:** Phase 17 active; hosted beta platform + dual-mode deployment is now the live OpenClaw delivery track
-**Last Session Stopped At:** Phase 17 is still the active operational track, but the immediate publication state has moved forward: the managed backend and public MCP hosts are live, OAuth-backed OpenAI review flow is working, the ChatGPT app was submitted for OpenAI review on 2026-04-19, and the next publication-critical work is waiting for OpenAI review feedback while Anthropic validation/submission remains outstanding. Phase 16 remains archived under `.planning/execution/archive/w16-openclaw-whole-stack-onboarding/`. Phase 10 still needs live manual verification from the runbooks, and Phase 11 remains resumable from `.planning/execution/archive/w11-calls/`.
+**Last Session Stopped At:** Phase 17 is still the active operational track, but the publication lane exposed an architectural mismatch: public messaging treated temporal retrieval as first-class while research and conversation surfaces could still degrade to `dense_only`. Phase 17.1 is now inserted as the immediate follow-on cutover so hosted/public research, conversation, and unified retrieval fail closed when temporal infrastructure is unavailable. OpenAI review remains pending, Anthropic validation/submission remains active, and Phase 16 stays archived under `.planning/execution/archive/w16-openclaw-whole-stack-onboarding/`.
 
 ---
 
@@ -25,7 +25,7 @@ progress:
 
 **Phase 16: OpenClaw Whole-Stack Onboarding**
 
-**Next Action:** Keep Phase 17 active, but treat OpenAI review follow-up and Anthropic validation/submission as the immediate publication lane. Do not widen the public tool/auth contract while OpenAI review is pending unless a reviewer issue forces a change.
+**Next Action:** Execute Phase 17.1 to finish the temporal-first retrieval cutover across research, conversation, unified/public retrieval, and onboarding truth surfaces. Keep Phase 17 active for hosted/publication operations, but do not claim public temporal capability unless the fail-closed contract and health/readiness reporting are both in place.
 
 ---
 

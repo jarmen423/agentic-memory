@@ -41,6 +41,7 @@ server via :func:`run_server`.
 
 import os
 import atexit
+import inspect
 import logging
 import time
 import re
@@ -52,6 +53,7 @@ from pathlib import Path
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.server import Context
 import neo4j
 from agentic_memory.core.extraction_llm import resolve_extraction_llm_config
 from agentic_memory.core.request_context import get_request_id
@@ -63,6 +65,10 @@ from agentic_memory.server.code_search import (
     search_code,
 )
 from agentic_memory.server.research_search import search_research
+from agentic_memory.server.temporal_contract import (
+    TemporalRetrievalRequiredError,
+    temporal_error_string,
+)
 from agentic_memory.server.unified_search import search_all_memory_sync
 from agentic_memory.telemetry import TelemetryStore, resolve_telemetry_db_path
 from agentic_memory.trace.service import TraceExecutionService
@@ -105,29 +111,37 @@ def rate_limit(func):
     Returns:
         Wrapped function with the same call signature.
     """
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        # One deque-like list per tool name; trimmed on each call.
+    def _check_and_record() -> Optional[str]:
         key = func.__name__
         now = datetime.now()
-        
-        # Initialize or clean old requests
         if key not in _request_log:
             _request_log[key] = []
-        
-        # Remove requests outside the window
         window_start = now - timedelta(seconds=RATE_LIMIT_WINDOW)
         _request_log[key] = [t for t in _request_log[key] if t > window_start]
-        
-        # Check if rate limit exceeded
         if len(_request_log[key]) >= RATE_LIMIT_REQUESTS:
-            logger.warning(f"Rate limit exceeded for {key}")
+            logger.warning("Rate limit exceeded for %s", key)
             return "❌ Rate limit exceeded. Please try again later."
-        
-        # Log this request
         _request_log[key].append(now)
-        
+        return None
+
+    if inspect.iscoroutinefunction(func):
+
+        @wraps(func)
+        async def awrapper(*args, **kwargs):
+            blocked = _check_and_record()
+            if blocked is not None:
+                return blocked
+            return await func(*args, **kwargs)
+
+        return awrapper
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        blocked = _check_and_record()
+        if blocked is not None:
+            return blocked
         return func(*args, **kwargs)
+
     return wrapper
 
 
@@ -154,22 +168,40 @@ def log_tool_call(func):
         func: The MCP tool function to wrap.
 
     Returns:
-        The wrapped function with identical signature.
+        An **async** wrapper (MCP tools may stay sync inside) that binds the
+        workspace from :func:`mcp_workspace.bind_workspace_for_tool_call` before
+        each invocation.
     """
     @wraps(func)
-    def wrapper(*args, **kwargs):
+    async def wrapper(*args, **kwargs):
+        from agentic_memory import mcp_workspace as mw
+
+        ctx = kwargs.get("ctx")
         start_time = time.time()
         tool_name = func.__name__
         client_id = os.getenv("CODEMEMORY_CLIENT", "unknown")
-        repo_root = str(_repo_override) if _repo_override else None
-        
-        logger.info(f"🔧 Tool called: {tool_name}")
-        logger.debug(f"   Args: {args}, Kwargs: {kwargs}")
-        
+        reset_token = None
+        repo_root: str | None = None
+
+        logger.info("🔧 Tool called: %s", tool_name)
+        logger.debug("   Args: %s, Kwargs: %s", args, kwargs)
+
         try:
-            result = func(*args, **kwargs)
+            _, reset_token = await mw.bind_workspace_for_tool_call(ctx)
+            br = mw.get_bound_repo_root()
+            repo_root = (
+                str(br)
+                if br is not None
+                else (str(_repo_override) if _repo_override else None)
+            )
+
+            if inspect.iscoroutinefunction(func):
+                result = await func(*args, **kwargs)
+            else:
+                result = func(*args, **kwargs)
+
             duration = time.time() - start_time
-            logger.info(f"✅ Tool {tool_name} completed in {duration:.2f}s")
+            logger.info("✅ Tool %s completed in %.2fs", tool_name, duration)
             if telemetry_store:
                 try:
                     telemetry_store.record_tool_call(
@@ -181,11 +213,11 @@ def log_tool_call(func):
                         repo_root=repo_root,
                     )
                 except Exception as telemetry_error:
-                    logger.warning(f"⚠️ Telemetry write failed for {tool_name}: {telemetry_error}")
+                    logger.warning("⚠️ Telemetry write failed for %s: %s", tool_name, telemetry_error)
             return result
         except Exception as e:
             duration = time.time() - start_time
-            logger.error(f"❌ Tool {tool_name} failed after {duration:.2f}s: {e}")
+            logger.error("❌ Tool %s failed after %.2fs: %s", tool_name, duration, e)
             if telemetry_store:
                 try:
                     telemetry_store.record_tool_call(
@@ -197,8 +229,12 @@ def log_tool_call(func):
                         repo_root=repo_root,
                     )
                 except Exception as telemetry_error:
-                    logger.warning(f"⚠️ Telemetry write failed for {tool_name}: {telemetry_error}")
+                    logger.warning("⚠️ Telemetry write failed for %s: %s", tool_name, telemetry_error)
             raise
+        finally:
+            if reset_token is not None:
+                mw.reset_repo_binding(reset_token)
+
     return wrapper
 
 
@@ -225,12 +261,77 @@ def _init_telemetry(repo_root: Optional[Path]) -> None:
     logger.info(f"🧾 Telemetry writing to {db_path}")
 
 
+def resolve_process_repo_root() -> Path:
+    """Default repo root when MCP workspace binding is inactive (CLI, tests, env)."""
+    from agentic_memory.config import find_repo_root
+
+    if _repo_override:
+        return _repo_override.resolve()
+    repo_root_env = os.getenv("CODEMEMORY_REPO")
+    if repo_root_env:
+        return Path(repo_root_env).expanduser().resolve()
+    return find_repo_root()
+
+
+def neo4j_connection_triple_for_repo(repo_root: Path) -> tuple[str, str, str]:
+    """Return Bolt URI and credentials for a repo (``config.json`` or process env)."""
+    from agentic_memory.config import Config
+
+    cfg = Config(repo_root)
+    if cfg.exists():
+        neo4j_cfg = cfg.get_neo4j_config()
+        return str(neo4j_cfg["uri"]), str(neo4j_cfg["user"]), str(neo4j_cfg["password"])
+    return (
+        os.getenv("NEO4J_URI", "bolt://localhost:7687"),
+        os.getenv("NEO4J_USER") or os.getenv("NEO4J_USERNAME", "neo4j"),
+        os.getenv("NEO4J_PASSWORD", "password"),
+    )
+
+
+def _create_knowledge_graph_for_path(repo_root: Path) -> KnowledgeGraphBuilder:
+    """Construct a code-memory graph for one resolved repository root."""
+    from agentic_memory.config import Config
+
+    config = Config(repo_root)
+
+    if config.exists():
+        logger.info(f"📂 Using config from: {config.config_file}")
+    else:
+        logger.info("🔧 Using environment variables for configuration")
+
+    uri, user, password = neo4j_connection_triple_for_repo(repo_root)
+
+    runtime = resolve_embedding_runtime(
+        "code",
+        config=config if config.exists() else None,
+        repo_root=repo_root,
+    )
+    if not runtime.api_key:
+        logger.warning(
+            "⚠️ Code embedding API key not set for provider '%s' - semantic code search will not work",
+            runtime.provider,
+        )
+
+    builder = KnowledgeGraphBuilder(
+        uri=uri,
+        user=user,
+        password=password,
+        openai_key=None,
+        config=config if config.exists() else None,
+        repo_root=repo_root,
+    )
+    logger.info(f"✅ Connected to Neo4j at {uri}")
+    return builder
+
+
 def init_graph():
     """Build the global :class:`~agentic_memory.ingestion.graph.KnowledgeGraphBuilder`.
 
     Resolution order for repo root: ``_repo_override`` (from :func:`run_server`),
     ``CODEMEMORY_REPO``, then :func:`agentic_memory.config.find_repo_root`.
     Neo4j credentials come from per-repo ``Config`` when present, else env vars.
+
+    Per-request MCP workspace roots override this via :mod:`agentic_memory.mcp_workspace`.
 
     Returns:
         The connected ``KnowledgeGraphBuilder`` instance assigned to ``graph``.
@@ -241,63 +342,34 @@ def init_graph():
     """
     global graph
 
-    # Prefer codememory config files when the repo is known — keeps teams on one source of truth.
-    from agentic_memory.config import find_repo_root, Config
-
-    repo_root_env = os.getenv("CODEMEMORY_REPO")
-    if _repo_override:
-        repo_root = _repo_override.resolve()
-    elif repo_root_env:
-        repo_root = Path(repo_root_env).expanduser().resolve()
-    else:
-        repo_root = find_repo_root()
-    config = Config(repo_root) if repo_root else None
-
-    if config and config.exists():
-        # Use per-repo config
-        neo4j_cfg = config.get_neo4j_config()
-        uri = neo4j_cfg["uri"]
-        user = neo4j_cfg["user"]
-        password = neo4j_cfg["password"]
-        logger.info(f"📂 Using config from: {config.config_file}")
-    else:
-        # Fall back to environment variables
-        uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-        user = os.getenv("NEO4J_USER") or os.getenv("NEO4J_USERNAME", "neo4j")
-        password = os.getenv("NEO4J_PASSWORD", "password")
-        logger.info("🔧 Using environment variables for configuration")
-
-    runtime = resolve_embedding_runtime(
-        "code",
-        config=config if config and config.exists() else None,
-        repo_root=repo_root,
-    )
-    if not runtime.api_key:
-        logger.warning(
-            "⚠️ Code embedding API key not set for provider '%s' - semantic code search will not work",
-            runtime.provider,
-        )
-
-    graph = KnowledgeGraphBuilder(
-        uri=uri,
-        user=user,
-        password=password,
-        openai_key=None,
-        config=config if config and config.exists() else None,
-        repo_root=repo_root,
-    )
-    logger.info(f"✅ Connected to Neo4j at {uri}")
+    graph = _create_knowledge_graph_for_path(resolve_process_repo_root())
     return graph
 
 
 def get_graph() -> Optional[KnowledgeGraphBuilder]:
-    """Return ``graph``, calling :func:`init_graph` on first use.
+    """Return a graph for the current MCP workspace binding or the process singleton.
+
+    When the MCP client supplies workspace roots (or an explicit binding was set),
+    returns a cached :class:`~agentic_memory.ingestion.graph.KnowledgeGraphBuilder`
+    for that repository. Otherwise uses the legacy lazy singleton from
+    :func:`init_graph`.
 
     Returns:
         A live builder, or ``None`` if initialization raised (connection errors
         are logged; tools should surface a friendly message to the agent).
     """
     global graph
+
+    from agentic_memory import mcp_workspace as mw
+
+    bound = mw.get_bound_repo_root()
+    if bound is not None:
+        try:
+            return mw.get_or_create_cached(bound, _create_knowledge_graph_for_path, mw.graph_cache())
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize graph for bound repo {bound}: {e}")
+            return None
+
     if graph is not None:
         return graph
 
@@ -550,6 +622,7 @@ def search_codebase(
     domain: str = "code",
     repo_id: str | None = None,
     retrieval_policy: str = SAFE_RETRIEVAL_POLICY,
+    ctx: Context | None = None,
 ) -> str:
     """
     Semantically search the codebase for functionality.
@@ -689,7 +762,11 @@ def search_codebase(
 @mcp.tool()
 @rate_limit
 @log_tool_call
-def get_file_dependencies(file_path: str, repo_id: str | None = None) -> str:
+def get_file_dependencies(
+    file_path: str,
+    repo_id: str | None = None,
+    ctx: Context | None = None,
+) -> str:
     """
     Returns a list of files that this file IMPORTS and files that IMPORT this file.
 
@@ -744,7 +821,10 @@ def get_file_dependencies(file_path: str, repo_id: str | None = None) -> str:
 @mcp.tool()
 @rate_limit
 @log_tool_call
-def create_memory_entities(entities: List[Dict[str, Any]]) -> str:
+def create_memory_entities(
+    entities: List[Dict[str, Any]],
+    ctx: Context | None = None,
+) -> str:
     """Create or update agent-authored memory entities."""
     current_graph = get_graph()
     if not current_graph:
@@ -766,7 +846,10 @@ def create_memory_entities(entities: List[Dict[str, Any]]) -> str:
 @mcp.tool()
 @rate_limit
 @log_tool_call
-def create_memory_relations(relations: List[Dict[str, Any]]) -> str:
+def create_memory_relations(
+    relations: List[Dict[str, Any]],
+    ctx: Context | None = None,
+) -> str:
     """Create typed relations between memory entities."""
     current_graph = get_graph()
     if not current_graph:
@@ -788,7 +871,10 @@ def create_memory_relations(relations: List[Dict[str, Any]]) -> str:
 @mcp.tool()
 @rate_limit
 @log_tool_call
-def add_memory_observations(observations: List[Dict[str, Any]]) -> str:
+def add_memory_observations(
+    observations: List[Dict[str, Any]],
+    ctx: Context | None = None,
+) -> str:
     """Append observations to existing memory entities."""
     current_graph = get_graph()
     if not current_graph:
@@ -810,7 +896,10 @@ def add_memory_observations(observations: List[Dict[str, Any]]) -> str:
 @mcp.tool()
 @rate_limit
 @log_tool_call
-def delete_memory_entities(entity_names: List[str]) -> str:
+def delete_memory_entities(
+    entity_names: List[str],
+    ctx: Context | None = None,
+) -> str:
     """Delete memory entities by name."""
     current_graph = get_graph()
     if not current_graph:
@@ -832,7 +921,10 @@ def delete_memory_entities(entity_names: List[str]) -> str:
 @mcp.tool()
 @rate_limit
 @log_tool_call
-def delete_memory_relations(relations: List[Dict[str, Any]]) -> str:
+def delete_memory_relations(
+    relations: List[Dict[str, Any]],
+    ctx: Context | None = None,
+) -> str:
     """Delete typed relations between memory entities."""
     current_graph = get_graph()
     if not current_graph:
@@ -854,7 +946,10 @@ def delete_memory_relations(relations: List[Dict[str, Any]]) -> str:
 @mcp.tool()
 @rate_limit
 @log_tool_call
-def delete_memory_observations(observations: List[Dict[str, Any]]) -> str:
+def delete_memory_observations(
+    observations: List[Dict[str, Any]],
+    ctx: Context | None = None,
+) -> str:
     """Delete observations from memory entities."""
     current_graph = get_graph()
     if not current_graph:
@@ -876,7 +971,11 @@ def delete_memory_observations(observations: List[Dict[str, Any]]) -> str:
 @mcp.tool()
 @rate_limit
 @log_tool_call
-def search_memory_nodes(query: str, limit: int = 5) -> str:
+def search_memory_nodes(
+    query: str,
+    limit: int = 5,
+    ctx: Context | None = None,
+) -> str:
     """Search agent-authored memory entities."""
     current_graph = get_graph()
     if not current_graph:
@@ -898,7 +997,7 @@ def search_memory_nodes(query: str, limit: int = 5) -> str:
 @mcp.tool()
 @rate_limit
 @log_tool_call
-def read_memory_graph() -> str:
+def read_memory_graph(ctx: Context | None = None) -> str:
     """Return a summary of the current memory graph."""
     current_graph = get_graph()
     if not current_graph:
@@ -918,7 +1017,11 @@ def read_memory_graph() -> str:
 @mcp.tool()
 @rate_limit
 @log_tool_call
-def backfill_memory_embeddings(limit: int = 100, only_missing: bool = True) -> str:
+def backfill_memory_embeddings(
+    limit: int = 100,
+    only_missing: bool = True,
+    ctx: Context | None = None,
+) -> str:
     """Backfill vector embeddings for existing memory entities."""
     current_graph = get_graph()
     if not current_graph:
@@ -940,7 +1043,11 @@ def backfill_memory_embeddings(limit: int = 100, only_missing: bool = True) -> s
 @mcp.tool()
 @rate_limit
 @log_tool_call
-def get_git_file_history(file_path: str, limit: int = 20) -> str:
+def get_git_file_history(
+    file_path: str,
+    limit: int = 20,
+    ctx: Context | None = None,
+) -> str:
     """
     Return commit history for a file from the git graph domain.
 
@@ -981,7 +1088,11 @@ def get_git_file_history(file_path: str, limit: int = 20) -> str:
 @mcp.tool()
 @rate_limit
 @log_tool_call
-def get_commit_context(sha: str, include_diff_stats: bool = True) -> str:
+def get_commit_context(
+    sha: str,
+    include_diff_stats: bool = True,
+    ctx: Context | None = None,
+) -> str:
     """
     Return detailed context for a commit SHA from the git graph domain.
 
@@ -1027,7 +1138,12 @@ def get_commit_context(sha: str, include_diff_stats: bool = True) -> str:
 @mcp.tool()
 @rate_limit
 @log_tool_call
-def identify_impact(file_path: str, max_depth: int = 3, repo_id: str | None = None) -> str:
+def identify_impact(
+    file_path: str,
+    max_depth: int = 3,
+    repo_id: str | None = None,
+    ctx: Context | None = None,
+) -> str:
     """
     Identify the blast radius of changes to a file.
 
@@ -1093,7 +1209,11 @@ def identify_impact(file_path: str, max_depth: int = 3, repo_id: str | None = No
 @mcp.tool()
 @rate_limit
 @log_tool_call
-def get_file_info(file_path: str, repo_id: str | None = None) -> str:
+def get_file_info(
+    file_path: str,
+    repo_id: str | None = None,
+    ctx: Context | None = None,
+) -> str:
     """
     Get detailed information about a file including its entities and relationships.
 
@@ -1186,6 +1306,7 @@ def trace_execution_path(
     max_depth: int = 2,
     force_refresh: bool = False,
     repo_id: str | None = None,
+    ctx: Context | None = None,
 ) -> str:
     """Trace one function's behavioral path on demand.
 
@@ -1260,28 +1381,13 @@ def trace_execution_path(
 
 
 # ---------------------------------------------------------------------------
-# Research pipeline (lazy singleton)
+# Research pipeline (per-repo cache; aligns with MCP workspace roots)
 # ---------------------------------------------------------------------------
 
-_research_pipeline = None
 
-
-def _get_research_pipeline():
-    """Return a singleton :class:`~agentic_memory.web.pipeline.ResearchIngestionPipeline`.
-
-    Returns:
-        Pipeline instance, or ``None`` when embedding or LLM configuration is
-        missing (tools must return a clear configuration error to the agent).
-    """
-    global _research_pipeline
-    if _research_pipeline is not None:
-        return _research_pipeline
-
+def _build_research_pipeline_for_repo_root(repo_root: Path):
+    """Construct a web research pipeline for one repository root."""
     extraction_llm = resolve_extraction_llm_config()
-    neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-    neo4j_user = os.getenv("NEO4J_USER") or os.getenv("NEO4J_USERNAME", "neo4j")
-    neo4j_password = os.getenv("NEO4J_PASSWORD", "password")
-
     if not extraction_llm.api_key:
         logger.error("Extraction LLM API key not set — research pipeline unavailable")
         return None
@@ -1298,20 +1404,33 @@ def _get_research_pipeline():
         logger.error("Embedding runtime unavailable — %s", exc)
         return None
 
-    conn = ConnectionManager(neo4j_uri, neo4j_user, neo4j_password)
+    uri, user, password = neo4j_connection_triple_for_repo(repo_root)
+    conn = ConnectionManager(uri, user, password)
     extractor = EntityExtractionService(
         api_key=extraction_llm.api_key,
         model=extraction_llm.model,
         provider=extraction_llm.provider,
         base_url=extraction_llm.base_url,
     )
-    _research_pipeline = ResearchIngestionPipeline(
+    return ResearchIngestionPipeline(
         conn,
         embedder,
         extractor,
         temporal_bridge=get_temporal_bridge(),
     )
-    return _research_pipeline
+
+
+def _get_research_pipeline():
+    """Return a :class:`~agentic_memory.web.pipeline.ResearchIngestionPipeline` for the active repo.
+
+    Returns:
+        Pipeline instance, or ``None`` when embedding or LLM configuration is
+        missing (tools must return a clear configuration error to the agent).
+    """
+    from agentic_memory import mcp_workspace as mw
+
+    rr = mw.effective_repo_root_for_mcp()
+    return mw.get_or_create_cached(rr, _build_research_pipeline_for_repo_root, mw.research_pipeline_cache())
 
 
 # ---------------------------------------------------------------------------
@@ -1440,6 +1559,7 @@ def memory_ingest_research(
     confidence: str = None,
     findings: list = None,
     citations: list = None,
+    ctx: Context | None = None,
 ) -> str:
     """
     ALWAYS call this tool when you complete any research task, analysis,
@@ -1717,7 +1837,12 @@ def _format_unified_search_results(payload: dict[str, Any]) -> str:
 @mcp.tool()
 @rate_limit
 @log_tool_call
-def search_web_memory(query: str, limit: int = 5, as_of: str | None = None) -> str:
+def search_web_memory(
+    query: str,
+    limit: int = 5,
+    as_of: str | None = None,
+    ctx: Context | None = None,
+) -> str:
     """
     Search web research memory for relevant reports, findings, and research content.
 
@@ -1751,6 +1876,9 @@ def search_web_memory(query: str, limit: int = 5, as_of: str | None = None) -> s
         if not results:
             return "No relevant research found."
         return validate_tool_output(_format_research_results(results))
+    except TemporalRetrievalRequiredError as exc:
+        logger.warning("Research search temporal contract failed: %s", exc)
+        return temporal_error_string(exc)
     except Exception as e:
         logger.error("Research search failed: %s", e)
         return f"Error: Research search failed: {str(e)}"
@@ -1766,13 +1894,14 @@ def search_all_memory(
     repo_id: str | None = None,
     as_of: str | None = None,
     modules: str | None = None,
+    ctx: Context | None = None,
 ) -> str:
     """Search code, research, and conversation memory in one unified ranked response.
 
     Delegates merging and sorting to :func:`agentic_memory.server.unified_search.search_all_memory_sync`,
-    then formats the structured payload for MCP text consumption. Missing
-    optional pipelines (no graph, no research embedder, etc.) simply omit that
-    slice of results rather than failing the entire call.
+    then formats the structured payload for MCP text consumption. Public hosted
+    contracts use ``fail_on_temporal_errors=True`` so research and conversation
+    retrieval cannot silently degrade.
 
     Args:
         query: Natural-language query.
@@ -1793,24 +1922,33 @@ def search_all_memory(
         requested_modules = [part.strip() for part in modules.split(",") if part.strip()]
 
     # Structured merge in unified_search; string formatting stays in this MCP layer.
-    payload = search_all_memory_sync(
-        query=query,
-        limit=limit,
-        project_id=project_id,
-        repo_id=repo_id,
-        as_of=as_of,
-        modules=requested_modules,
-        graph=current_graph,
-        research_pipeline=research_pipeline,
-        conversation_pipeline=_get_mcp_conversation_pipeline(),
-    ).to_dict()
+    try:
+        payload = search_all_memory_sync(
+            query=query,
+            limit=limit,
+            project_id=project_id,
+            repo_id=repo_id,
+            as_of=as_of,
+            modules=requested_modules,
+            graph=current_graph,
+            research_pipeline=research_pipeline,
+            conversation_pipeline=_get_mcp_conversation_pipeline(),
+            fail_on_temporal_errors=True,
+        ).to_dict()
+    except TemporalRetrievalRequiredError as exc:
+        logger.warning("Unified search temporal contract failed: %s", exc)
+        return temporal_error_string(exc)
     return validate_tool_output(_format_unified_search_results(payload))
 
 
 @mcp.tool()
 @rate_limit
 @log_tool_call
-def brave_search(query: str, count: int = 10) -> str:
+def brave_search(
+    query: str,
+    count: int = 10,
+    ctx: Context | None = None,
+) -> str:
     """
     Search the web for current information using Brave Search.
 

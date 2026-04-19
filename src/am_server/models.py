@@ -102,6 +102,9 @@ class OpenClawOnboardingReadinessModel(BaseModel):
     setup_ready: bool
     capture_only_ready: bool
     augment_context_ready: bool
+    public_mcp_temporal_status: str = "unknown"
+    public_mcp_temporal_ready: bool = False
+    public_mcp_publication_ready: bool = False
     required_healthy: int
     required_total: int
     optional_healthy: int

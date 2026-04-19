@@ -644,5 +644,23 @@ Plans:
 - managed-mode wording can easily leak operator concerns back into the user path if setup and docs are not split cleanly from the self-hosted runbooks
 - using the current GCP VM as the first managed beta target is pragmatic but still requires explicit operator procedures for secrets, backups, and resizing so the hosted story stays honest
 
+### Phase 17.1: Temporal-First Retrieval Cutover
+
+**Goal:** Make research and conversation retrieval genuinely temporal-first on hosted/public surfaces so the product can honestly claim graph-backed, time-aware memory instead of silently degrading to dense-only results.
+
+**Status:** Active follow-on phase inserted after Phase 17
+
+**Scope:**
+- research memory retrieval
+- conversation memory retrieval
+- unified/public retrieval surfaces built on those modules
+- hosted/public MCP + REST health and readiness contract
+
+**Success Criteria:**
+- no public hosted retrieval surface in scope returns a normal-looking success response after silently degrading from temporal-first to dense-only
+- `/health/onboarding` exposes temporal readiness truth for public MCP publication separately from plugin capture-only onboarding
+- product/publication docs stop describing temporal retrieval as merely additive on the public contract
+- code retrieval remains unchanged and out of scope for this cutover
+
 ---
-*Last updated: 2026-04-13 after Phase 17 (OpenClaw hosted beta platform + dual-mode deployment) was activated as the current delivery track (total phases: 17)*
+*Last updated: 2026-04-19 after Phase 17 stayed active for hosted/publication work and Phase 17.1 (Temporal-First Retrieval Cutover) was inserted as the next architecture-critical follow-on (total phases: 17 + decimal phase 17.1)*

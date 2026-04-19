@@ -92,5 +92,5 @@ npm run start --workspace am-sync-neo4j
 ## Relationship to current retrieval
 
 - research and conversation search can use the temporal bridge directly
-- Neo4j shadow sync is still useful for inspection and some fallback-oriented verification
-- the temporal sidecar remains additive; baseline retrieval still matters and is still tested
+- Neo4j shadow sync is still useful for inspection and for explicitly non-primary/internal verification paths
+- hosted/public research and conversation retrieval are now temporal-first contracts; if the temporal bridge is unavailable those surfaces should fail closed instead of silently degrading to baseline-only results

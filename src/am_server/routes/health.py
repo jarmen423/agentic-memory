@@ -150,6 +150,35 @@ def _oauth_bootstrap_user_count() -> int:
     return count
 
 
+def _public_temporal_publication_status() -> tuple[str, bool]:
+    """Summarize whether public MCP retrieval can honestly claim temporal readiness.
+
+    Public hosted retrieval depends on both conversation and research pipelines
+    advertising an available temporal bridge in their warmed runtime details.
+    This is stricter than OpenClaw capture-only readiness on purpose.
+    """
+
+    conversation_record = _component_record("openclaw_memory")
+    research_record = _component_record("openclaw_context_engine")
+
+    def _bridge_ready(record: dict[str, Any]) -> bool | None:
+        details = record.get("details")
+        if not isinstance(details, dict):
+            return None
+        if "temporal_bridge_available" not in details:
+            return None
+        return bool(details.get("temporal_bridge_available"))
+
+    conversation_ready = _bridge_ready(conversation_record)
+    research_ready = _bridge_ready(research_record)
+
+    if conversation_ready is None or research_ready is None:
+        return "unknown", False
+    if conversation_ready and research_ready:
+        return "healthy", True
+    return "degraded", False
+
+
 def _build_onboarding_contract() -> OpenClawOnboardingContractModel:
     """Assemble the whole-stack onboarding contract exposed to shell/plugin flows.
 
@@ -159,8 +188,8 @@ def _build_onboarding_contract() -> OpenClawOnboardingContractModel:
     - configure it against a reachable backend,
     - require only the services needed for ``capture_only`` to be considered
       honestly ready,
-    - treat context assembly, desktop shell, temporal extras, and Grafana as
-      optional enhancements rather than silent prerequisites.
+    - keep OpenClaw onboarding separate from public MCP publication, where
+      temporal retrieval now has its own fail-closed readiness contract.
     """
 
     api_key_count = len(expected_api_keys_for_surface("api"))
@@ -185,6 +214,7 @@ def _build_onboarding_contract() -> OpenClawOnboardingContractModel:
     persisted_oauth_user_count = int(oauth_summary.get("oauth_user_count") or 0)
     bootstrap_oauth_user_count = _oauth_bootstrap_user_count()
     oauth_user_source_ready = (persisted_oauth_user_count + bootstrap_oauth_user_count) > 0
+    public_temporal_status, public_temporal_ready = _public_temporal_publication_status()
     oauth_publication_ready = bool(
         oauth_enabled
         and oauth_issuer
@@ -193,6 +223,7 @@ def _build_onboarding_contract() -> OpenClawOnboardingContractModel:
         and oauth_token
         and oauth_user_source_ready
     )
+    public_mcp_publication_ready = bool(oauth_publication_ready and public_temporal_ready)
 
     required_services = [
         OpenClawOnboardingServiceModel(
@@ -285,6 +316,35 @@ def _build_onboarding_contract() -> OpenClawOnboardingContractModel:
             },
         ),
         OpenClawOnboardingServiceModel(
+            service_id="public_mcp_temporal_retrieval",
+            label="Public MCP temporal retrieval contract",
+            required=False,
+            status=public_temporal_status,
+            summary=(
+                "Hosted public research and conversation retrieval are temporal-first and fail closed "
+                "when the temporal bridge is ready."
+                if public_temporal_ready
+                else "Hosted public research and conversation retrieval cannot be honestly published "
+                "as temporal-first until both warmed pipelines report a ready temporal bridge."
+            ),
+            depends_on=["mcp_surfaces", "openclaw_memory", "openclaw_context_engine"],
+            details={
+                "publication_ready": public_temporal_ready,
+                "conversation_component_status": _component_record("openclaw_memory").get("status"),
+                "conversation_component_details": (
+                    _component_record("openclaw_memory").get("details")
+                    if isinstance(_component_record("openclaw_memory").get("details"), dict)
+                    else {}
+                ),
+                "research_component_status": _component_record("openclaw_context_engine").get("status"),
+                "research_component_details": (
+                    _component_record("openclaw_context_engine").get("details")
+                    if isinstance(_component_record("openclaw_context_engine").get("details"), dict)
+                    else {}
+                ),
+            },
+        ),
+        OpenClawOnboardingServiceModel(
             service_id="grafana",
             label="Grafana dashboards",
             required=False,
@@ -347,6 +407,8 @@ def _build_onboarding_contract() -> OpenClawOnboardingContractModel:
                 "bootstrap_oauth_user_count": bootstrap_oauth_user_count,
                 "user_source_ready": oauth_user_source_ready,
                 "publication_ready": oauth_publication_ready,
+                "temporal_ready": public_temporal_ready,
+                "combined_publication_ready": public_mcp_publication_ready,
                 "dedicated_public_mcp_key_count": dedicated_public_mcp_key_count,
                 "current_reviewer_fallback": (
                     "dedicated_public_mcp_key"
@@ -383,6 +445,9 @@ def _build_onboarding_contract() -> OpenClawOnboardingContractModel:
         setup_ready=setup_ready,
         capture_only_ready=capture_only_ready,
         augment_context_ready=augment_context_ready,
+        public_mcp_temporal_status=public_temporal_status,
+        public_mcp_temporal_ready=public_temporal_ready,
+        public_mcp_publication_ready=public_mcp_publication_ready,
         required_healthy=required_healthy,
         required_total=len(required_services),
         optional_healthy=optional_healthy,
@@ -409,11 +474,11 @@ def _build_onboarding_contract() -> OpenClawOnboardingContractModel:
         notes=[
             "The backend can be reachable without being honestly ready for plugin setup; API auth and memory capture must both be healthy.",
             "Capture-only is the minimum supported onboarding mode. Augment-context additionally requires the context engine.",
-            "Temporal services, Grafana, and the desktop shell are helpful but must not be treated as hidden prerequisites.",
+            "OpenClaw capture-only still treats temporal services as optional, but hosted public MCP publication now requires temporal-ready research and conversation retrieval.",
             (
-                "Public MCP publication can now use OAuth when enabled, but reviewer-key fallback may still exist during rollout."
-                if oauth_enabled
-                else "Public MCP publication still reports bearer-key reviewer auth as the live dry-run path until OAuth is enabled."
+                "Public MCP publication is ready only when both OAuth and temporal retrieval contracts are healthy."
+                if public_mcp_publication_ready
+                else "Public MCP publication still has outstanding readiness work; OAuth and temporal retrieval are reported separately so reviewer readiness stays truthful."
             ),
             (
                 "Managed mode means Agentic Memory owns backend API keys, provider keys, and database operations."

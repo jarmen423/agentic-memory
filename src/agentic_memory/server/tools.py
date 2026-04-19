@@ -63,8 +63,10 @@ import json
 import logging
 import os
 from functools import lru_cache
+from pathlib import Path
 
 import neo4j
+from mcp.server.fastmcp.server import Context
 from mcp.types import ToolAnnotations
 from agentic_memory.chat.pipeline import ConversationIngestionPipeline
 from agentic_memory.core.connection import ConnectionManager
@@ -75,6 +77,7 @@ from agentic_memory.core.request_context import get_request_id
 from agentic_memory.core.retry import retry_transient
 from agentic_memory.core.runtime_embedding import build_embedding_service
 from agentic_memory.core.scheduler import ResearchScheduler
+from agentic_memory.server.temporal_contract import TemporalRetrievalRequiredError
 from agentic_memory.temporal.bridge import get_temporal_bridge
 from agentic_memory.temporal.seeds import (
     collect_seed_entities,
@@ -500,8 +503,13 @@ def search_conversation_turns_sync(
     limit: int,
     as_of: str | None,
     log_prefix: str,
+    temporal_required: bool = False,
 ) -> list[dict[str, Any]]:
-    """Temporal-first conversation search with deterministic text fallback.
+    """Search conversation turns with an optional temporal-first contract.
+
+    Public hosted surfaces should pass ``temporal_required=True`` so
+    conversation retrieval fails closed instead of quietly degrading to dense
+    or text-only search. Internal callers can still use the best-effort path.
 
     Implements a three-tier retrieval strategy:
     1. Vector search via ``chat_embeddings`` Neo4j index.
@@ -514,11 +522,12 @@ def search_conversation_turns_sync(
     memory retrieval (e.g., "what did we know before this date?").
 
     Error handling:
-        Any exception from the initial vector search triggers a warning log
-        (``conversation_search_fallback`` / ``fallback: text_search_after_vector_failure``)
-        and switches to :func:`_text_conversation_search`. When ``project_id`` is
-        set, temporal retrieval failures are non-fatal: the caller receives the
-        baseline vector results (already ``as_of``-filtered) after logging.
+        Any exception from the initial vector search triggers a warning log and
+        switches to :func:`_text_conversation_search` only when
+        ``temporal_required`` is ``False``. When ``temporal_required`` is
+        ``True``, missing project scope, bridge unavailability, missing seeds,
+        temporal retrieve failures, and empty temporal payloads raise
+        :class:`TemporalRetrievalRequiredError` after structured logging.
 
     Args:
         pipeline: A ``ConversationIngestionPipeline`` instance that provides
@@ -532,6 +541,9 @@ def search_conversation_turns_sync(
         limit: Maximum number of turns to return.
         as_of: Optional ISO-8601 timestamp ceiling for ``ingested_at`` filtering.
         log_prefix: Label for log messages (caller identity, e.g. tool name).
+        temporal_required: When ``True``, enforce temporal graph retrieval as a
+            hard contract for this call and fail closed when it cannot be
+            satisfied.
 
     Returns:
         List of conversation turn dicts ordered by relevance score descending.
@@ -544,6 +556,29 @@ def search_conversation_turns_sync(
     bridge = pipeline.__dict__.get("_temporal_bridge") if hasattr(pipeline, "__dict__") else None
     candidate_limit = candidate_limit_for_domain("conversation", default=limit)
 
+    def _raise_temporal_error(*, reason: str, message: str, error_type: str | None = None) -> None:
+        """Log the temporal contract miss, then raise one stable public error."""
+        logger.warning(
+            "conversation_search_fallback",
+            extra={
+                "event": "temporal_fallback",
+                "request_id": get_request_id(),
+                "memory_module": "conversation",
+                "provider": getattr(embedder, "provider", None),
+                "fallback": reason,
+                "error_type": error_type,
+            },
+        )
+        raise TemporalRetrievalRequiredError(
+            module="conversation",
+            reason=reason,
+            message=message,
+            details={
+                "project_id": project_id,
+                "as_of": as_of,
+            },
+        )
+
     try:
         baseline_rows = _vector_conversation_search(
             conn,
@@ -554,6 +589,15 @@ def search_conversation_turns_sync(
             limit=candidate_limit,
         )
     except Exception as exc:
+        if temporal_required:
+            _raise_temporal_error(
+                reason="vector_retrieve_failed",
+                message=(
+                    "Temporal-first conversation retrieval is required for this surface, "
+                    "but the baseline vector stage failed before temporal graph expansion could run."
+                ),
+                error_type=type(exc).__name__,
+            )
         # Embedding or vector index failure: deterministic text search still works.
         logger.warning(
             "conversation_search_fallback",
@@ -593,6 +637,14 @@ def search_conversation_turns_sync(
 
     filtered_baseline = _filter_rows_as_of(baseline_rows, as_of)
     if project_id is None:
+        if temporal_required:
+            _raise_temporal_error(
+                reason="missing_project_scope",
+                message=(
+                    "Temporal-first conversation retrieval requires a project_id so the temporal "
+                    "graph can resolve the correct project scope."
+                ),
+            )
         reranked_rows, rerank_response = _apply_conversation_rerank(
             query=query,
             rows=filtered_baseline,
@@ -608,6 +660,14 @@ def search_conversation_turns_sync(
             notes=["Project scope missing; temporal enrichment was skipped."],
         )
     if bridge is None or not bridge.is_available():
+        if temporal_required:
+            _raise_temporal_error(
+                reason="temporal_bridge_unavailable",
+                message=(
+                    "Temporal-first conversation retrieval is required for this surface, "
+                    "but the temporal bridge is unavailable."
+                ),
+            )
         logger.info(
             "conversation_search_fallback",
             extra={
@@ -643,6 +703,14 @@ def search_conversation_turns_sync(
             seeds = []
 
     if not seeds:
+        if temporal_required:
+            _raise_temporal_error(
+                reason="no_temporal_seeds",
+                message=(
+                    "Temporal-first conversation retrieval could not derive any temporal seeds "
+                    "from the baseline candidates or query."
+                ),
+            )
         logger.info(
             "conversation_search_fallback",
             extra={
@@ -679,6 +747,15 @@ def search_conversation_turns_sync(
             )
         )
     except Exception as exc:
+        if temporal_required:
+            _raise_temporal_error(
+                reason="temporal_retrieve_failed",
+                message=(
+                    "Temporal-first conversation retrieval is required for this surface, "
+                    "but the temporal graph query failed."
+                ),
+                error_type=type(exc).__name__,
+            )
         logger.warning(
             "conversation_search_fallback",
             extra={
@@ -728,6 +805,15 @@ def search_conversation_turns_sync(
             notes=["Temporal graph enrichment supplied the candidate set."],
         )
 
+    if temporal_required:
+        _raise_temporal_error(
+            reason="empty_temporal_result",
+            message=(
+                "Temporal-first conversation retrieval is required for this surface, "
+                "but the temporal graph returned no usable results."
+            ),
+        )
+
     logger.info(
         "conversation_search_fallback",
         extra={
@@ -755,28 +841,12 @@ def search_conversation_turns_sync(
     )
 
 
-@lru_cache(maxsize=1)
-def _get_mcp_conversation_pipeline() -> ConversationIngestionPipeline:
-    """Return a process-local singleton ``ConversationIngestionPipeline`` for MCP.
+def _build_conversation_pipeline_for_repo_root(repo_root: Path) -> ConversationIngestionPipeline:
+    """Construct a chat pipeline for one repo (Neo4j from that repo's config when present)."""
+    from agentic_memory.server.app import neo4j_connection_triple_for_repo
 
-    Configuration is read from environment variables (Neo4j URI, credentials,
-    chat embedding profile via :func:`build_embedding_service`, extraction
-    service, optional temporal bridge). Cached with ``lru_cache`` so every MCP
-    tool shares one pipeline per process.
-
-    Note:
-        This is intentionally **not** the same object as ``am_server`` pipeline
-        helpers when those run in another process; each runtime constructs its own
-        cached instance.
-
-    Returns:
-        Shared pipeline used by conversation MCP tools.
-    """
-    conn = ConnectionManager(
-        uri=os.getenv("NEO4J_URI", "bolt://localhost:7687"),
-        user=os.getenv("NEO4J_USER") or os.getenv("NEO4J_USERNAME", "neo4j"),
-        password=os.getenv("NEO4J_PASSWORD", "password"),
-    )
+    uri, user, password = neo4j_connection_triple_for_repo(repo_root)
+    conn = ConnectionManager(uri, user, password)
     embedder = build_embedding_service("chat")
     extractor = EntityExtractionService.from_env()
     return ConversationIngestionPipeline(
@@ -787,45 +857,27 @@ def _get_mcp_conversation_pipeline() -> ConversationIngestionPipeline:
     )
 
 
-@lru_cache(maxsize=1)
-def _get_mcp_research_pipeline() -> ResearchIngestionPipeline | None:
-    """Return a cached web research pipeline, or ``None`` if misconfigured.
+def _get_mcp_conversation_pipeline() -> ConversationIngestionPipeline:
+    """Return a ``ConversationIngestionPipeline`` for the MCP-bound (or default) repo.
 
-    Requires a working ``web`` embedding service **and** extraction LLM API
-    credentials. When prerequisites are missing, logs a warning and returns
-    ``None`` so schedule tools can degrade without raising at import time.
-
-    Returns:
-        Shared :class:`ResearchIngestionPipeline`, or ``None`` if unavailable.
+    Cached per repository path so multi-root Cursor workspaces can coexist in one
+    MCP process without ``CODEMEMORY_REPO`` churn in global MCP JSON.
     """
-    extraction_llm = resolve_extraction_llm_config()
-    try:
-        embedder = build_embedding_service("web")
-    except ValueError:
-        embedder = None
-    if embedder is None or not extraction_llm.api_key:
-        logger.warning(
-            "Research MCP pipeline unavailable: missing embedding or extraction LLM API key."
-        )
-        return None
+    from agentic_memory import mcp_workspace as mw
 
-    conn = ConnectionManager(
-        uri=os.getenv("NEO4J_URI", "bolt://localhost:7687"),
-        user=os.getenv("NEO4J_USER") or os.getenv("NEO4J_USERNAME", "neo4j"),
-        password=os.getenv("NEO4J_PASSWORD", "password"),
+    rr = mw.effective_repo_root_for_mcp()
+    return mw.get_or_create_cached(
+        rr,
+        _build_conversation_pipeline_for_repo_root,
+        mw.conversation_pipeline_cache(),
     )
-    extractor = EntityExtractionService(
-        api_key=extraction_llm.api_key,
-        model=extraction_llm.model,
-        provider=extraction_llm.provider,
-        base_url=extraction_llm.base_url,
-    )
-    return ResearchIngestionPipeline(
-        conn,
-        embedder,
-        extractor,
-        temporal_bridge=get_temporal_bridge(),
-    )
+
+
+def _get_mcp_research_pipeline() -> ResearchIngestionPipeline | None:
+    """Delegate to :func:`agentic_memory.server.app._get_research_pipeline` (per-repo cache)."""
+    from agentic_memory.server import app as app_mod
+
+    return app_mod._get_research_pipeline()
 
 
 @lru_cache(maxsize=1)
@@ -1055,6 +1107,14 @@ class Toolkit:
 # ---------------------------------------------------------------------------
 
 
+async def _workspace_bind_token(ctx: Context | None):
+    """Run MCP ``roots/list`` binding for async tools (no ``log_tool_call`` wrapper)."""
+    from agentic_memory.mcp_workspace import bind_workspace_for_tool_call
+
+    _, token = await bind_workspace_for_tool_call(ctx)
+    return token
+
+
 def register_conversation_tools(
     mcp: object,  # type: ignore[type-arg]
     *,
@@ -1093,14 +1153,14 @@ def register_conversation_tools(
         role: str | None = None,
         limit: int = 10,
         as_of: str | None = None,
+        ctx: Context | None = None,
     ) -> list[dict]:
-        """Semantic search over conversation turn embeddings (vector index path).
+        """Semantic search over conversation memory with a temporal-first contract.
 
-        Unlike :func:`get_conversation_context`, this tool queries the
-        ``chat_embeddings`` index directly inside the executor and does **not**
-        run the temporal fusion path in :func:`search_conversation_turns_sync`.
-        On any failure in the synchronous closure, logs and returns an empty
-        list (no exception propagates to MCP).
+        Public MCP conversation search must not silently degrade to a dense-only
+        success shape. This tool therefore delegates to
+        :func:`search_conversation_turns_sync` with ``temporal_required=True``
+        and lets temporal contract failures propagate as MCP tool errors.
 
         Args:
             query: Natural language search query.
@@ -1113,58 +1173,31 @@ def register_conversation_tools(
                 after the query returns.
 
         Returns:
-            List of turn dicts with vector ``score``, or ``[]`` on error.
+            List of turn dicts ranked by the temporal-first retrieval path.
         """
-        pipeline = _get_mcp_conversation_pipeline()
-        conn = pipeline._conn  # type: ignore[attr-defined]
-        embedder = pipeline._embedder  # type: ignore[attr-defined]
+        from agentic_memory.mcp_workspace import reset_repo_binding
 
-        loop = asyncio.get_event_loop()
+        reset_token = await _workspace_bind_token(ctx)
+        try:
+            pipeline = _get_mcp_conversation_pipeline()
+            loop = asyncio.get_event_loop()
 
-        def _run() -> list[dict]:
-            try:
-                query_embedding = embedder.embed(query)
-                with conn.session() as session:
-                    cypher = (
-                        "CALL db.index.vector.queryNodes("
-                        "  'chat_embeddings', $limit, $embedding"
-                        ") YIELD node, score "
-                        "WHERE ($project_id IS NULL OR node.project_id = $project_id)"
-                        "  AND ($role IS NULL OR node.role = $role) "
-                        "RETURN "
-                        "    node.session_id     AS session_id, "
-                        "    node.turn_index     AS turn_index, "
-                        "    node.role           AS role, "
-                        "    node.content        AS content, "
-                        "    node.source_agent   AS source_agent, "
-                        "    node.timestamp      AS timestamp, "
-                        "    node.ingested_at    AS ingested_at, "
-                        "    node.entities       AS entities, "
-                        "    score "
-                        "ORDER BY score DESC "
-                        "LIMIT $limit"
-                    )
-                    result = session.run(
-                        cypher,
-                        embedding=query_embedding,
-                        project_id=project_id,
-                        role=role,
-                        limit=limit,
-                    )
-                    rows = [dict(r) for r in result]
-                    if as_of is not None:
-                        rows = [
-                            row
-                            for row in rows
-                            if (row.get("ingested_at") or "") <= as_of
-                        ]
-                    return rows
-            except Exception as exc:
-                logger.error("search_conversations failed: %s", exc)
-                return []
+            def _run() -> list[dict]:
+                return search_conversation_turns_sync(
+                    pipeline,
+                    query=query,
+                    project_id=project_id,
+                    role=role,
+                    limit=limit,
+                    as_of=as_of,
+                    log_prefix="search_conversations",
+                    temporal_required=True,
+                )
 
-        # Blocking embed + Neo4j session: keep off the asyncio event loop.
-        return await loop.run_in_executor(None, _run)
+            # Blocking embed + Neo4j session: keep off the asyncio event loop.
+            return await loop.run_in_executor(None, _run)
+        finally:
+            reset_repo_binding(reset_token)
 
     @mcp.tool(  # type: ignore[attr-defined]
         **_tool_registration_kwargs(
@@ -1182,14 +1215,14 @@ def register_conversation_tools(
         limit: int = 5,
         include_session_context: bool = True,
         as_of: str | None = None,
+        ctx: Context | None = None,
     ) -> dict:
         """Retrieve structured conversation context for LLM grounding.
 
-        Uses :func:`search_conversation_turns_sync`, so results may include
-        **temporal graph reranking** when a bridge is available (contrast with
-        :func:`search_conversations`). Optionally hydrates a ±1 **context
-        window** per hit via :func:`_fetch_conversation_context_window`. On
-        failure, logs and returns ``{"query": query, "turns": []}``.
+        Uses :func:`search_conversation_turns_sync` with
+        ``temporal_required=True`` so this public MCP surface fails closed when
+        temporal retrieval is unavailable. Optionally hydrates a ±1 **context
+        window** per hit via :func:`_fetch_conversation_context_window`.
 
         Args:
             query: Natural language query describing what context is needed.
@@ -1204,13 +1237,16 @@ def register_conversation_tools(
             Dict with ``query`` and ``turns`` (each turn may include
             ``context_window``).
         """
-        pipeline = _get_mcp_conversation_pipeline()
-        conn = pipeline._conn  # type: ignore[attr-defined]
+        from agentic_memory.mcp_workspace import reset_repo_binding
 
-        loop = asyncio.get_event_loop()
+        reset_token = await _workspace_bind_token(ctx)
+        try:
+            pipeline = _get_mcp_conversation_pipeline()
+            conn = pipeline._conn  # type: ignore[attr-defined]
 
-        def _run() -> dict:
-            try:
+            loop = asyncio.get_event_loop()
+
+            def _run() -> dict:
                 matched_turns = search_conversation_turns_sync(
                     pipeline,
                     query=query,
@@ -1219,6 +1255,7 @@ def register_conversation_tools(
                     limit=limit,
                     as_of=as_of,
                     log_prefix="get_conversation_context",
+                    temporal_required=True,
                 )
                 turns_with_context = []
                 for turn in matched_turns:
@@ -1238,12 +1275,10 @@ def register_conversation_tools(
 
                 return {"query": query, "turns": turns_with_context}
 
-            except Exception as exc:
-                logger.error("get_conversation_context failed: %s", exc)
-                return {"query": query, "turns": []}
-
-        # search_conversation_turns_sync + Neo4j window reads are synchronous.
-        return await loop.run_in_executor(None, _run)
+            # search_conversation_turns_sync + Neo4j window reads are synchronous.
+            return await loop.run_in_executor(None, _run)
+        finally:
+            reset_repo_binding(reset_token)
 
     @mcp.tool(  # type: ignore[attr-defined]
         **_tool_registration_kwargs(
@@ -1267,6 +1302,7 @@ def register_conversation_tools(
         tokens_input: int | None = None,
         tokens_output: int | None = None,
         timestamp: str | None = None,
+        ctx: Context | None = None,
     ) -> dict:
         """Persist a single conversation turn to the memory graph.
 
@@ -1293,33 +1329,39 @@ def register_conversation_tools(
             Ingestion summary dict (hashes, embedding/entity counts, ids) on
             success, or ``{"error": "<message>"}`` if ingestion raises.
         """
-        pipeline = _get_mcp_conversation_pipeline()
-        loop = asyncio.get_event_loop()
+        from agentic_memory.mcp_workspace import reset_repo_binding
 
-        turn = {
-            "role": role,
-            "content": content,
-            "session_id": session_id,
-            "project_id": project_id,
-            "turn_index": turn_index,
-            "source_agent": source_agent,
-            "model": model,
-            "tool_name": tool_name,
-            "tool_call_id": tool_call_id,
-            "tokens_input": tokens_input,
-            "tokens_output": tokens_output,
-            "timestamp": timestamp,
-            "ingestion_mode": "active",
-            "source_key": "chat_mcp",
-        }
-
+        reset_token = await _workspace_bind_token(ctx)
         try:
-            # Ingestion performs Neo4j writes and embedding work; keep it off the loop.
-            result: dict = await loop.run_in_executor(None, pipeline.ingest, turn)
-            return result
-        except Exception as exc:
-            logger.error("add_message failed: %s", exc)
-            return {"error": str(exc)}
+            pipeline = _get_mcp_conversation_pipeline()
+            loop = asyncio.get_event_loop()
+
+            turn = {
+                "role": role,
+                "content": content,
+                "session_id": session_id,
+                "project_id": project_id,
+                "turn_index": turn_index,
+                "source_agent": source_agent,
+                "model": model,
+                "tool_name": tool_name,
+                "tool_call_id": tool_call_id,
+                "tokens_input": tokens_input,
+                "tokens_output": tokens_output,
+                "timestamp": timestamp,
+                "ingestion_mode": "active",
+                "source_key": "chat_mcp",
+            }
+
+            try:
+                # Ingestion performs Neo4j writes and embedding work; keep it off the loop.
+                result: dict = await loop.run_in_executor(None, pipeline.ingest, turn)
+                return result
+            except Exception as exc:
+                logger.error("add_message failed: %s", exc)
+                return {"error": str(exc)}
+        finally:
+            reset_repo_binding(reset_token)
 
 
 def register_schedule_tools(

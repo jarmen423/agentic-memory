@@ -15,11 +15,12 @@ All routes require Bearer authentication.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from am_server.auth import require_auth
 from am_server.dependencies import get_conversation_pipeline, get_pipeline
 from agentic_memory.server.app import get_graph
+from agentic_memory.server.temporal_contract import TemporalRetrievalRequiredError
 from agentic_memory.server.unified_search import search_all_memory_sync
 
 router = APIRouter(dependencies=[Depends(require_auth)])
@@ -65,16 +66,20 @@ async def search_all(
     if modules:
         requested_modules = [part.strip() for part in modules.split(",") if part.strip()]
 
-    # Single entry point: merges graph + pipeline-backed search according to filters/modules.
-    payload = search_all_memory_sync(
-        query=q,
-        limit=limit,
-        project_id=project_id,
-        repo_id=repo_id,
-        as_of=as_of,
-        modules=requested_modules,
-        graph=get_graph(),
-        research_pipeline=get_pipeline(),
-        conversation_pipeline=get_conversation_pipeline(),
-    )
+    try:
+        # Single entry point: merges graph + pipeline-backed search according to filters/modules.
+        payload = search_all_memory_sync(
+            query=q,
+            limit=limit,
+            project_id=project_id,
+            repo_id=repo_id,
+            as_of=as_of,
+            modules=requested_modules,
+            graph=get_graph(),
+            research_pipeline=get_pipeline(),
+            conversation_pipeline=get_conversation_pipeline(),
+            fail_on_temporal_errors=True,
+        )
+    except TemporalRetrievalRequiredError as exc:
+        raise HTTPException(status_code=503, detail=exc.to_http_detail()) from exc
     return payload.to_dict()

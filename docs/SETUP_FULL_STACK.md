@@ -100,7 +100,7 @@ $env:STDB_BINDINGS_MODULE="D:\code\agentic-memory\packages\am-temporal-kg\genera
 npm run start --workspace am-sync-neo4j
 ```
 
-This worker is still shadow-mode. It mirrors temporal rows into Neo4j but does not replace the existing ingestion flows.
+This worker still mirrors temporal rows into Neo4j for inspection and operational sync. That implementation detail does **not** change the public retrieval contract: hosted/public research and conversation retrieval now treat temporal readiness as required and fail closed when the temporal bridge is unavailable.
 
 ## 5. Start `am-server`
 

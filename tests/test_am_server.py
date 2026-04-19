@@ -157,6 +157,9 @@ def test_health_onboarding_is_public_and_returns_locked_contract(client):
     assert body["readiness"]["setup_ready"] is True
     assert body["readiness"]["capture_only_ready"] is True
     assert body["readiness"]["augment_context_ready"] is True
+    assert body["readiness"]["public_mcp_temporal_status"] == "unknown"
+    assert body["readiness"]["public_mcp_temporal_ready"] is False
+    assert body["readiness"]["public_mcp_publication_ready"] is False
 
     required = {service["service_id"]: service for service in body["required_services"]}
     optional = {service["service_id"]: service for service in body["optional_services"]}
@@ -165,6 +168,8 @@ def test_health_onboarding_is_public_and_returns_locked_contract(client):
     assert required["openclaw_memory"]["required"] is True
     assert optional["public_mcp_oauth"]["status"] == "unknown"
     assert optional["public_mcp_oauth"]["details"]["enabled"] is False
+    assert optional["public_mcp_temporal_retrieval"]["status"] == "unknown"
+    assert optional["public_mcp_temporal_retrieval"]["details"]["publication_ready"] is False
     assert optional["temporal_stack"]["required"] is False
     assert optional["grafana"]["required"] is False
 
@@ -191,6 +196,8 @@ def test_health_onboarding_reports_blocking_memory_pipeline(client):
     assert body["readiness"]["setup_ready"] is True
     assert body["readiness"]["capture_only_ready"] is False
     assert body["readiness"]["augment_context_ready"] is False
+    assert body["readiness"]["public_mcp_temporal_status"] == "unknown"
+    assert body["readiness"]["public_mcp_temporal_ready"] is False
     assert "openclaw_memory" in body["readiness"]["blocking_services"]
     assert "openclaw_context_engine" in body["readiness"]["degraded_optional_services"]
 
@@ -217,6 +224,8 @@ def test_health_onboarding_reports_public_oauth_readiness(monkeypatch, tmp_path)
 
     mock_pipeline = MagicMock()
     mock_pipeline.ingest.return_value = {"stored": True}
+    mock_pipeline._temporal_bridge = MagicMock()
+    mock_pipeline._temporal_bridge.is_available.return_value = True
     monkeypatch.setattr(
         "am_server.dependencies.ResearchIngestionPipeline",
         lambda *args, **kwargs: mock_pipeline,
@@ -224,6 +233,8 @@ def test_health_onboarding_reports_public_oauth_readiness(monkeypatch, tmp_path)
 
     mock_conversation_pipeline = MagicMock()
     mock_conversation_pipeline.ingest.return_value = {"stored": True}
+    mock_conversation_pipeline._temporal_bridge = MagicMock()
+    mock_conversation_pipeline._temporal_bridge.is_available.return_value = True
     monkeypatch.setattr(
         "am_server.dependencies.ConversationIngestionPipeline",
         lambda *args, **kwargs: mock_conversation_pipeline,
@@ -244,11 +255,19 @@ def test_health_onboarding_reports_public_oauth_readiness(monkeypatch, tmp_path)
     body = resp.json()
     optional = {service["service_id"]: service for service in body["optional_services"]}
     oauth_service = optional["public_mcp_oauth"]
+    temporal_service = optional["public_mcp_temporal_retrieval"]
     assert oauth_service["status"] == "healthy"
     assert oauth_service["details"]["enabled"] is True
     assert oauth_service["details"]["publication_ready"] is True
+    assert oauth_service["details"]["temporal_ready"] is True
+    assert oauth_service["details"]["combined_publication_ready"] is True
     assert oauth_service["details"]["bootstrap_oauth_user_count"] == 1
     assert oauth_service["details"]["current_reviewer_fallback"] == "dedicated_public_mcp_key"
+    assert temporal_service["status"] == "healthy"
+    assert temporal_service["details"]["publication_ready"] is True
+    assert body["readiness"]["public_mcp_temporal_status"] == "healthy"
+    assert body["readiness"]["public_mcp_temporal_ready"] is True
+    assert body["readiness"]["public_mcp_publication_ready"] is True
 
 
 def test_health_includes_request_id_header(client):
@@ -461,11 +480,45 @@ def test_get_conversation_pipeline_uses_chat_embedding_runtime(monkeypatch):
 
 def test_search_research_ok(client, auth_headers):
     """GET /search/research returns 200 with results list."""
-    resp = client.get("/search/research?q=test&limit=5", headers=auth_headers)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "am_server.routes.research.run_research_search",
+            lambda pipeline, query, limit, as_of=None: [
+                {"text": "Temporal research result", "score": 0.91}
+            ],
+        )
+        resp = client.get("/search/research?q=test&limit=5", headers=auth_headers)
     assert resp.status_code == 200
     body = resp.json()
     assert "results" in body
     assert isinstance(body["results"], list)
+    assert body["results"][0]["text"] == "Temporal research result"
+
+
+def test_search_research_temporal_failure_returns_503(client, auth_headers):
+    """GET /search/research fails closed when temporal retrieval is unavailable."""
+    from agentic_memory.server.temporal_contract import TemporalRetrievalRequiredError
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "am_server.routes.research.run_research_search",
+            lambda pipeline, query, limit, as_of=None: (_ for _ in ()).throw(
+                TemporalRetrievalRequiredError(
+                    module="web",
+                    reason="temporal_bridge_unavailable",
+                    message="Temporal-first research retrieval is required for this surface, but the temporal bridge is unavailable.",
+                )
+            ),
+        )
+        resp = client.get("/search/research?q=test&limit=5", headers=auth_headers)
+
+    error = _assert_error_envelope(
+        resp,
+        code="temporal_retrieval_unavailable",
+        status_code=503,
+        message_contains="temporal bridge is unavailable",
+    )
+    assert error["details"]["module"] == "web"
 
 
 def test_search_no_auth(client):
@@ -954,8 +1007,8 @@ def test_search_conversations_temporal_results_keep_shape(client, auth_headers):
     assert body["results"][0]["session_id"] == "sess-1"
 
 
-def test_search_conversations_temporal_failure_falls_back(client, auth_headers):
-    """Temporal bridge errors fall back to the baseline vector result shape."""
+def test_search_conversations_temporal_failure_returns_503(client, auth_headers):
+    """Temporal bridge errors now fail closed for the public REST surface."""
     pipeline = dependencies.get_conversation_pipeline()
     pipeline._temporal_bridge.is_available.return_value = True
     pipeline._temporal_bridge.retrieve.side_effect = RuntimeError("bridge down")
@@ -989,9 +1042,13 @@ def test_search_conversations_temporal_failure_falls_back(client, auth_headers):
         headers=auth_headers,
     )
 
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["results"][0]["content"] == "baseline result"
+    error = _assert_error_envelope(
+        resp,
+        code="temporal_retrieval_unavailable",
+        status_code=503,
+        message_contains="temporal graph query failed",
+    )
+    assert error["details"]["module"] == "conversation"
 
 
 def test_search_conversations_temporal_failure_logs_structured_fallback(
@@ -1029,7 +1086,7 @@ def test_search_conversations_temporal_failure_logs_structured_fallback(
     with caplog.at_level("WARNING"):
         resp = client.get("/search/conversations?q=neo4j&project_id=proj1", headers=auth_headers)
 
-    assert resp.status_code == 200
+    assert resp.status_code == 503
     record = next(r for r in caplog.records if r.message == "conversation_search_fallback")
     assert record.event == "temporal_fallback"
     assert record.memory_module == "conversation"
@@ -1038,8 +1095,8 @@ def test_search_conversations_temporal_failure_logs_structured_fallback(
     assert record.request_id
 
 
-def test_search_conversations_bridge_unavailable_falls_back(client, auth_headers):
-    """Bridge-unavailable state falls back to the baseline vector result shape."""
+def test_search_conversations_bridge_unavailable_returns_503(client, auth_headers):
+    """Bridge-unavailable state now fails closed for the public REST surface."""
     pipeline = dependencies.get_conversation_pipeline()
     pipeline._temporal_bridge.is_available.return_value = False
 
@@ -1072,9 +1129,13 @@ def test_search_conversations_bridge_unavailable_falls_back(client, auth_headers
         headers=auth_headers,
     )
 
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["results"][0]["content"] == "baseline unavailable result"
+    error = _assert_error_envelope(
+        resp,
+        code="temporal_retrieval_unavailable",
+        status_code=503,
+        message_contains="temporal bridge is unavailable",
+    )
+    assert error["details"]["module"] == "conversation"
     pipeline._temporal_bridge.retrieve.assert_not_called()
 
 
@@ -1113,6 +1174,36 @@ def test_search_all_endpoint_returns_unified_results(client, auth_headers, monke
     body = resp.json()
     assert body["results"][0]["module"] == "web"
     assert body["results"][0]["temporal_applied"] is True
+
+
+def test_search_all_endpoint_temporal_failure_returns_503(client, auth_headers, monkeypatch):
+    """GET /search/all fails closed when a temporal-owned module cannot satisfy the contract."""
+    from agentic_memory.server.temporal_contract import TemporalRetrievalRequiredError
+
+    monkeypatch.setattr(
+        "am_server.routes.search.get_graph",
+        lambda: MagicMock(),
+    )
+    monkeypatch.setattr(
+        "am_server.routes.search.search_all_memory_sync",
+        lambda **kwargs: (_ for _ in ()).throw(
+            TemporalRetrievalRequiredError(
+                module="conversation",
+                reason="temporal_bridge_unavailable",
+                message="Temporal-first conversation retrieval is required for this surface, but the temporal bridge is unavailable.",
+            )
+        ),
+    )
+
+    resp = client.get("/search/all?q=neo4j&project_id=proj1", headers=auth_headers)
+
+    error = _assert_error_envelope(
+        resp,
+        code="temporal_retrieval_unavailable",
+        status_code=503,
+        message_contains="temporal bridge is unavailable",
+    )
+    assert error["details"]["module"] == "conversation"
 
 
 def test_product_status_returns_local_control_plane_summary(

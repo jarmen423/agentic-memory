@@ -64,6 +64,9 @@ the same Cloudflare account as the zone.
   - HTTPS origin for the existing backend, for example `https://backend.agentmemorylabs.com`
 - `PUBLIC_BASE_URL`
   - external reviewer-facing base URL, for example `https://mcp.agentmemorylabs.com`
+- `OPENAI_APPS_CHALLENGE_TOKEN`
+  - optional OpenAI domain-verification token to serve at
+    `/.well-known/openai-apps-challenge`
 - Cloudflare account with Workers deploy access
 - custom domain or subdomain you control
 
@@ -82,6 +85,15 @@ Then deploy:
 npm run deploy
 ```
 
+To verify the OpenAI app domain on the Worker host, set
+`OPENAI_APPS_CHALLENGE_TOKEN` before deploy. The Worker will then serve:
+
+```text
+https://mcp.agentmemorylabs.com/.well-known/openai-apps-challenge
+```
+
+with the exact token body from that environment variable.
+
 ## GitHub Actions secrets
 
 The manual deploy workflow expects:
@@ -93,6 +105,7 @@ And these environment variables or workflow inputs:
 
 - `backend_origin`
 - `public_base_url`
+- `openai_apps_challenge_token`
 
 ## First success criterion
 

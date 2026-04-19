@@ -29,11 +29,34 @@ function sanitizeHeaders(request, env) {
   return headers;
 }
 
+function openAIAppsChallengeResponse(env) {
+  const token = String(env.OPENAI_APPS_CHALLENGE_TOKEN || "").trim();
+  if (!token) {
+    return new Response("Challenge token not configured.", { status: 404 });
+  }
+
+  return new Response(token, {
+    status: 200,
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+      "cache-control": "no-store",
+    },
+  });
+}
+
 export default {
   async fetch(request, env) {
     const origin = normalizeOrigin(env.BACKEND_ORIGIN);
     const publicBaseUrl = env.PUBLIC_BASE_URL ? normalizeOrigin(env.PUBLIC_BASE_URL) : "";
     const incomingUrl = new URL(request.url);
+
+    if (
+      incomingUrl.pathname === "/.well-known/openai-apps-challenge" &&
+      request.method === "GET"
+    ) {
+      return openAIAppsChallengeResponse(env);
+    }
+
     const upstreamUrl = new URL(`${origin}${incomingUrl.pathname}${incomingUrl.search}`);
 
     const upstreamRequest = new Request(upstreamUrl, {

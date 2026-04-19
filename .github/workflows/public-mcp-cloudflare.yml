@@ -13,6 +13,11 @@ on:
         required: true
         default: "https://mcp.agentmemorylabs.com"
         type: string
+      openai_apps_challenge_token:
+        description: "Optional token to serve at /.well-known/openai-apps-challenge for OpenAI domain verification."
+        required: false
+        default: ""
+        type: string
       deploy:
         description: "Deploy to Cloudflare after validation."
         required: false
@@ -42,6 +47,7 @@ jobs:
         env:
           BACKEND_ORIGIN: ${{ inputs.backend_origin }}
           PUBLIC_BASE_URL: ${{ inputs.public_base_url }}
+          OPENAI_APPS_CHALLENGE_TOKEN: ${{ inputs.openai_apps_challenge_token }}
         run: npx wrangler deploy --dry-run
 
   deploy-public-edge:
@@ -70,4 +76,5 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           BACKEND_ORIGIN: ${{ inputs.backend_origin }}
           PUBLIC_BASE_URL: ${{ inputs.public_base_url }}
+          OPENAI_APPS_CHALLENGE_TOKEN: ${{ inputs.openai_apps_challenge_token }}
         run: npx wrangler deploy

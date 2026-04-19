@@ -998,7 +998,7 @@ def cmd_serve(args):
     if args.repo:
         repo_root = Path(args.repo).expanduser().resolve()
         if not repo_root.exists() or not repo_root.is_dir():
-            print(f"❌ Invalid --repo path: {repo_root}")
+            print(f"❌ Invalid --repo path: {repo_root}", file=sys.stderr)
             sys.exit(1)
 
     _load_repo_env(repo_root, args.env_file or os.getenv("CODEMEMORY_ENV_FILE"))
@@ -1007,17 +1007,22 @@ def cmd_serve(args):
         config = Config(repo_root)
         if not config.exists():
             print(
-                f"WARNING: No .agentic-memory/config.json found in {repo_root}, using environment variables"
+                f"WARNING: No .agentic-memory/config.json found in {repo_root}, using environment variables",
+                file=sys.stderr,
             )
     else:
         auto_root = find_repo_root()
         config = Config(auto_root)
         if not config.exists():
-            print("WARNING: No local config found, using environment variables")
+            print(
+                "WARNING: No local config found, using environment variables",
+                file=sys.stderr,
+            )
 
-    print(f"Starting MCP Interface on port {args.port}")
+    # MCP stdio transport requires stdout to carry only JSON-RPC. Log to stderr.
+    print(f"Starting MCP Interface on port {args.port}", file=sys.stderr)
     if repo_root:
-        print(f"Using repository root: {repo_root}")
+        print(f"Using repository root: {repo_root}", file=sys.stderr)
     run_server(port=args.port, repo_root=repo_root)
 
 

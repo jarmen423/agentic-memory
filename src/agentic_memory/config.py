@@ -11,6 +11,20 @@ Directory conventions:
     * **Legacy:** ``.codememory/`` — read fallback so in-place upgrades do not
       strand existing repositories.
 
+Neo4j connection resolution:
+    Starting with the multi-repo refactor, the Neo4j Bolt URI / user / password
+    come from a **single shared source** (env vars > ``DEFAULT_CONFIG``) rather
+    than each repo's ``config.json``. One Agentic Memory process talks to one
+    Neo4j instance, and repos are logically partitioned inside that graph by
+    their ``repo_id`` property. The ``neo4j`` block in per-repo ``config.json``
+    files is **vestigial**: it is still accepted for backward compatibility, but
+    :func:`Config.get_neo4j_config` and :func:`resolve_shared_neo4j_config`
+    ignore non-default values and log a one-time migration warning pointing
+    operators at the ``NEO4J_URI`` / ``NEO4J_USER`` / ``NEO4J_PASSWORD``
+    environment variables. See :func:`resolve_shared_neo4j_config` for the exact
+    precedence and :func:`_warn_legacy_repo_neo4j_override` for the warning
+    behavior.
+
 Typical usage is via :class:`Config` after discovering ``repo_root`` with
 :func:`find_repo_root` or :func:`load_config_for_current_dir` for the current
 working directory.
@@ -23,8 +37,11 @@ See Also:
 import os
 import json
 import copy
+import logging
 from pathlib import Path
 from typing import Optional, Dict, Any
+
+logger = logging.getLogger(__name__)
 
 CONFIG_DIR_NAME = ".agentic-memory"
 LEGACY_CONFIG_DIR_NAME = ".codememory"
@@ -290,23 +307,32 @@ class Config:
         return base
 
     def get_neo4j_config(self) -> Dict[str, str]:
-        """Resolve Neo4j Bolt settings: env overrides file for each field.
+        """Resolve Neo4j Bolt settings from the single shared source.
 
-        Precedence per key: ``NEO4J_URI`` / ``NEO4J_USER`` or ``NEO4J_USERNAME`` /
-        ``NEO4J_PASSWORD`` when set, else the value from ``config.json``.
+        The Agentic Memory process talks to **one** Neo4j instance regardless of
+        which repo a tool call is scoped to; repo isolation is done by the
+        ``repo_id`` partition inside that graph, not by picking different Bolt
+        endpoints per repo. This method therefore ignores the ``neo4j`` block in
+        per-repo ``config.json`` files and always delegates to
+        :func:`resolve_shared_neo4j_config`.
+
+        If this repo's ``config.json`` still carries a customized ``neo4j``
+        block, a one-time migration warning is emitted pointing operators at the
+        ``NEO4J_URI`` / ``NEO4J_USER`` / ``NEO4J_PASSWORD`` environment
+        variables. The method signature and return shape are preserved so
+        existing callers (CLI, watcher, tests that mock this method) keep
+        working without changes.
 
         Returns:
-            Dict with keys ``uri``, ``user``, and ``password``.
+            Dict with keys ``uri``, ``user``, and ``password`` sourced from env
+            variables with :data:`DEFAULT_CONFIG` as the fallback.
         """
-        config = self.load()
-        neo4j = config["neo4j"]
-        # Env wins for CI/Docker; file values are the portable default.
-        neo4j_user = os.getenv("NEO4J_USER") or os.getenv("NEO4J_USERNAME")
-        return {
-            "uri": os.getenv("NEO4J_URI", neo4j["uri"]),
-            "user": neo4j_user or neo4j["user"],
-            "password": os.getenv("NEO4J_PASSWORD", neo4j["password"]),
-        }
+        if self.exists():
+            try:
+                _warn_legacy_repo_neo4j_override(self.active_config_file(), self.load())
+            except Exception:
+                logger.debug("Skipping legacy Neo4j-override warning check for %s", self.repo_root)
+        return resolve_shared_neo4j_config()
 
     def get_openai_key(self) -> Optional[str]:
         """Return OpenAI API key: non-empty file value first, else ``OPENAI_API_KEY``."""
@@ -418,6 +444,93 @@ class Config:
         )
         config["git"] = self._deep_merge_dicts(merged_git, git_config)
         self.save(config)
+
+
+# Module-level set of repo config paths that have already emitted the "legacy
+# per-repo Neo4j override" warning. Bounded and non-sensitive; keeps noise down
+# in long-running MCP processes where Config.get_neo4j_config() is called on
+# every tool invocation.
+_WARNED_LEGACY_NEO4J_REPOS: set[str] = set()
+
+
+def resolve_shared_neo4j_config() -> Dict[str, str]:
+    """Resolve Neo4j Bolt settings from the single process-wide source.
+
+    Agentic Memory partitions memory across repos by the ``repo_id`` property
+    inside one Neo4j instance; it does **not** connect to different Bolt
+    endpoints per repo. This helper is the canonical resolver for every caller
+    that needs a ``(uri, user, password)`` triple (MCP tool paths, CLI
+    commands, ingestion watchers, tests).
+
+    Precedence (first non-empty wins, per field):
+
+    1. Process environment (``NEO4J_URI`` / ``NEO4J_USER`` or
+       ``NEO4J_USERNAME`` / ``NEO4J_PASSWORD``).
+    2. :data:`DEFAULT_CONFIG` ``neo4j`` block
+       (``bolt://localhost:7687``, ``neo4j``, ``password``).
+
+    Note:
+        This function intentionally does **not** read per-repo
+        ``config.json`` files. The ``neo4j`` block in those files is vestigial
+        and ignored with a migration warning (see
+        :func:`_warn_legacy_repo_neo4j_override`). The hosted backend's
+        operator-vs-shared routing lives in
+        :mod:`am_server.neo4j_routing`, which sits above this helper and is
+        unrelated to repo-scoped resolution.
+
+    Returns:
+        Dict with keys ``uri``, ``user``, ``password``.
+    """
+    defaults = DEFAULT_CONFIG["neo4j"]
+    user = os.getenv("NEO4J_USER") or os.getenv("NEO4J_USERNAME") or defaults["user"]
+    return {
+        "uri": os.getenv("NEO4J_URI") or defaults["uri"],
+        "user": user,
+        "password": os.getenv("NEO4J_PASSWORD") or defaults["password"],
+    }
+
+
+def _warn_legacy_repo_neo4j_override(source_file: Path, loaded_config: Dict[str, Any]) -> None:
+    """Emit a one-time warning when a repo's ``config.json`` still pins Neo4j.
+
+    The multi-repo refactor made Neo4j a single shared connection (env +
+    defaults). Repos whose saved ``config.json`` still has a customized
+    ``neo4j`` block are not wrong — the values are simply ignored now — but
+    operators should know so they can remove the stale block and move the
+    override into env vars if it was deliberate.
+
+    Warns at most once per ``source_file``; the tracker is process-local so
+    re-initialized MCP processes will re-warn (which is desirable for
+    long-lived sessions).
+
+    Args:
+        source_file: Path to the ``config.json`` that was loaded (primary or
+            legacy ``.codememory``).
+        loaded_config: Merged config dict from :meth:`Config.load`. The
+            ``neo4j`` block is compared against :data:`DEFAULT_CONFIG` to decide
+            whether the operator customized it.
+    """
+    key = str(source_file)
+    if key in _WARNED_LEGACY_NEO4J_REPOS:
+        return
+    loaded_neo4j = loaded_config.get("neo4j") or {}
+    default_neo4j = DEFAULT_CONFIG["neo4j"]
+    # Only warn when the repo's file actually pins non-default values; a freshly
+    # merged config that still matches defaults is operationally equivalent to
+    # no override and should stay silent.
+    if not any(
+        str(loaded_neo4j.get(field, "")) not in ("", str(default_neo4j[field]))
+        for field in ("uri", "user", "password")
+    ):
+        return
+    _WARNED_LEGACY_NEO4J_REPOS.add(key)
+    logger.warning(
+        "Per-repo Neo4j override in %s is ignored. "
+        "Agentic Memory now uses one shared Neo4j instance (set NEO4J_URI / "
+        "NEO4J_USER / NEO4J_PASSWORD). Remove the 'neo4j' block from this "
+        "config.json to silence this warning.",
+        source_file,
+    )
 
 
 def find_repo_root(start_path: Path = None) -> Optional[Path]:

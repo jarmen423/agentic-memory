@@ -274,18 +274,32 @@ def resolve_process_repo_root() -> Path:
 
 
 def neo4j_connection_triple_for_repo(repo_root: Path) -> tuple[str, str, str]:
-    """Return Bolt URI and credentials for a repo (``config.json`` or process env)."""
-    from agentic_memory.config import Config
+    """Return the single shared Bolt URI and credentials.
 
-    cfg = Config(repo_root)
-    if cfg.exists():
-        neo4j_cfg = cfg.get_neo4j_config()
-        return str(neo4j_cfg["uri"]), str(neo4j_cfg["user"]), str(neo4j_cfg["password"])
-    return (
-        os.getenv("NEO4J_URI", "bolt://localhost:7687"),
-        os.getenv("NEO4J_USER") or os.getenv("NEO4J_USERNAME", "neo4j"),
-        os.getenv("NEO4J_PASSWORD", "password"),
-    )
+    The ``repo_root`` argument is accepted for backward compatibility with
+    callers that still pass it but is **not** used to select a Bolt endpoint.
+    Agentic Memory now partitions repos inside one Neo4j instance by the
+    ``repo_id`` property, so every repo in a process resolves to the same
+    connection. See :func:`agentic_memory.config.resolve_shared_neo4j_config`
+    for the precedence (env vars > :data:`~agentic_memory.config.DEFAULT_CONFIG`).
+
+    When a repo's ``config.json`` still carries a customized ``neo4j`` block,
+    calling :meth:`~agentic_memory.config.Config.get_neo4j_config` (or loading
+    that config elsewhere) will emit a one-time migration warning. This helper
+    skips the repo load entirely to stay fast on the MCP hot path; operators
+    will still see the warning on CLI paths that construct a :class:`Config`
+    explicitly.
+
+    Args:
+        repo_root: Ignored. Kept so pre-refactor call sites stay source-compatible.
+
+    Returns:
+        ``(uri, user, password)`` triple sourced from env vars with defaults.
+    """
+    from agentic_memory.config import resolve_shared_neo4j_config
+
+    triple = resolve_shared_neo4j_config()
+    return str(triple["uri"]), str(triple["user"]), str(triple["password"])
 
 
 def _create_knowledge_graph_for_path(repo_root: Path) -> KnowledgeGraphBuilder:
@@ -2013,6 +2027,7 @@ def brave_search(
 from agentic_memory.server.tools import (  # noqa: E402,PLC0415
     _get_mcp_conversation_pipeline,
     register_conversation_tools,
+    register_project_scope_tools,
     register_schedule_tools,
 )
 
@@ -2022,6 +2037,10 @@ register_schedule_tools(
     groq_api_key=resolve_extraction_llm_config().api_key,
     brave_api_key=os.getenv("BRAVE_SEARCH_API_KEY") or os.getenv("BRAVE_API_KEY"),
 )
+# Session-level scope machinery (/project focus, /project isolate, etc.). See
+# ``agentic_memory.mcp_workspace`` for the underlying state and semantics and
+# ``register_project_scope_tools`` in tools.py for the tool-by-tool contracts.
+register_project_scope_tools(mcp)
 
 
 def run_server(port: int, repo_root: Optional[Path] = None):

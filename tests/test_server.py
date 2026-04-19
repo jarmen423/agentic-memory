@@ -5,6 +5,12 @@ import asyncio
 import pytest
 from unittest.mock import Mock, patch
 
+
+def _mcp_call(fn, /, **kwargs):
+    """Invoke FastMCP tool (async after ``log_tool_call``) from synchronous tests."""
+    return asyncio.run(fn(**kwargs))
+
+
 pytestmark = [pytest.mark.unit]
 
 
@@ -142,7 +148,7 @@ class TestTraceExecutionTool:
             with patch("agentic_memory.server.app.TraceExecutionService", return_value=mock_service):
                 from agentic_memory.server.app import trace_execution_path
 
-                result = trace_execution_path("src/a.py:foo", max_depth=2)
+                result = _mcp_call(trace_execution_path, start_symbol="src/a.py:foo", max_depth=2)
 
                 assert "Trace Execution" in result
                 assert "src/b.py:bar" in result
@@ -172,7 +178,7 @@ class TestTraceExecutionTool:
             with patch("agentic_memory.server.app.TraceExecutionService", return_value=mock_service):
                 from agentic_memory.server.app import trace_execution_path
 
-                result = trace_execution_path("run")
+                result = _mcp_call(trace_execution_path, start_symbol="run")
 
                 assert "ambiguous" in result.lower()
                 assert "src/a.py:run" in result
@@ -237,7 +243,12 @@ class TestMCPServerTools:
         monkeypatch.setattr(app_module, "_get_research_pipeline", lambda: Mock())
         monkeypatch.setattr(app_module, "_get_mcp_conversation_pipeline", lambda: Mock())
 
-        result = app_module.search_all_memory("neo4j", limit=5, project_id="proj1")
+        result = _mcp_call(
+            app_module.search_all_memory,
+            query="neo4j",
+            limit=5,
+            project_id="proj1",
+        )
 
         assert "Research Hit" in result
         assert "[web temporal]" in result
@@ -261,7 +272,7 @@ class TestIdentifyImpact:
         from agentic_memory.server.app import identify_impact
         
         with patch('agentic_memory.server.app.graph', mock_graph):
-            result = identify_impact("file.py", max_depth=3)
+            result = _mcp_call(identify_impact, file_path="file.py", max_depth=3)
             
             assert isinstance(result, str)
             mock_graph.identify_impact.assert_called_once_with("file.py", max_depth=3)
@@ -272,7 +283,7 @@ class TestIdentifyImpact:
 
         from agentic_memory.server.app import identify_impact
         with patch('agentic_memory.server.app.graph', mock_graph):
-            result = identify_impact("nonexistent.py")
+            result = _mcp_call(identify_impact, file_path="nonexistent.py")
             
             assert "isolated" in result.lower() or "no files depend" in result.lower()
 
@@ -282,7 +293,7 @@ class TestIdentifyImpact:
 
         from agentic_memory.server.app import identify_impact
         with patch('agentic_memory.server.app.graph', mock_graph):
-            result = identify_impact("file.py")
+            result = _mcp_call(identify_impact, file_path="file.py")
             
             assert "failed" in result.lower()
 
@@ -317,7 +328,7 @@ class TestSearchCodebase:
         ):
             from agentic_memory.server.app import search_codebase
 
-            result = search_codebase("test query", limit=10)
+            result = _mcp_call(search_codebase, query="test query", limit=10)
 
             assert "Found 1 relevant code result(s)" in result
             assert "Policy: `safe`" in result
@@ -341,7 +352,7 @@ class TestSearchCodebase:
         ):
             from agentic_memory.server.app import search_codebase
 
-            search_codebase("test query", limit=3)
+            _mcp_call(search_codebase, query="test query", limit=3)
 
             mock_search.assert_called_once_with(
                 mock_graph,
@@ -359,14 +370,14 @@ class TestSearchCodebase:
         with patch("agentic_memory.server.app.graph", mock_graph):
             from agentic_memory.server.app import search_codebase
 
-            result = search_codebase("test")
+            result = _mcp_call(search_codebase, query="test")
             assert "failed" in result.lower()
 
     def test_search_codebase_invalid_domain(self):
         """Test invalid domain validation for search routing."""
         from agentic_memory.server.app import search_codebase
 
-        result = search_codebase("test query", domain="invalid-domain")
+        result = _mcp_call(search_codebase, query="test query", domain="invalid-domain")
 
         assert "invalid domain" in result.lower()
         assert "code|git|hybrid" in result
@@ -378,7 +389,9 @@ class TestSearchCodebase:
         with patch("agentic_memory.server.app.graph", mock_graph):
             from agentic_memory.server.app import search_codebase
 
-            result = search_codebase("test query", retrieval_policy="calls-everywhere")
+            result = _mcp_call(
+                search_codebase, query="test query", retrieval_policy="calls-everywhere"
+            )
 
             assert "invalid retrieval_policy" in result.lower()
             mock_graph.semantic_search.assert_not_called()
@@ -391,7 +404,7 @@ class TestSearchCodebase:
         with patch("agentic_memory.server.app.graph", mock_graph):
             from agentic_memory.server.app import search_codebase
 
-            result = search_codebase("src/main.py", domain="git")
+            result = _mcp_call(search_codebase, query="src/main.py", domain="git")
 
             assert "git graph data not found" in result.lower()
             mock_graph.get_git_file_history.assert_not_called()
@@ -415,7 +428,7 @@ class TestSearchCodebase:
         with patch("agentic_memory.server.app.graph", mock_graph):
             from agentic_memory.server.app import search_codebase
 
-            result = search_codebase("src/main.py", domain="git", limit=3)
+            result = _mcp_call(search_codebase, query="src/main.py", domain="git", limit=3)
 
             assert "git history" in result.lower()
             assert "abcdef123456" in result
@@ -429,7 +442,7 @@ class TestSearchCodebase:
         with patch("agentic_memory.server.app.graph", mock_graph):
             from agentic_memory.server.app import search_codebase
 
-            result = search_codebase("test query", domain="hybrid")
+            result = _mcp_call(search_codebase, query="test query", domain="hybrid")
 
             assert "git graph data not found" in result.lower()
             mock_graph.semantic_search.assert_not_called()
@@ -457,7 +470,9 @@ class TestGitMCPTools:
         with patch("agentic_memory.server.app.graph", mock_graph):
             from agentic_memory.server.app import get_git_file_history
 
-            result = get_git_file_history("src/codememory/server/app.py", limit=5)
+            result = _mcp_call(
+                get_git_file_history, file_path="src/codememory/server/app.py", limit=5
+            )
 
             assert "Git History" in result
             assert "abcdef123456" in result
@@ -473,7 +488,7 @@ class TestGitMCPTools:
         with patch("agentic_memory.server.app.graph", mock_graph):
             from agentic_memory.server.app import get_git_file_history
 
-            result = get_git_file_history("src/codememory/server/app.py")
+            result = _mcp_call(get_git_file_history, file_path="src/codememory/server/app.py")
 
             assert "git graph data not found" in result.lower()
             mock_graph.get_git_file_history.assert_not_called()
@@ -501,7 +516,9 @@ class TestGitMCPTools:
         with patch("agentic_memory.server.app.graph", mock_graph):
             from agentic_memory.server.app import get_commit_context
 
-            result = get_commit_context("abcdef1234567890", include_diff_stats=True)
+            result = _mcp_call(
+                get_commit_context, sha="abcdef1234567890", include_diff_stats=True
+            )
 
             assert "Commit `abcdef1234567890`" in result
             assert "Diff Stats" in result
@@ -517,7 +534,7 @@ class TestGitMCPTools:
         with patch("agentic_memory.server.app.graph", mock_graph):
             from agentic_memory.server.app import get_commit_context
 
-            result = get_commit_context("abcdef1234567890")
+            result = _mcp_call(get_commit_context, sha="abcdef1234567890")
 
             assert "git graph data not found" in result.lower()
             mock_graph.get_commit_context.assert_not_called()
@@ -530,7 +547,7 @@ class TestGitMCPTools:
         with patch("agentic_memory.server.app.graph", mock_graph):
             from agentic_memory.server.app import get_commit_context
 
-            result = get_commit_context("not-a-sha")
+            result = _mcp_call(get_commit_context, sha="not-a-sha")
 
             assert "invalid commit sha" in result.lower()
             mock_graph.get_commit_context.assert_not_called()

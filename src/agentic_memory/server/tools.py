@@ -1329,10 +1329,24 @@ def register_conversation_tools(
             Ingestion summary dict (hashes, embedding/entity counts, ids) on
             success, or ``{"error": "<message>"}`` if ingestion raises.
         """
-        from agentic_memory.mcp_workspace import reset_repo_binding
+        from agentic_memory.mcp_workspace import (
+            WriteTargetUnresolved,
+            reset_repo_binding,
+            resolve_write_target_repo_id,
+        )
 
         reset_token = await _workspace_bind_token(ctx)
         try:
+            # Let an active /project write override an empty caller value, and
+            # give OpenClaw sessions a crisp "pin a project first" error
+            # instead of silently tagging memory to cwd. When project_id is
+            # non-empty, it passes through unchanged so agents that already
+            # know the target stay in control.
+            try:
+                resolved_project_id = resolve_write_target_repo_id(explicit=project_id)
+            except WriteTargetUnresolved as exc:
+                return {"error": str(exc)}
+
             pipeline = _get_mcp_conversation_pipeline()
             loop = asyncio.get_event_loop()
 
@@ -1340,7 +1354,7 @@ def register_conversation_tools(
                 "role": role,
                 "content": content,
                 "session_id": session_id,
-                "project_id": project_id,
+                "project_id": resolved_project_id,
                 "turn_index": turn_index,
                 "source_agent": source_agent,
                 "model": model,
@@ -1556,3 +1570,446 @@ def register_schedule_tools(
         loop = asyncio.get_event_loop()
         schedules = await loop.run_in_executor(None, scheduler.list_schedules, project_id)
         return json.dumps({"status": "ok", "schedules": schedules})
+
+
+def _list_known_repo_ids() -> list[str]:
+    """Return the sorted list of distinct ``repo_id`` values stored in the graph.
+
+    Queries Neo4j for every non-null ``repo_id`` property on any node. Used by
+    ``/project list`` to render known projects and by the scope-setter tools
+    (:func:`register_project_scope_tools`) to validate that user-supplied
+    ``repo_id`` arguments refer to something that actually exists. Also
+    includes any ``(:Project {repo_id})`` marker nodes created via
+    :func:`_create_project_marker`, so a freshly registered project shows up
+    before it has any other memory attached.
+
+    Returns an empty list when the graph is unreachable; the caller is
+    expected to render a helpful error rather than silently accepting any id.
+
+    The query is intentionally broad (``MATCH (n)``) so we surface every repo
+    that has any memory at all (code, chat, research, or bare Project
+    marker). On a populated graph this is a cheap scan because ``repo_id`` is
+    indexed; on an empty graph it returns instantly.
+
+    Returns:
+        Alphabetically sorted list of distinct ``repo_id`` strings.
+    """
+    from agentic_memory.server.app import get_graph
+
+    graph = get_graph()
+    if graph is None:
+        logger.warning("_list_known_repo_ids: graph unavailable; returning [].")
+        return []
+    try:
+        with graph.driver.session() as session:
+            result = session.run(
+                "MATCH (n) WHERE n.repo_id IS NOT NULL "
+                "RETURN DISTINCT n.repo_id AS repo_id ORDER BY repo_id"
+            )
+            return [row["repo_id"] for row in result if row.get("repo_id")]
+    except Exception as exc:
+        logger.warning("_list_known_repo_ids query failed: %s", exc)
+        return []
+
+
+def _create_project_marker(repo_id: str, display_name: str | None = None) -> dict:
+    """Upsert a ``(:Project {repo_id})`` marker so ``repo_id`` is a known id.
+
+    A ``Project`` marker is a lightweight node that exists purely to register
+    a new ``repo_id`` in the graph's enum without requiring any actual memory
+    to be ingested first. This lets ``/project focus``, ``/project write``,
+    and ``/project isolate`` accept the id on subsequent calls (they validate
+    against ``_list_known_repo_ids``).
+
+    The upsert is idempotent: calling with an existing ``repo_id`` only
+    updates ``display_name`` / ``updated_at`` and does not create duplicate
+    nodes. A ``created`` boolean in the return dict tells the tool layer
+    whether this was the first registration (so it can render "Created …"
+    vs "Already registered …").
+
+    Args:
+        repo_id: The stable project identifier the user wants to pin writes
+            to and read from. No normalization beyond ``strip()`` is done —
+            callers should pre-validate.
+        display_name: Optional human-friendly name rendered in status lines.
+
+    Returns:
+        ``{"repo_id": str, "display_name": str | None, "created": bool}``.
+
+    Raises:
+        RuntimeError: If the graph is unavailable or the Cypher write fails.
+            Tool handlers should catch and convert to ``{"error": ...}``.
+    """
+    from agentic_memory.server.app import get_graph
+
+    graph = get_graph()
+    if graph is None:
+        raise RuntimeError("graph unavailable; cannot create project marker")
+    with graph.driver.session() as session:
+        result = session.run(
+            """
+            MERGE (p:Project {repo_id: $repo_id})
+            ON CREATE SET p.created_at = datetime(), p._is_new = true
+            ON MATCH SET p._is_new = false
+            SET p.display_name = coalesce($display_name, p.display_name),
+                p.updated_at = datetime()
+            WITH p, p._is_new AS is_new
+            REMOVE p._is_new
+            RETURN p.repo_id AS repo_id, p.display_name AS display_name, is_new AS created
+            """,
+            repo_id=repo_id,
+            display_name=display_name,
+        )
+        row = result.single()
+        if row is None:
+            raise RuntimeError("project marker upsert returned no row")
+        return {
+            "repo_id": row["repo_id"],
+            "display_name": row["display_name"],
+            "created": bool(row["created"]),
+        }
+
+
+def _require_known_repo_ids(requested: list[str]) -> dict | None:
+    """Return an error payload when any ``requested`` repo_id is unknown.
+
+    Used by ``/project focus``, ``/project isolate``, and ``/project write``
+    to stop typos and stale ids from silently shaping the session. The graph
+    is checked on every call rather than cached because the known-repo set
+    can grow mid-session (another agent writing memory, a sibling CLI
+    ingestion running). Empty graphs still block unknown ids — callers must
+    run ``create_project`` first to bootstrap.
+
+    Args:
+        requested: Non-empty list of ``repo_id`` values the caller wants to
+            apply.
+
+    Returns:
+        ``None`` when every id is known (and the caller should proceed), or
+        an error dict in the canonical tool-response shape:
+        ``{"status": "error", "message": "...", "unknown": [...],
+        "known_repos": [...]}``.
+    """
+    if not requested:
+        return None
+    known = set(_list_known_repo_ids())
+    unknown = [r for r in requested if r not in known]
+    if not unknown:
+        return None
+    return {
+        "status": "error",
+        "message": (
+            "Unknown project id(s): "
+            + ", ".join(repr(r) for r in unknown)
+            + ". Run /project list to see what exists, or create_project "
+            "<repo_id> to register a new one."
+        ),
+        "unknown": unknown,
+        "known_repos": sorted(known),
+    }
+
+
+def _scopes_payload(message: str | None = None) -> dict[str, Any]:
+    """Build the canonical response shape returned by every ``/project`` tool.
+
+    Keeping a single shape across status / focus / isolate / write / clear
+    makes it easy for OpenClaw's status line to render the latest state from
+    any tool's response without branching. ``known_repos`` supplies
+    autocompletion hints without a second round trip. ``resolved_write_target``
+    shows the ``repo_id`` new memory would be tagged with **right now** if an
+    ingestion call fired without an explicit ``project_id``: this makes the
+    OpenClaw "no active project" case visible in the status line before a
+    write fails.
+
+    Args:
+        message: Optional human-readable sentence describing what just changed.
+            Rendered by the client beside the new status.
+
+    Returns:
+        ``{"status": "ok", "scopes": {...}, "known_repos": [...],
+        "resolved_write_target": "<repo_id>" | None, "message": "..."}``.
+    """
+    from agentic_memory.mcp_workspace import (
+        WriteTargetUnresolved,
+        get_active_scopes,
+        resolve_write_target_repo_id,
+    )
+
+    scopes = get_active_scopes()
+    try:
+        resolved = resolve_write_target_repo_id()
+        resolved_error: str | None = None
+    except WriteTargetUnresolved as exc:
+        resolved = None
+        resolved_error = str(exc)
+
+    payload: dict[str, Any] = {
+        "status": "ok",
+        "scopes": scopes.as_dict(),
+        "known_repos": _list_known_repo_ids(),
+        "resolved_write_target": resolved,
+    }
+    if resolved_error is not None:
+        payload["resolved_write_target_error"] = resolved_error
+    if message:
+        payload["message"] = message
+    return payload
+
+
+def register_project_scope_tools(
+    mcp: object,  # type: ignore[type-arg]
+    *,
+    annotation_resolver: ToolAnnotationResolver | None = None,
+) -> None:
+    """Attach the ``/project``-family scope management tools to ``mcp``.
+
+    Registers eight MCP tools that let the user (or the agent on the user's
+    behalf) steer three session-level scopes: **focus** (ranking hint, not
+    yet wired into retrieval — stored only), **isolate** (hard read/injection
+    filter), and **write_target** (which ``repo_id`` new memory is tagged
+    with). See :mod:`agentic_memory.mcp_workspace` for the underlying state
+    machine and its semantics.
+
+    The tools are designed to double as slash commands in clients that map
+    tools to ``/name`` UI (Cursor, OpenClaw). Every tool returns the same
+    response shape (see :func:`_scopes_payload`) so the status line can render
+    the latest snapshot from any response without branching.
+
+    None of these tools change retrieval today; wiring the focus list into
+    ranking is a separate, research-gated task
+    (see ``.claude/plans/decision-doc-rerankers.md`` and the follow-up
+    doc stub in ``.planning``). Isolation and write targeting take effect
+    once tasks 6–7 land (write-target resolution / read enum validation).
+
+    Args:
+        mcp: FastMCP application instance (supports ``@mcp.tool``).
+        annotation_resolver: Optional callback passed to
+            :func:`_tool_registration_kwargs` to attach per-tool
+            ``ToolAnnotations`` (public profile uses this to mark these tools
+            as side-effecting state changes rather than reads).
+    """
+
+    @mcp.resource(  # type: ignore[attr-defined]
+        "resource://agentic-memory/active-scopes",
+        name="active-scopes",
+        title="Agentic Memory: Active Project Scopes",
+        description=(
+            "Current project scope snapshot (focus, isolate, write_target, "
+            "resolved write repo_id, known repos). OpenClaw polls this resource "
+            "to render the status line above the prompt; other clients can read "
+            "it as a JSON blob. The same structure is returned by /project_status."
+        ),
+        mime_type="application/json",
+    )
+    def active_scopes_resource() -> str:
+        """Serialize the current scope snapshot as JSON for status-line rendering.
+
+        The host reads this resource instead of calling :func:`project_status` so
+        the UI can refresh on its own cadence without consuming a tool-call slot.
+        We return a JSON string (mime ``application/json``) because FastMCP
+        forwards strings verbatim; dict returns get wrapped into an ad-hoc
+        schema that status-line renderers would have to unwrap.
+
+        The payload shape matches :func:`_scopes_payload` minus the ``message``
+        key (status-line UIs have nothing to do with the per-call message). A
+        top-level ``resolved_write_target_error`` key, when present, tells the
+        UI to render a warning badge (typically: OpenClaw with no project set).
+        """
+        payload = _scopes_payload()
+        payload.pop("message", None)
+        return json.dumps(payload, sort_keys=True)
+
+    @mcp.tool(  # type: ignore[attr-defined]
+        **_tool_registration_kwargs(
+            "project_status",
+            "Show the current memory scopes: which project(s) are in focus, whether reads "
+            "are isolated to a subset, and which project new memory is being written to.",
+            annotation_resolver,
+        )
+    )
+    async def project_status(ctx: Context | None = None) -> dict:
+        """Return the current :class:`ActiveScopes` snapshot plus known repo ids."""
+        return _scopes_payload()
+
+    @mcp.tool(  # type: ignore[attr-defined]
+        **_tool_registration_kwargs(
+            "project_list",
+            "List every project (repo_id) that has memory stored in the graph. Use before "
+            "calling project_focus / project_isolate / project_write to pick a valid id.",
+            annotation_resolver,
+        )
+    )
+    async def project_list(ctx: Context | None = None) -> dict:
+        """Enumerate distinct ``repo_id`` values available in the shared graph."""
+        return {
+            "status": "ok",
+            "known_repos": _list_known_repo_ids(),
+        }
+
+    @mcp.tool(  # type: ignore[attr-defined]
+        **_tool_registration_kwargs(
+            "project_focus",
+            "Add one or more projects (repo_ids) to the focus list. Focus is a soft ranking "
+            "hint (informational today; a ranking boost is a separate follow-up). Accepts a "
+            "comma- or space-separated string, or a list of ids.",
+            annotation_resolver,
+        )
+    )
+    async def project_focus(repo_ids: str | list[str], ctx: Context | None = None) -> dict:
+        """Replace the focus list with ``repo_ids`` and return the new snapshot."""
+        from agentic_memory.mcp_workspace import _normalize_repo_ids, set_focus
+
+        requested = list(_normalize_repo_ids(repo_ids))
+        err = _require_known_repo_ids(requested)
+        if err is not None:
+            return err
+        set_focus(requested)
+        return _scopes_payload(message=f"Focus set to {_scopes_payload()['scopes']['focus']}.")
+
+    @mcp.tool(  # type: ignore[attr-defined]
+        **_tool_registration_kwargs(
+            "project_unfocus",
+            "Remove a project from the focus list, or clear focus entirely when repo_id is "
+            "omitted. Does not affect isolation or write target.",
+            annotation_resolver,
+        )
+    )
+    async def project_unfocus(repo_id: str | None = None, ctx: Context | None = None) -> dict:
+        """Remove ``repo_id`` from focus, or clear the whole list when omitted."""
+        from agentic_memory.mcp_workspace import clear_focus, remove_focus
+
+        if repo_id and repo_id.strip():
+            remove_focus(repo_id.strip())
+            return _scopes_payload(message=f"Removed {repo_id.strip()!r} from focus.")
+        clear_focus()
+        return _scopes_payload(message="Focus cleared.")
+
+    @mcp.tool(  # type: ignore[attr-defined]
+        **_tool_registration_kwargs(
+            "project_isolate",
+            "Hard-filter every search and automatic context injection to the given project(s). "
+            "Use for focused work sessions where cross-project context would be noise. Pass a "
+            "comma- or space-separated string, or a list of ids.",
+            annotation_resolver,
+        )
+    )
+    async def project_isolate(repo_ids: str | list[str], ctx: Context | None = None) -> dict:
+        """Turn on isolation: reads and injection will only see these ``repo_ids``."""
+        from agentic_memory.mcp_workspace import _normalize_repo_ids, set_isolate
+
+        requested = list(_normalize_repo_ids(repo_ids))
+        err = _require_known_repo_ids(requested)
+        if err is not None:
+            return err
+        set_isolate(requested)
+        return _scopes_payload(
+            message=f"Isolation active for {_scopes_payload()['scopes']['isolate']}.",
+        )
+
+    @mcp.tool(  # type: ignore[attr-defined]
+        **_tool_registration_kwargs(
+            "project_unisolate",
+            "Turn off isolation so searches and automatic injection see every project again.",
+            annotation_resolver,
+        )
+    )
+    async def project_unisolate(ctx: Context | None = None) -> dict:
+        """Drop the isolation list."""
+        from agentic_memory.mcp_workspace import clear_isolate
+
+        clear_isolate()
+        return _scopes_payload(message="Isolation cleared; reads span every project.")
+
+    @mcp.tool(  # type: ignore[attr-defined]
+        **_tool_registration_kwargs(
+            "project_write",
+            "Pin new memory writes to a specific project (repo_id). Recommended for OpenClaw "
+            "sessions where the client has no implicit workspace root. Pass an empty string "
+            "to fall back to auto-detection.",
+            annotation_resolver,
+        )
+    )
+    async def project_write(repo_id: str, ctx: Context | None = None) -> dict:
+        """Pin the write target to ``repo_id`` or clear it when empty."""
+        from agentic_memory.mcp_workspace import set_write_target
+
+        target = repo_id.strip() if isinstance(repo_id, str) else None
+        if target:
+            # Stop typos from silently tagging new memory to a phantom project.
+            # Users who want a brand-new repo_id should call create_project
+            # first; the error message nudges them there.
+            err = _require_known_repo_ids([target])
+            if err is not None:
+                return err
+        set_write_target(target or None)
+        if target:
+            return _scopes_payload(message=f"New writes will be tagged with {target!r}.")
+        return _scopes_payload(message="Write target cleared; writes use auto-detection.")
+
+    @mcp.tool(  # type: ignore[attr-defined]
+        **_tool_registration_kwargs(
+            "project_clear",
+            "Reset every scope: clears focus, isolation, and write target in one call.",
+            annotation_resolver,
+        )
+    )
+    async def project_clear(ctx: Context | None = None) -> dict:
+        """Reset all three scopes to their default ('no override') values."""
+        from agentic_memory.mcp_workspace import clear_all_scopes
+
+        clear_all_scopes()
+        return _scopes_payload(message="All project scopes cleared.")
+
+    @mcp.tool(  # type: ignore[attr-defined]
+        **_tool_registration_kwargs(
+            "create_project",
+            "Register a new project (repo_id) in the graph. Required before /project focus, "
+            "/project write, or /project isolate will accept it. Does not ingest memory; it "
+            "only creates a marker node so the new id is recognized.",
+            annotation_resolver,
+        )
+    )
+    async def create_project(
+        repo_id: str,
+        display_name: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict:
+        """Upsert a Project marker and return the resulting enum entry.
+
+        Using a dedicated tool (instead of auto-creating on first write)
+        matches the user's preference for explicit project setup: typos fail
+        loudly, and a fresh graph cannot accumulate unintended partitions.
+        The upsert is idempotent, so re-calling with the same ``repo_id``
+        is safe and only updates the optional ``display_name``.
+
+        Args:
+            repo_id: Stable identifier for the project (e.g. ``my-service``).
+                Whitespace is trimmed; an empty value is rejected.
+            display_name: Optional human-readable name rendered by status
+                lines and project lists.
+
+        Returns:
+            ``{"status": "ok", "project": {...}, "known_repos": [...],
+            "message": "..."}`` on success, or ``{"status": "error", ...}``.
+        """
+        cleaned = repo_id.strip() if isinstance(repo_id, str) else ""
+        if not cleaned:
+            return {
+                "status": "error",
+                "message": "repo_id is required and must not be empty.",
+            }
+        try:
+            project = _create_project_marker(cleaned, display_name=display_name)
+        except RuntimeError as exc:
+            logger.error("create_project failed: %s", exc)
+            return {"status": "error", "message": str(exc)}
+        return {
+            "status": "ok",
+            "project": project,
+            "known_repos": _list_known_repo_ids(),
+            "message": (
+                f"Registered new project {cleaned!r}."
+                if project["created"]
+                else f"Project {cleaned!r} already existed; display_name refreshed."
+            ),
+        }

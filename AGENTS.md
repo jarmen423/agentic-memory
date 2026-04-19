@@ -27,6 +27,15 @@ When exploring this codebase, prefer using the `agentic-memory` MCP tools over n
 - `search_memory_nodes`
 - `read_memory_graph`
 - `backfill_memory_embeddings`
+- `create_project`
+- `project_status`
+- `project_list`
+- `project_focus`
+- `project_unfocus`
+- `project_isolate`
+- `project_unisolate`
+- `project_write`
+- `project_clear`
 
 ### Tool Descriptions
 
@@ -53,6 +62,43 @@ When exploring this codebase, prefer using the `agentic-memory` MCP tools over n
 | `search_memory_nodes(query, limit)` | Searches the writable memory graph for abstract concepts, design decisions, and stored observations. |
 | `read_memory_graph()` | Returns a summary snapshot of the current repo-scoped memory graph. |
 | `backfill_memory_embeddings(limit, only_missing)` | Regenerates embeddings for memory entities, mainly for repair or migration workflows. |
+| `create_project(repo_id, display_name)` | Register a new project (`repo_id`) marker in the graph. Required before `project_focus` / `project_isolate` / `project_write` will accept the id (prevents typo-tagged memory). Idempotent. |
+| `project_status()` | Show current session scopes (focus, isolate, write_target) plus known projects and the resolved write target. Backed by the `resource://agentic-memory/active-scopes` MCP resource. |
+| `project_list()` | List every `repo_id` known to the shared graph (from memory nodes plus explicit `:Project` markers). |
+| `project_focus(repo_ids)` | Soft ranking hint: prefer results from these projects. Validates ids against `project_list`. **Informational only today — retrieval wiring is gated on the research in `.planning/research/FOCUS-RANKING.md`.** |
+| `project_unfocus(repo_id)` | Remove one project from focus or, when omitted, clear the entire focus list. |
+| `project_isolate(repo_ids)` | Hard read filter: `search_*` tools only see results tagged with these `repo_id`s. |
+| `project_unisolate()` | Remove the isolation filter. |
+| `project_write(repo_id)` | Pin the write target: all new memory ingests tag this `repo_id`. Empty clears the pin. Required for OpenClaw (no workspace root to auto-detect from). |
+| `project_clear()` | Reset all three scopes to defaults in one call. |
+
+## Project Scopes (slash commands and state)
+
+The server maintains three session-level scopes in
+`src/agentic_memory/mcp_workspace.py` (`ActiveScopes`): **focus**,
+**isolate**, **write_target**. They are separate on purpose:
+
+- **focus** is a soft ranking hint (not yet wired into retrieval — see
+  `.planning/research/FOCUS-RANKING.md` for why it was punted).
+- **isolate** is a hard filter on reads and automatic context injection.
+- **write_target** decides which `repo_id` new memory is tagged with.
+
+Scope state lives in-process and resets with the MCP server. Every scope
+tool (and the `resource://agentic-memory/active-scopes` resource) returns
+the same snapshot shape so status-line UIs can render without branching.
+
+**OpenClaw write safety:** when `CODEMEMORY_CLIENT=openclaw` is set and no
+explicit `project_id` / `write_target` is active, write tools raise
+`WriteTargetUnresolved` instead of silently falling back to the launch
+directory. Ask the user to call `project_write` (or `create_project` first
+for a brand-new id) before re-trying the write.
+
+**Single Neo4j, partitioned by `repo_id`:** graph and pipeline caches in
+`mcp_workspace.py` are now process-wide singletons (not per-path), and
+`Config.get_neo4j_config()` reads a single shared source (env vars >
+`DEFAULT_CONFIG`). Legacy per-repo `config.json` Neo4j overrides trigger a
+one-time warning. Data is partitioned inside that single instance by
+`repo_id` rather than by connecting to multiple Neo4j endpoints.
 
 ## Memory Graph
 

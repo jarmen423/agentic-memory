@@ -70,6 +70,18 @@ class OAuthAuthorizationRequest:
     code_challenge_method: str
 
 
+def _normalize_resource(resource: str | None) -> str:
+    """Normalize resource URLs so clients may use either host form safely.
+
+    MCP/OAuth clients do not consistently preserve whether the protected
+    resource URL ends with a trailing slash. The server should accept both
+    forms and store a canonical slashless value so authorization-code exchange,
+    token refresh, and bearer-token presentation all agree on the same record.
+    """
+
+    return str(resource or "").strip().rstrip("/")
+
+
 def _oauth_enabled_or_404() -> None:
     """Fail closed when the deployment has not enabled public OAuth."""
 
@@ -282,7 +294,7 @@ def _validate_authorization_request(
             },
         )
 
-    normalized_resource = (resource or oauth_resource_url() or "").strip()
+    normalized_resource = _normalize_resource(resource or oauth_resource_url() or "")
     if not normalized_resource:
         raise HTTPException(
             status_code=503,
@@ -626,7 +638,7 @@ async def oauth_token(request: Request) -> JSONResponse:
             },
         )
 
-    resource = (form.get("resource") or oauth_resource_url() or "").strip()
+    resource = _normalize_resource(form.get("resource") or oauth_resource_url() or "")
     if not resource:
         raise HTTPException(
             status_code=503,

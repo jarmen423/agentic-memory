@@ -73,6 +73,27 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _normalize_oauth_resource(resource: str | None) -> str:
+    """Normalize OAuth resource URLs so equivalent host forms compare equal.
+
+    Why this exists:
+    - Some MCP clients send the resource as ``https://host`` while others send
+      ``https://host/``.
+    - The public MCP auth surface should treat those as the same protected
+      resource instead of issuing a token for one form and rejecting it when
+      the client presents it against the other.
+
+    Args:
+        resource: Raw OAuth resource string from a request or stored record.
+
+    Returns:
+        The normalized resource string with surrounding whitespace removed and a
+        trailing slash stripped from non-root host forms.
+    """
+
+    return str(resource or "").strip().rstrip("/")
+
+
 class ProductStateStore:
     """Manage the local persisted state for product-facing workflows.
 
@@ -747,7 +768,7 @@ class ProductStateStore:
             "workspace_id": workspace_id.strip(),
             "client_id": client_id.strip(),
             "redirect_uri": redirect_uri.strip(),
-            "resource": resource.strip(),
+            "resource": _normalize_oauth_resource(resource),
             "scopes": sorted(set(scopes)),
             "code_challenge": code_challenge.strip(),
             "code_challenge_method": code_challenge_method.strip(),
@@ -783,7 +804,7 @@ class ProductStateStore:
 
         normalized_client_id = client_id.strip()
         normalized_redirect_uri = redirect_uri.strip()
-        normalized_resource = resource.strip()
+        normalized_resource = _normalize_oauth_resource(resource)
 
         def mutate(state: dict[str, Any]) -> dict[str, Any] | None:
             for index, existing in enumerate(state["oauth_authorization_codes"]):
@@ -838,7 +859,7 @@ class ProductStateStore:
             "username": username.strip().lower(),
             "workspace_id": workspace_id.strip(),
             "client_id": client_id.strip(),
-            "resource": resource.strip(),
+            "resource": _normalize_oauth_resource(resource),
             "scopes": sorted(set(scopes)),
             "status": "active",
             "created_at": timestamp,
@@ -854,7 +875,7 @@ class ProductStateStore:
             "username": username.strip().lower(),
             "workspace_id": workspace_id.strip(),
             "client_id": client_id.strip(),
-            "resource": resource.strip(),
+            "resource": _normalize_oauth_resource(resource),
             "scopes": sorted(set(scopes)),
             "status": "active",
             "created_at": timestamp,
@@ -890,7 +911,7 @@ class ProductStateStore:
         if not token_hash:
             return None
 
-        normalized_resource = resource.strip() if resource else None
+        normalized_resource = _normalize_oauth_resource(resource) if resource else None
         state = self.load()
         for record in state["oauth_access_tokens"]:
             if record.get("status") != "active":
@@ -941,7 +962,7 @@ class ProductStateStore:
             return None
 
         normalized_client_id = client_id.strip()
-        normalized_resource = resource.strip()
+        normalized_resource = _normalize_oauth_resource(resource)
         refresh_record = None
 
         def consume(state: dict[str, Any]) -> dict[str, Any] | None:

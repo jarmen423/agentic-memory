@@ -2218,6 +2218,98 @@ def test_public_oauth_authorization_code_flow_and_refresh(monkeypatch, tmp_path)
         )
 
 
+def test_public_oauth_resource_normalization_accepts_trailing_slash_clients(monkeypatch, tmp_path):
+    """OAuth bearer tokens stay valid when the client uses a slash-suffixed resource URL.
+
+    Claude's hosted MCP OAuth flow presents the protected resource as
+    ``https://mcp.agentmemorylabs.com/``. The public surface itself normalizes
+    to the slashless base URL, so this test locks in that both forms resolve to
+    the same stored authorization-code and token records.
+    """
+
+    client_id = "https://claude.ai/oauth/mcp-oauth-client-metadata"
+    redirect_uri = "https://claude.ai/api/mcp/auth_callback"
+    resource = "https://mcp.agentmemorylabs.com/"
+    code_verifier = "claude-reviewer-verifier-123456789"
+    code_challenge = oauth._pkce_s256(code_verifier)
+
+    monkeypatch.setenv("AM_SERVER_API_KEY", "shared-api-key")
+    monkeypatch.setenv("AM_SERVER_PUBLIC_OAUTH_ENABLED", "1")
+    monkeypatch.setenv("AM_PUBLIC_BASE_URL", "https://mcp.agentmemorylabs.com")
+    monkeypatch.setenv("AM_SERVER_OAUTH_BOOTSTRAP_USERS", "reviewer:secret-pass:ws_demo:Marketplace Reviewer")
+    monkeypatch.delenv("AM_SERVER_PUBLIC_MCP_API_KEY", raising=False)
+    monkeypatch.delenv("AM_SERVER_PUBLIC_MCP_API_KEYS", raising=False)
+    monkeypatch.setenv("NEO4J_URI", "bolt://localhost:7687")
+    monkeypatch.setenv("NEO4J_USER", "neo4j")
+    monkeypatch.setenv("NEO4J_PASSWORD", "test")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini")
+    monkeypatch.setenv("GROQ_API_KEY", "fake-groq")
+    monkeypatch.setenv("CODEMEMORY_PRODUCT_STATE", str(tmp_path / "product-state.json"))
+
+    monkeypatch.setattr(
+        oauth,
+        "_fetch_client_metadata_document",
+        lambda requested_client_id: {
+            "client_id": requested_client_id,
+            "redirect_uris": [redirect_uri],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+        },
+    )
+
+    dependencies.get_pipeline.cache_clear()
+    dependencies.get_conversation_pipeline.cache_clear()
+    dependencies.get_product_store.cache_clear()
+    app = create_app()
+    with TestClient(app, raise_server_exceptions=False) as oauth_client:
+        authorize_post = oauth_client.post(
+            "/oauth/authorize",
+            content=urlencode(
+                {
+                    "client_id": client_id,
+                    "redirect_uri": redirect_uri,
+                    "response_type": "code",
+                    "scope": "mcp:tools",
+                    "state": "claude-state",
+                    "resource": resource,
+                    "code_challenge": code_challenge,
+                    "code_challenge_method": "S256",
+                    "username": "reviewer",
+                    "password": "secret-pass",
+                }
+            ),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            follow_redirects=False,
+        )
+        assert authorize_post.status_code == 302
+
+        authorization_code = parse_qs(urlparse(authorize_post.headers["location"]).query)["code"][0]
+
+        token_response = oauth_client.post(
+            "/oauth/token",
+            content=urlencode(
+                {
+                    "grant_type": "authorization_code",
+                    "client_id": client_id,
+                    "redirect_uri": redirect_uri,
+                    "resource": resource,
+                    "code": authorization_code,
+                    "code_verifier": code_verifier,
+                }
+            ),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        assert token_response.status_code == 200
+        token_payload = token_response.json()
+
+        claude_mcp_response = oauth_client.get(
+            "/mcp-claude/",
+            follow_redirects=False,
+            headers={"Authorization": f"Bearer {token_payload['access_token']}"},
+        )
+        assert claude_mcp_response.status_code != 401
+
+
 def test_public_oauth_dynamic_client_registration_and_flow(monkeypatch, tmp_path):
     """Dynamic client registration issues a client id that works in the OAuth flow."""
 

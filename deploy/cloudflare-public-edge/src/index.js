@@ -5,6 +5,19 @@ function normalizeOrigin(value) {
   return value.endsWith("/") ? value.slice(0, -1) : value;
 }
 
+function resolvePublicMcpPathname(pathname) {
+  if (pathname === "/") {
+    return "/mcp-openai/";
+  }
+  if (pathname === "/sse") {
+    return "/mcp-sse/sse";
+  }
+  if (pathname === "/messages/" || pathname === "/messages") {
+    return "/mcp-sse/messages/";
+  }
+  return pathname;
+}
+
 function rewriteRedirectLocation(location, backendOrigin, publicBaseUrl) {
   if (!location || !publicBaseUrl) {
     return location;
@@ -57,7 +70,8 @@ export default {
       return openAIAppsChallengeResponse(env);
     }
 
-    const upstreamUrl = new URL(`${origin}${incomingUrl.pathname}${incomingUrl.search}`);
+    const upstreamPathname = resolvePublicMcpPathname(incomingUrl.pathname);
+    const upstreamUrl = new URL(`${origin}${upstreamPathname}${incomingUrl.search}`);
 
     const upstreamRequest = new Request(upstreamUrl, {
       method: request.method,

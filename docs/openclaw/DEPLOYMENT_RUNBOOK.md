@@ -31,8 +31,11 @@ Verified on 2026-04-14:
   - direct VM process under `systemd`
 - local backend
   - `http://127.0.0.1:8765`
-- Neo4j
+- Neo4j (Bolt on **7667** on this VM; co-located `am-server` uses loopback)
   - `bolt://127.0.0.1:7667`
+  - from another host on Tailscale (Browser, CLI), use
+    `bolt://<vm-tailscale-ip>:7667` — do **not** use that for `NEO4J_URI` when
+    `am-server` runs on the same machine (use loopback above)
 - Cloudflare Tunnel backend hostname
   - `https://backend.agentmemorylabs.com`
 - reviewer/public MCP hostname
@@ -120,9 +123,12 @@ Why these values matter:
 - Neo4j credentials
   - `am-server` will not warm its pipelines without a working graph connection
 - `NEO4J_URI`
-  - for the current direct-VM path, use `bolt://127.0.0.1:<bolt-port>`
-  - only switch to `bolt://host.docker.internal:<bolt-port>` if you are using
-    the Docker path and Neo4j is reachable from Docker
+  - for the current direct-VM path with Neo4j on the same VM, use
+    `bolt://127.0.0.1:7667` (production Bolt port on the live VM)
+  - only switch to `bolt://host.docker.internal:7667` if `am-server` runs in
+    Docker and Neo4j listens on the host on that port
+  - `bolt://<vm-tailscale-ip>:7667` is for **remote** clients on the tailnet
+    connecting to Neo4j; colocated `am-server` should still use loopback
 
 ## 2. Render The Compose File Before You Deploy
 

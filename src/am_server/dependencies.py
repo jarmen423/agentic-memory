@@ -30,6 +30,8 @@ from agentic_memory.core.runtime_embedding import build_embedding_service
 from agentic_memory.temporal.bridge import get_temporal_bridge
 from agentic_memory.web.pipeline import ResearchIngestionPipeline
 
+from am_server.neo4j_routing import operator_neo4j_credentials, use_operator_neo4j
+
 
 @lru_cache(maxsize=1)
 def get_pipeline() -> ResearchIngestionPipeline:
@@ -103,6 +105,91 @@ def get_conversation_pipeline() -> ConversationIngestionPipeline:
         extractor,
         temporal_bridge=get_temporal_bridge(),
     )
+
+
+@lru_cache(maxsize=1)
+def get_operator_pipeline() -> ResearchIngestionPipeline:
+    """Research pipeline bound to ``NEO4J_OPERATOR_URI`` (operator private graph).
+
+    Only constructed when routing sends OpenClaw traffic for configured operator
+    workspace ids. See :mod:`am_server.neo4j_routing`.
+    """
+
+    uri, user, password = operator_neo4j_credentials()
+    conn = ConnectionManager(uri=uri, user=user, password=password)
+    embedder = build_embedding_service("web")
+    extraction_llm = resolve_extraction_llm_config()
+    extractor = EntityExtractionService(
+        api_key=extraction_llm.api_key or "",
+        model=extraction_llm.model,
+        provider=extraction_llm.provider,
+        base_url=extraction_llm.base_url,
+    )
+    return ResearchIngestionPipeline(
+        conn,
+        embedder,
+        extractor,
+        temporal_bridge=get_temporal_bridge(),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_operator_conversation_pipeline() -> ConversationIngestionPipeline:
+    """Conversation pipeline bound to ``NEO4J_OPERATOR_URI``."""
+
+    uri, user, password = operator_neo4j_credentials()
+    conn = ConnectionManager(uri=uri, user=user, password=password)
+    embedder = build_embedding_service("chat")
+    extraction_llm = resolve_extraction_llm_config()
+    extractor = EntityExtractionService(
+        api_key=extraction_llm.api_key or "",
+        model=extraction_llm.model,
+        provider=extraction_llm.provider,
+        base_url=extraction_llm.base_url,
+    )
+    return ConversationIngestionPipeline(
+        conn,
+        embedder,
+        extractor,
+        temporal_bridge=get_temporal_bridge(),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_operator_graph():
+    """Code-memory graph builder for the operator Neo4j (same Bolt as operator pipelines)."""
+
+    from agentic_memory.ingestion.graph import KnowledgeGraphBuilder
+
+    uri, user, password = operator_neo4j_credentials()
+    return KnowledgeGraphBuilder(
+        uri=uri,
+        user=user,
+        password=password,
+        openai_key=None,
+        config=None,
+        repo_root=None,
+    )
+
+
+def pipelines_for_openclaw_workspace(
+    workspace_id: str,
+) -> tuple[ResearchIngestionPipeline, ConversationIngestionPipeline]:
+    """Return research + conversation pipelines for one OpenClaw workspace."""
+
+    if use_operator_neo4j(workspace_id):
+        return get_operator_pipeline(), get_operator_conversation_pipeline()
+    return get_pipeline(), get_conversation_pipeline()
+
+
+def graph_for_openclaw_workspace(workspace_id: str):
+    """Return the code graph handle for unified search (shared vs operator Neo4j)."""
+
+    from agentic_memory.server.app import get_graph
+
+    if use_operator_neo4j(workspace_id):
+        return get_operator_graph()
+    return get_graph()
 
 
 @lru_cache(maxsize=1)

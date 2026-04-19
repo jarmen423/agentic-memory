@@ -16,12 +16,9 @@ product store when the request omits it.
 
 - ``am_server.dependencies.get_product_store`` — OpenClaw identity, project
   bindings, automation records, audit events.
-- ``am_server.dependencies.get_conversation_pipeline`` — Turn ingest and Neo4j
-  reads for conversation memory.
-- ``am_server.dependencies.get_pipeline`` — Research/code paths inside unified
-  search.
-- ``agentic_memory.server.app.get_graph`` — Graph handle for code memory in
-  search.
+- ``am_server.dependencies.pipelines_for_openclaw_workspace`` /
+  ``graph_for_openclaw_workspace`` — Pick shared Neo4j vs operator private
+  Neo4j (see ``am_server.neo4j_routing``) for ingest, search, and read.
 - ``agentic_memory.server.unified_search.search_all_memory_sync`` — Single entry
   for cross-domain search.
 - ``am_server.metrics`` — Counters/histograms for OpenClaw operations.
@@ -44,7 +41,11 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from am_server.auth import ensure_workspace_access, require_auth
-from am_server.dependencies import get_conversation_pipeline, get_pipeline, get_product_store
+from am_server.dependencies import (
+    get_product_store,
+    graph_for_openclaw_workspace,
+    pipelines_for_openclaw_workspace,
+)
 from am_server.metrics import (
     record_openclaw_context_resolve,
     record_openclaw_ingest_error,
@@ -64,7 +65,6 @@ from am_server.models import (
     OpenClawSessionRegisterRequest,
     OpenClawTurnIngestRequest,
 )
-from agentic_memory.server.app import get_graph
 from agentic_memory.server.unified_search import search_all_memory_sync
 from agentic_memory.temporal.seeds import parse_conversation_source_id
 
@@ -854,7 +854,7 @@ async def ingest_openclaw_turn(request: Request, body: OpenClawTurnIngestRequest
         explicit_project_id=body.project_id,
     )
 
-    pipeline = get_conversation_pipeline()
+    _, pipeline = pipelines_for_openclaw_workspace(body.workspace_id)
     conversation_payload = ConversationIngestRequest(
         role=body.role,
         content=body.content,
@@ -928,8 +928,8 @@ async def search_openclaw_memory(request: Request, body: OpenClawMemorySearchReq
         hits), and raw ``response`` from unified search (serialized).
 
     Dependencies:
-        ``get_graph``, ``get_pipeline``, ``get_conversation_pipeline`` for the
-        search call; product store for events.
+        ``graph_for_openclaw_workspace`` and ``pipelines_for_openclaw_workspace``
+        for the search call; product store for events.
     """
     ensure_workspace_access(request, body.workspace_id)
     effective_project_id = _resolve_active_project_id(
@@ -952,9 +952,10 @@ async def search_openclaw_memory(request: Request, body: OpenClawMemorySearchReq
         modules=body.modules,
     )
     if cached_payload is None:
-        graph = get_graph()
-        research_pipeline = get_pipeline()
-        conversation_pipeline = get_conversation_pipeline()
+        graph = graph_for_openclaw_workspace(body.workspace_id)
+        research_pipeline, conversation_pipeline = pipelines_for_openclaw_workspace(
+            body.workspace_id
+        )
         response = search_all_memory_sync(
             query=body.query,
             limit=body.limit,
@@ -1045,7 +1046,7 @@ async def read_openclaw_memory(request: Request, body: OpenClawMemoryReadRequest
     ensure_workspace_access(request, body.workspace_id)
     # Search hits may cite "#L{line}" — canonical id is the path before the fragment.
     canonical_path = body.rel_path.split("#", 1)[0].strip()
-    conversation_pipeline = get_conversation_pipeline()
+    _, conversation_pipeline = pipelines_for_openclaw_workspace(body.workspace_id)
 
     try:
         session_id, turn_index = parse_conversation_source_id(canonical_path)

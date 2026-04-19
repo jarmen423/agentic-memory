@@ -328,7 +328,11 @@ Current managed-hosted/publication reality:
   - fronted by the Cloudflare Worker in `deploy/cloudflare-public-edge`
 - current live runtime shape
   - `am-server` runs directly on the VM under `systemd`
-  - current live Neo4j target is loopback `bolt://127.0.0.1:7667`
+  - current live Neo4j target is loopback `bolt://127.0.0.1:7667` (same VM as
+    `am-server`; remote Neo4j Browser on Tailscale uses `bolt://<vm-tailscale-ip>:7667`)
+  - optional second Bolt graph for an allowlisted OpenClaw `workspace_id`
+    (operator private DB): see
+    `.planning/phases/17-openclaw-hosted-beta-and-dual-mode/NEO4J_WORKSPACE_ROUTING.md`
 - current live verification already performed
   - `https://backend.agentmemorylabs.com/health`
   - `https://backend.agentmemorylabs.com/health/onboarding`

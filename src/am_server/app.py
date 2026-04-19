@@ -244,6 +244,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("am-server: conversation pipeline warm-up skipped: %s", exc)
     try:
+        from am_server.neo4j_routing import operator_neo4j_configured, operator_workspace_ids
+
+        if operator_neo4j_configured() and operator_workspace_ids():
+            from am_server.dependencies import (
+                get_operator_conversation_pipeline,
+                get_operator_pipeline,
+            )
+
+            get_operator_pipeline()
+            get_operator_conversation_pipeline()
+            logger.info("am-server: operator Neo4j pipelines warmed up")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("am-server: operator pipeline warm-up skipped: %s", exc)
+    try:
         _publish_runtime_component_status()
         logger.info("am-server: runtime component status published")
     except Exception as exc:  # noqa: BLE001

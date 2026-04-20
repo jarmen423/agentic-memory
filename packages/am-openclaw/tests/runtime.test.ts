@@ -3,6 +3,8 @@ import test from "node:test";
 
 import {
   AgenticMemoryContextEngine,
+  createAgenticMemoryMemoryCapability,
+  createAgenticMemoryMemoryRuntime,
   AgenticMemorySearchManager,
 } from "../src/runtime.js";
 import { resolveAgenticMemoryPluginConfig } from "../src/shared.js";
@@ -96,4 +98,50 @@ test("context engine prepends system memory context in augment_context mode", as
   assert.match(String(assembled.messages[0]?.content), /Shared Agentic Memory context/);
   assert.equal(assembled.systemPromptAddition, "Use shared memory first.");
   assert.ok(assembled.estimatedTokens > 0);
+});
+
+test("memory runtime resolves the requested agent id instead of freezing the initial config", async () => {
+  const runtime = createAgenticMemoryMemoryRuntime({
+    pluginConfig: {
+      backendUrl: "http://127.0.0.1:8765",
+      apiKey: "test-key",
+      workspaceId: "workspace-1",
+      deviceId: "device-1",
+      agentId: "initial-agent",
+      mode: "capture_only",
+    },
+  });
+
+  const result = await runtime.getMemorySearchManager({
+    cfg: {},
+    agentId: "override-agent",
+  });
+
+  assert.equal(
+    result.manager.status().custom?.agentId,
+    "override-agent",
+  );
+  assert.deepEqual(runtime.resolveMemoryBackendConfig(), { backend: "builtin" });
+});
+
+test("memory capability exposes the shared runtime and prompt builder through the unified API", async () => {
+  const capability = createAgenticMemoryMemoryCapability({
+    pluginConfig: {
+      backendUrl: "http://127.0.0.1:8765",
+      apiKey: "test-key",
+      workspaceId: "workspace-1",
+      deviceId: "device-1",
+      agentId: "agent-1",
+      mode: "capture_only",
+    },
+  });
+
+  assert.ok(capability.runtime);
+  assert.equal(typeof capability.runtime.getMemorySearchManager, "function");
+  assert.equal(typeof capability.promptBuilder, "function");
+
+  const promptSection = capability.promptBuilder({
+    availableTools: new Set(["memory_search"]),
+  });
+  assert.match(promptSection.join("\n"), /Shared Agentic Memory/);
 });

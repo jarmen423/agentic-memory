@@ -28,15 +28,59 @@ import type {
 } from "openclaw/plugin-sdk";
 import { AgenticMemoryBackendClient } from "./backend-client.js";
 import {
+  asRecord,
   buildSessionId,
   CONTEXT_ENGINE_INFO,
   estimateTokenCount,
   normalizeMessageText,
   PLUGIN_ID,
+  resolveAgenticMemoryPluginConfig,
   type ResolvedPluginConfig,
   type SearchManagerStatus,
   type SearchResultRecord,
+  type PluginLogger,
 } from "./shared.js";
+
+/**
+ * Minimal memory-runtime shape that current OpenClaw hosts expect from either
+ * the legacy `registerMemoryRuntime(...)` hook or the newer unified
+ * `registerMemoryCapability({ runtime })` surface.
+ *
+ * The plugin keeps this type local instead of importing host-private SDK types
+ * so the code remains buildable even when the user's installed OpenClaw version
+ * drifts slightly from the repo's local declaration shim.
+ */
+export interface AgenticMemoryMemoryRuntime {
+  getMemorySearchManager(params: {
+    cfg: unknown;
+    agentId: string;
+    purpose?: "default" | "status";
+  }): Promise<{
+    manager: AgenticMemorySearchManager;
+  }>;
+  resolveMemoryBackendConfig(params?: unknown): {
+    backend: "builtin";
+  };
+  closeAllMemorySearchManagers(): Promise<void>;
+}
+
+/**
+ * Minimal unified memory capability shape used by modern OpenClaw builds.
+ *
+ * Today the plugin only needs to expose:
+ *
+ * - `runtime`, so CLI/runtime flows can resolve the active memory backend
+ * - `promptBuilder`, so memory guidance still reaches prompt assembly through
+ *   the preferred capability registration path
+ *
+ * The host also supports optional `publicArtifacts`, but Agentic Memory does
+ * not yet export that surface from the backend, so the plugin intentionally
+ * leaves it undefined instead of advertising a fake empty implementation.
+ */
+export interface AgenticMemoryMemoryCapability {
+  runtime: AgenticMemoryMemoryRuntime;
+  promptBuilder: typeof buildMemoryPromptSection;
+}
 
 type BackendResultHit = {
   module?: string;
@@ -213,6 +257,64 @@ export class AgenticMemorySearchManager {
   async probeVectorAvailability(): Promise<boolean> {
     return true;
   }
+}
+
+/**
+ * Build the memory-runtime adapter for the current plugin config snapshot.
+ *
+ * OpenClaw still routes some memory flows through the legacy runtime hook while
+ * newer builds prefer the unified memory capability. By creating one shared
+ * runtime object here, both registration paths stay behaviorally identical
+ * instead of drifting over time.
+ */
+export function createAgenticMemoryMemoryRuntime(params: {
+  pluginConfig: Record<string, unknown>;
+  logger?: PluginLogger;
+}): AgenticMemoryMemoryRuntime {
+  return {
+    async getMemorySearchManager(runtimeParams) {
+      const mergedConfig = resolveAgenticMemoryPluginConfig(
+        asRecord(params.pluginConfig),
+        runtimeParams.agentId,
+      );
+
+      return {
+        manager: new AgenticMemorySearchManager(
+          new AgenticMemoryBackendClient(mergedConfig, params.logger),
+          mergedConfig,
+        ),
+      };
+    },
+    resolveMemoryBackendConfig() {
+      return {
+        backend: "builtin",
+      } as const;
+    },
+    async closeAllMemorySearchManagers() {
+      // The current runtime is stateless per manager instance.
+    },
+  };
+}
+
+/**
+ * Build the unified memory capability registration payload expected by newer
+ * OpenClaw hosts.
+ *
+ * Registering this capability does not replace the legacy runtime hook yet.
+ * The plugin intentionally registers both so:
+ *
+ * - older hosts continue to work through `registerMemoryRuntime(...)`
+ * - newer hosts can discover the active memory plugin through the preferred
+ *   capability API and consume prompt/runtime surfaces from one object
+ */
+export function createAgenticMemoryMemoryCapability(params: {
+  pluginConfig: Record<string, unknown>;
+  logger?: PluginLogger;
+}): AgenticMemoryMemoryCapability {
+  return {
+    runtime: createAgenticMemoryMemoryRuntime(params),
+    promptBuilder: buildMemoryPromptSection,
+  };
 }
 
 export class AgenticMemoryContextEngine implements ContextEngine {

@@ -18,8 +18,9 @@ import { definePluginEntry } from "openclaw/plugin-sdk/core";
 import { AgenticMemoryBackendClient } from "./backend-client.js";
 import {
   AgenticMemoryContextEngine,
-  AgenticMemorySearchManager,
   buildMemoryPromptSection,
+  createAgenticMemoryMemoryCapability,
+  createAgenticMemoryMemoryRuntime,
 } from "./runtime.js";
 import { registerAgenticMemoryCli, type AgenticMemoryCliContext } from "./setup.js";
 import {
@@ -77,31 +78,26 @@ export default definePluginEntry({
       asString(asRecord(api.pluginConfig).agentId),
     );
     const client = new AgenticMemoryBackendClient(config, api.logger);
-
-    api.registerMemoryPromptSection(buildMemoryPromptSection);
-    api.registerMemoryRuntime({
-      async getMemorySearchManager(params: {
-        cfg: unknown;
-        agentId: string;
-        purpose?: "default" | "status";
-      }) {
-        const mergedConfig = resolveAgenticMemoryPluginConfig(asRecord(api.pluginConfig), params.agentId);
-        return {
-          manager: new AgenticMemorySearchManager(
-            new AgenticMemoryBackendClient(mergedConfig, api.logger),
-            mergedConfig,
-          ),
-        };
-      },
-      resolveMemoryBackendConfig() {
-        return {
-          backend: "builtin",
-        } as const;
-      },
-      async closeAllMemorySearchManagers() {
-        // The current runtime is stateless per manager instance.
-      },
+    const memoryRuntime = createAgenticMemoryMemoryRuntime({
+      pluginConfig: asRecord(api.pluginConfig),
+      logger: api.logger,
     });
+
+    // Newer OpenClaw builds prefer one unified memory capability registration.
+    // We register it when available so the host can discover prompt/runtime
+    // features from a single object instead of mixing legacy hooks.
+    api.registerMemoryCapability?.(
+      createAgenticMemoryMemoryCapability({
+        pluginConfig: asRecord(api.pluginConfig),
+        logger: api.logger,
+      }),
+    );
+
+    // Keep the legacy hooks alongside the unified capability for compatibility
+    // with host versions that still resolve memory features from the older
+    // exclusive registration surface.
+    api.registerMemoryPromptSection(buildMemoryPromptSection);
+    api.registerMemoryRuntime(memoryRuntime);
 
     api.registerContextEngine(config.contextEngineId, async () => {
       return new AgenticMemoryContextEngine(client, config);

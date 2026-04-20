@@ -2,7 +2,7 @@
   "id": "agentic-memory",
   "name": "Agentic Memory",
   "description": "Memory capture, retrieval, and optional context augmentation for OpenClaw.",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "kind": [
     "memory",
     "context-engine"

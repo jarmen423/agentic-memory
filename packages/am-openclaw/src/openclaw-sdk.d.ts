@@ -1,17 +1,58 @@
 declare module "openclaw/plugin-sdk/core" {
+  export type OpenClawMemoryRuntime = {
+    getMemorySearchManager(params: {
+      cfg: unknown;
+      agentId: string;
+      purpose?: "default" | "status";
+    }): Promise<{
+      manager: unknown;
+      error?: string;
+    }>;
+    resolveMemoryBackendConfig(params?: unknown): unknown;
+    closeAllMemorySearchManagers?(): Promise<void>;
+  };
+
+  export type OpenClawMemoryCapability = {
+    runtime?: OpenClawMemoryRuntime;
+    promptBuilder?: (params: {
+      availableTools: Set<string>;
+      citationsMode?: string;
+    }) => string[];
+    publicArtifacts?: {
+      listArtifacts?(params: { cfg: unknown }): Promise<unknown[]>;
+    };
+  };
+
   export type OpenClawPluginApi = {
     pluginConfig: Record<string, unknown>;
+    registrationMode?: "full" | "cli-metadata";
     logger?: {
       debug?: (...args: unknown[]) => void;
       info?: (...args: unknown[]) => void;
       warn?: (...args: unknown[]) => void;
       error?: (...args: unknown[]) => void;
     };
+    registerCli?(
+      registrar: (params: {
+        program: unknown;
+        config: Record<string, unknown>;
+        workspaceDir?: string;
+        logger?: OpenClawPluginApi["logger"];
+      }) => void,
+      opts?: {
+        descriptors?: Array<{
+          name: string;
+          description: string;
+          hasSubcommands?: boolean;
+        }>;
+      },
+    ): void;
+    registerMemoryCapability?(capability: OpenClawMemoryCapability): void;
     registerMemoryPromptSection(builder: (params: {
       availableTools: Set<string>;
       citationsMode?: string;
     }) => string[]): void;
-    registerMemoryRuntime(runtime: unknown): void;
+    registerMemoryRuntime(runtime: OpenClawMemoryRuntime): void;
     registerContextEngine(id: string, factory: () => unknown | Promise<unknown>): void;
   };
 
@@ -19,7 +60,7 @@ declare module "openclaw/plugin-sdk/core" {
     id: string;
     name: string;
     description: string;
-    kind?: "memory" | "context-engine";
+    kind?: "memory" | "context-engine" | Array<"memory" | "context-engine">;
     configSchema?: Record<string, unknown>;
     register(api: OpenClawPluginApi): void;
   }): unknown;

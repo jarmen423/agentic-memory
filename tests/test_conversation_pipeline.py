@@ -183,6 +183,27 @@ class TestEmbeddableTurnFlow:
         assert result["device_id"] == "device-laptop"
         assert result["agent_id"] == "agent-openclaw-1"
 
+    def test_user_turn_survives_entity_extraction_failure(self):
+        """Entity extraction failures should not abort turn ingestion.
+
+        Conversation memory durability matters more than extractor enrichment.
+        When the extraction LLM refuses JSON mode or has a transient outage, we
+        still embed the raw turn content and persist the turn/session nodes.
+        """
+
+        pipeline, mock_writer = _make_pipeline()
+        pipeline._extractor.extract.side_effect = RuntimeError("json_validate_failed")
+
+        result = pipeline.ingest(_turn_source(role="user"))
+
+        assert result["embedded"] is True
+        assert result["entities_count"] == 0
+        pipeline._embedder.embed.assert_called_once_with(
+            "What is the architecture of agentic-memory?"
+        )
+        assert mock_writer.write_memory_node.call_count == 1
+        assert mock_writer.write_session_node.call_count == 1
+
     def test_assistant_turn_also_embeds(self):
         """ingest(role='assistant') calls embedder (same as user)."""
         pipeline, _ = _make_pipeline()

@@ -1113,6 +1113,11 @@ async def search_openclaw_memory(request: Request, body: OpenClawMemorySearchReq
     conversation backends). Responses are cached briefly per identity and query
     parameters to reduce duplicate work.
 
+    Temporal retrieval stays a hard requirement only when the request resolves
+    to an explicit or active ``project_id``. General OpenClaw chat memory with
+    no project selected should still be searchable through dense/text baselines
+    instead of failing closed on project-scoped temporal requirements.
+
     Args:
         body: Query string, limit, optional ``as_of``, optional module filter,
             workspace/device/agent/session, and optional explicit ``project_id``.
@@ -1162,7 +1167,7 @@ async def search_openclaw_memory(request: Request, body: OpenClawMemorySearchReq
                 graph=graph,
                 research_pipeline=research_pipeline,
                 conversation_pipeline=conversation_pipeline,
-                fail_on_temporal_errors=True,
+                fail_on_temporal_errors=bool(effective_project_id),
             )
         except TemporalRetrievalRequiredError as exc:
             raise HTTPException(status_code=503, detail=exc.to_http_detail()) from exc
@@ -1364,7 +1369,12 @@ async def search_openclaw_tool_conversations(
     request: Request,
     body: OpenClawToolConversationSearchRequest,
 ) -> dict:
-    """Bridge `search_conversations` into OpenClaw with session/project routing."""
+    """Bridge `search_conversations` into OpenClaw with session/project routing.
+
+    General chat memory should remain searchable even when no active project is
+    selected. We therefore only enforce the temporal-first contract when the
+    request resolves to an explicit or active ``project_id``.
+    """
 
     from agentic_memory.server.tools import search_conversation_turns_sync
 
@@ -1386,7 +1396,7 @@ async def search_openclaw_tool_conversations(
             limit=body.limit,
             as_of=body.as_of,
             log_prefix="openclaw.tools.search_conversations",
-            temporal_required=True,
+            temporal_required=bool(effective_project_id),
         )
     except TemporalRetrievalRequiredError as exc:
         raise HTTPException(status_code=503, detail=exc.to_http_detail()) from exc
@@ -1409,7 +1419,12 @@ async def get_openclaw_tool_conversation_context(
     request: Request,
     body: OpenClawToolConversationContextRequest,
 ) -> dict:
-    """Bridge `get_conversation_context` into OpenClaw with active-project resolution."""
+    """Bridge `get_conversation_context` into OpenClaw with active-project resolution.
+
+    When no project is active, this route still returns context windows around
+    dense/text conversation hits. Temporal graph enrichment only becomes a hard
+    requirement once the request resolves to a concrete ``project_id``.
+    """
 
     from agentic_memory.server.tools import (
         _fetch_conversation_context_window,
@@ -1424,15 +1439,6 @@ async def get_openclaw_tool_conversation_context(
         session_id=body.session_id,
         explicit_project_id=body.project_id,
     )
-    if not effective_project_id:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "Conversation context requires an active project. "
-                "Start a project for this session or pass an explicit project_id."
-            ),
-        )
-
     _, conversation_pipeline = pipelines_for_openclaw_workspace(body.workspace_id)
     conn = conversation_pipeline._conn  # type: ignore[attr-defined]
     try:
@@ -1444,7 +1450,7 @@ async def get_openclaw_tool_conversation_context(
             limit=body.limit,
             as_of=body.as_of,
             log_prefix="openclaw.tools.get_conversation_context",
-            temporal_required=True,
+            temporal_required=bool(effective_project_id),
         )
     except TemporalRetrievalRequiredError as exc:
         raise HTTPException(status_code=503, detail=exc.to_http_detail()) from exc

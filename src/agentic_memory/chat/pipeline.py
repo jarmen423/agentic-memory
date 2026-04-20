@@ -150,8 +150,23 @@ class ConversationIngestionPipeline(BaseIngestionPipeline):
         embedding_model: str | None = None
 
         if role in EMBEDDABLE_ROLES:
-            # Entity extraction (one LLM call per turn, user/assistant only)
-            entities = self._extractor.extract(content)
+            # Entity extraction enriches embeddings and graph edges, but it is
+            # not the primary durability contract for conversation memory. If
+            # the extractor model refuses JSON mode or a provider has a brief
+            # outage, we still want to store the turn and its raw embedding
+            # rather than fail the whole ingest request with a 500.
+            try:
+                entities = self._extractor.extract(content)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Entity extraction failed during conversation ingest; falling back to raw-content embedding. "
+                    "session_id=%s turn_index=%s role=%s error=%s",
+                    session_id,
+                    turn_index,
+                    role,
+                    exc,
+                )
+                entities = []
             embed_text = build_embed_text(content, entities)
             embedding = self._embedder.embed(embed_text)
             embedding_model = "gemini-embedding-2-preview"

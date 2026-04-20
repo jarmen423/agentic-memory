@@ -18,6 +18,7 @@ Why this exists:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import math
 import json
 import logging
@@ -96,13 +97,38 @@ def _edge_identity(claim: dict[str, Any]) -> tuple[str, ...]:
 
 
 def _evidence_identity(claim: dict[str, Any]) -> tuple[str, ...]:
-    """Build the same logical evidence identity used by the temporal reducer."""
+    """Build the same logical evidence identity used by the temporal helper.
+
+    Important nuance:
+        The Python healthcare mapper does not populate ``evidence.hash``.
+        The Node bridge fills that in before reducer ingest by hashing a JSON
+        payload that includes ``projectId``, source identifiers, ``sourceUri``,
+        ``rawExcerpt``, and ``capturedAtUs``.
+
+        The integrity check must mirror that helper behavior exactly. If it
+        instead treats a missing hash as an empty string, it will undercount
+        distinct evidence rows that share ``sourceId`` but differ in excerpt or
+        URI content.
+    """
     evidence = claim["evidence"]
+    evidence_hash = evidence.get("hash")
+    if not evidence_hash:
+        helper_hash_payload = {
+            "projectId": claim["project_id"],
+            "sourceKind": evidence["sourceKind"],
+            "sourceId": evidence["sourceId"],
+            "sourceUri": evidence.get("sourceUri"),
+            "rawExcerpt": evidence.get("rawExcerpt"),
+            "capturedAtUs": str(evidence.get("capturedAtUs")),
+        }
+        evidence_hash = hashlib.sha256(
+            json.dumps(helper_hash_payload, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
     return (
         _normalize_part(claim["project_id"]),
         _normalize_part(evidence["sourceKind"]),
         _normalize_part(evidence["sourceId"]),
-        _normalize_part(evidence.get("hash")),
+        _normalize_part(evidence_hash),
         _normalize_part(evidence.get("capturedAtUs")),
     )
 

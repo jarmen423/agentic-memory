@@ -286,6 +286,20 @@ class SyntheaQAGenerator:
                 len(provider_ids),
             )
 
+            # Empty-ground-truth cohort tasks are poor experiment inputs for the
+            # current scorer because they collapse recall/F1 to zero regardless
+            # of retrieval quality. Skip them so Exp 2 only contains queries
+            # that have a real multi-hop answer set in this dataset slice.
+            if not matched_patients or not provider_ids:
+                logger.info(
+                    "Skipping cohort [%s] because it has no benchmarkable ground truth "
+                    "(matched_patients=%d providers=%d).",
+                    pair["label"],
+                    len(matched_patients),
+                    len(provider_ids),
+                )
+                continue
+
             tasks.append({
                 "id": f"EXP2-C{idx:04d}",
                 "label": pair["label"],

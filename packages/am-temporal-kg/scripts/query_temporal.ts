@@ -282,6 +282,7 @@ type GeneratedConnection = {
   };
   reducers: {
     ingestTemporalClaim(args: IngestTemporalClaimArgs): Promise<void>;
+    ingestTemporalClaims(args: { claims: IngestTemporalClaimArgs[] }): Promise<void>;
     ingestTemporalEdge(args: IngestTemporalEdgeArgs): Promise<void>;
     upsertNode(args: UpsertNodeArgs): Promise<void>;
   };
@@ -610,15 +611,14 @@ export class TemporalQueryHelper {
   async ingestClaims(request: IngestClaimsRequest): Promise<JsonRecord> {
     const connection = await this.getConnection();
     const byPredicate = new Map<string, number>();
-
-    for (const claim of request.claims) {
-      const args = this.buildClaimArgs(claim);
-      await connection.reducers.ingestTemporalClaim(args);
+    const argsList = request.claims.map((claim) => this.buildClaimArgs(claim));
+    for (const args of argsList) {
       byPredicate.set(args.predicate, (byPredicate.get(args.predicate) ?? 0) + 1);
     }
+    await connection.reducers.ingestTemporalClaims({ claims: argsList });
 
     return {
-      written: request.claims.length,
+      written: argsList.length,
       byPredicate: Object.fromEntries(byPredicate),
     };
   }

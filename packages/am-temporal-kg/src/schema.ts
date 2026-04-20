@@ -10,6 +10,20 @@ export const EvidenceInput = t.object("EvidenceInput", {
   hash: t.string(),
 });
 
+export const TemporalClaimInput = t.object("TemporalClaimInput", {
+  projectId: t.string(),
+  subjectKind: t.string(),
+  subjectName: t.string(),
+  predicate: t.string(),
+  objectKind: t.string(),
+  objectName: t.string(),
+  validFromUs: t.i64(),
+  validToUs: t.option(t.i64()),
+  confidence: t.f32(),
+  evidence: EvidenceInput,
+  nowUs: t.i64(),
+});
+
 export const RetrievalResult = t.object("RetrievalResult", {
   edgeId: t.u128(),
   subjId: t.u128(),

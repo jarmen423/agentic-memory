@@ -3,7 +3,7 @@ import { SenderError, t } from "spacetimedb/server";
 import { hashU128, normalizeName, normalizePredicate } from "../lib/hash";
 import { updateRunningStats } from "../lib/mdl";
 import { midpointMicros, overlaps } from "../lib/time";
-import { EvidenceInput, spacetimedb } from "../schema";
+import { EvidenceInput, TemporalClaimInput, spacetimedb } from "../schema";
 
 const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
 
@@ -369,5 +369,47 @@ export const ingest_temporal_claim = spacetimedb.reducer(
       },
       nowUs: args.nowUs,
     });
+  },
+);
+
+export const ingest_temporal_claims = spacetimedb.reducer(
+  { name: "ingest_temporal_claims" },
+  {
+    claims: t.array(TemporalClaimInput),
+  },
+  (ctx: any, args: any) => {
+    for (const claim of args.claims) {
+      const subjId = upsertNodeRow(ctx, {
+        projectId: claim.projectId,
+        kind: claim.subjectKind,
+        name: claim.subjectName,
+        nowUs: claim.nowUs,
+      });
+      const objId = upsertNodeRow(ctx, {
+        projectId: claim.projectId,
+        kind: claim.objectKind,
+        name: claim.objectName,
+        nowUs: claim.nowUs,
+      });
+
+      ingestTemporalEdgeRow(ctx, {
+        projectId: claim.projectId,
+        subjId,
+        pred: claim.predicate,
+        objId,
+        validFromUs: claim.validFromUs,
+        validToUs: claim.validToUs,
+        confidence: claim.confidence,
+        evidence: {
+          sourceKind: claim.evidence.sourceKind,
+          sourceId: claim.evidence.sourceId,
+          sourceUri: claim.evidence.sourceUri,
+          capturedAtUs: claim.evidence.capturedAtUs,
+          rawExcerpt: claim.evidence.rawExcerpt,
+          hash: claim.evidence.hash,
+        },
+        nowUs: claim.nowUs,
+      });
+    }
   },
 );

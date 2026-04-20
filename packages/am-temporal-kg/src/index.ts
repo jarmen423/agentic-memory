@@ -3,6 +3,7 @@ export {
   upsert_node,
   ingest_temporal_edge,
   ingest_temporal_claim,
+  ingest_temporal_claims,
 } from "./reducers/ingest";
 export {
   seed_maintenance_jobs,

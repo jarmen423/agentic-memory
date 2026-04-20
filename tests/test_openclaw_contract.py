@@ -14,6 +14,8 @@ from fastapi.testclient import TestClient
 from am_server import dependencies
 from am_server.app import create_app
 from am_server.routes import openclaw
+from agentic_memory.server.result_types import UnifiedMemoryHit, UnifiedSearchResponse
+from agentic_memory.server.temporal_contract import TemporalRetrievalRequiredError
 
 
 def _assert_error_envelope(
@@ -111,6 +113,26 @@ def test_openclaw_onboarding_contract_is_public_and_matches_locked_identity(clie
     assert body["readiness"]["capture_only_ready"] is True
     assert any(service["service_id"] == "openclaw_memory" for service in body["required_services"])
     assert any(service["service_id"] == "temporal_stack" for service in body["optional_services"])
+
+
+def test_openclaw_openapi_includes_tool_bridge_routes():
+    """The generated OpenAPI spec should advertise every plugin-facing tool route.
+
+    This catches a specific failure mode from the OpenClaw integration work:
+    the plugin can register tools successfully, but if the deployed backend is
+    still on an older revision the `/openclaw/tools/*` handlers are missing and
+    every tool call fails with `404 Not Found`.
+    """
+
+    spec = create_app().openapi()
+    paths = spec["paths"]
+
+    assert "/openclaw/memory/search" in paths
+    assert "/openclaw/tools/search-codebase" in paths
+    assert "/openclaw/tools/get-file-dependencies" in paths
+    assert "/openclaw/tools/trace-execution-path" in paths
+    assert "/openclaw/tools/search-conversations" in paths
+    assert "/openclaw/tools/get-conversation-context" in paths
 
 
 def test_openclaw_contract_managed_workspace_keys_are_workspace_scoped(monkeypatch, tmp_path):
@@ -235,9 +257,12 @@ def test_openclaw_contract_validation_errors_are_machine_readable(client):
 def test_openclaw_contract_runtime_failures_are_machine_readable(client, monkeypatch):
     """Unexpected route failures should normalize to the shared 500 envelope."""
 
-    monkeypatch.setattr(openclaw, "get_graph", lambda: object())
-    monkeypatch.setattr(openclaw, "get_pipeline", lambda: "research")
-    monkeypatch.setattr(openclaw, "get_conversation_pipeline", lambda: "conversation")
+    monkeypatch.setattr(openclaw, "graph_for_openclaw_workspace", lambda workspace_id: object())
+    monkeypatch.setattr(
+        openclaw,
+        "pipelines_for_openclaw_workspace",
+        lambda workspace_id: ("research", "conversation"),
+    )
 
     def blow_up(**kwargs):
         raise RuntimeError("search failed")
@@ -264,6 +289,134 @@ def test_openclaw_contract_runtime_failures_are_machine_readable(client, monkeyp
     )
     assert error["details"]["exception_type"] == "RuntimeError"
     assert response.headers["X-Request-ID"]
+
+
+def test_openclaw_memory_search_serializes_unified_response_dataclass(client, monkeypatch):
+    """OpenClaw memory search should handle dataclass responses without 500s.
+
+    The unified search service returns a ``UnifiedSearchResponse`` dataclass, not
+    a raw dict. This test protects the adapter layer that serializes that object
+    before it normalizes individual hits for the OpenClaw plugin shape.
+    """
+
+    monkeypatch.setattr(openclaw, "graph_for_openclaw_workspace", lambda workspace_id: object())
+    monkeypatch.setattr(
+        openclaw,
+        "pipelines_for_openclaw_workspace",
+        lambda workspace_id: ("research", "conversation"),
+    )
+    monkeypatch.setattr(
+        openclaw,
+        "search_all_memory_sync",
+        lambda **kwargs: UnifiedSearchResponse(
+            results=[
+                UnifiedMemoryHit(
+                    module="conversation",
+                    source_kind="conversation_turn",
+                    source_id="session-1:0",
+                    title="Assistant turn",
+                    excerpt="hello from memory",
+                    score=0.9,
+                    metadata={"turn_index": 0},
+                )
+            ],
+            errors=[],
+        ),
+    )
+
+    response = client.post(
+        "/openclaw/memory/search",
+        headers={"Authorization": "Bearer new-key"},
+        json={
+            "workspace_id": "workspace-1",
+            "device_id": "device-1",
+            "agent_id": "agent-1",
+            "session_id": "session-1",
+            "query": "memory",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["results"][0]["path"] == "session-1:0"
+    assert body["results"][0]["citation"] == "session-1:0#L1"
+    assert body["response"]["results"][0]["source_id"] == "session-1:0"
+
+
+def test_openclaw_tool_bridge_awaits_decorated_tool_results(client, monkeypatch):
+    """Tool bridge routes should await MCP-wrapped tool functions before returning.
+
+    The Agentic Memory MCP layer wraps tool functions in an async telemetry
+    decorator. Importing those callables directly into FastAPI routes means the
+    route must await them, even when the underlying tool logic is synchronous.
+    """
+
+    async def fake_search_codebase(**kwargs):
+        return "## Code Search\n\nAwaited successfully."
+
+    monkeypatch.setattr(
+        "agentic_memory.server.app.search_codebase",
+        fake_search_codebase,
+    )
+
+    response = client.post(
+        "/openclaw/tools/search-codebase",
+        headers={"Authorization": "Bearer new-key"},
+        json={
+            "workspace_id": "workspace-1",
+            "device_id": "device-1",
+            "agent_id": "agent-1",
+            "session_id": "session-1",
+            "query": "memory",
+            "repo_id": "agentic-memory",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "Awaited successfully." in response.json()["text"]
+
+
+def test_openclaw_conversation_tool_temporal_failures_return_503(client, monkeypatch):
+    """Temporal contract failures should stay explicit on OpenClaw conversation routes."""
+
+    monkeypatch.setattr(
+        openclaw,
+        "pipelines_for_openclaw_workspace",
+        lambda workspace_id: ("research", MagicMock()),
+    )
+
+    def raise_temporal(*args, **kwargs):
+        raise TemporalRetrievalRequiredError(
+            module="conversation",
+            reason="project_scope_missing",
+            message="Temporal-first conversation retrieval requires a project scope.",
+        )
+
+    monkeypatch.setattr(
+        "agentic_memory.server.tools.search_conversation_turns_sync",
+        raise_temporal,
+    )
+
+    response = client.post(
+        "/openclaw/tools/search-conversations",
+        headers={"Authorization": "Bearer new-key"},
+        json={
+            "workspace_id": "workspace-1",
+            "device_id": "device-1",
+            "agent_id": "agent-1",
+            "session_id": "session-1",
+            "project_id": "agentic-memory",
+            "query": "memory",
+        },
+    )
+
+    error = _assert_error_envelope(
+        response,
+        code="temporal_retrieval_unavailable",
+        status_code=503,
+        message_contains="requires a project scope",
+    )
+    assert error["details"]["module"] == "conversation"
 
 
 def test_openclaw_contract_metrics_include_openclaw_route_labels(client):
@@ -295,9 +448,12 @@ def test_openclaw_contract_metrics_include_domain_series(client, monkeypatch):
 
     mock_conversation_pipeline = dependencies.get_conversation_pipeline()
     mock_conversation_pipeline.ingest.return_value = {"stored": True}
-    monkeypatch.setattr(openclaw, "get_graph", lambda: object())
-    monkeypatch.setattr(openclaw, "get_pipeline", lambda: "research")
-    monkeypatch.setattr(openclaw, "get_conversation_pipeline", lambda: mock_conversation_pipeline)
+    monkeypatch.setattr(openclaw, "graph_for_openclaw_workspace", lambda workspace_id: object())
+    monkeypatch.setattr(
+        openclaw,
+        "pipelines_for_openclaw_workspace",
+        lambda workspace_id: ("research", mock_conversation_pipeline),
+    )
     monkeypatch.setattr(
         openclaw,
         "search_all_memory_sync",
@@ -390,9 +546,12 @@ def test_openclaw_dashboard_summary_is_authenticated_and_machine_readable(client
 def test_openclaw_dashboard_recent_searches_returns_openclaw_search_activity(client, monkeypatch):
     """Recent-search route should expose search activity once OpenClaw calls search."""
 
-    monkeypatch.setattr(openclaw, "get_graph", lambda: object())
-    monkeypatch.setattr(openclaw, "get_pipeline", lambda: "research")
-    monkeypatch.setattr(openclaw, "get_conversation_pipeline", lambda: "conversation")
+    monkeypatch.setattr(openclaw, "graph_for_openclaw_workspace", lambda workspace_id: object())
+    monkeypatch.setattr(
+        openclaw,
+        "pipelines_for_openclaw_workspace",
+        lambda workspace_id: ("research", "conversation"),
+    )
     monkeypatch.setattr(
         openclaw,
         "search_all_memory_sync",

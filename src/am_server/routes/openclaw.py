@@ -33,6 +33,9 @@ product store when the request omits it.
 from __future__ import annotations
 
 import copy
+from dataclasses import asdict, is_dataclass
+import inspect
+import json
 from collections.abc import Iterable
 from threading import Lock
 import time
@@ -70,6 +73,7 @@ from am_server.models import (
     OpenClawToolTraceExecutionPathRequest,
     OpenClawTurnIngestRequest,
 )
+from agentic_memory.server.temporal_contract import TemporalRetrievalRequiredError
 from agentic_memory.server.unified_search import search_all_memory_sync
 from agentic_memory.temporal.seeds import parse_conversation_source_id
 
@@ -97,14 +101,98 @@ def _record_workspace_usage(*, workspace_id: str, metric: str, metadata: dict[st
 
 
 def _serialize(value: object) -> object:
-    """Serialize pydantic-like values without depending on a concrete model type."""
+    """Serialize route payloads into plain JSON-safe Python objects.
+
+    The OpenClaw routes sit on top of a few different internal result types:
+
+    - Pydantic models expose ``model_dump()``
+    - dataclass payloads such as ``UnifiedSearchResponse`` expose ``to_dict()``
+      or can be converted with ``dataclasses.asdict``
+    - some route helpers return nested lists / dicts directly
+
+    Earlier versions of this adapter only knew about ``model_dump()``. That was
+    enough for Pydantic models, but it broke once the unified search path
+    started returning dataclass-based responses. The result was an
+    ``AttributeError`` later in the route when the code assumed the serialized
+    payload had ``dict`` methods like ``.get(...)``.
+    """
     if hasattr(value, "model_dump"):
         return value.model_dump()
+    if hasattr(value, "to_dict"):
+        return _serialize(value.to_dict())
+    if is_dataclass(value):
+        return _serialize(asdict(value))
     if isinstance(value, list):
         return [_serialize(item) for item in value]
     if isinstance(value, dict):
         return {key: _serialize(item) for key, item in value.items()}
     return value
+
+
+def _coerce_serialized_mapping(value: object, *, field_name: str) -> dict[str, Any]:
+    """Return one serialized mapping or raise a stable adapter error.
+
+    OpenClaw routes often need to preserve the raw structured payload for
+    debugging while also reshaping part of it for the plugin. This helper keeps
+    that boundary explicit: after serialization, the adapter expects a mapping.
+    If an internal helper returns some other shape, we fail with a targeted
+    error instead of a later ``AttributeError``.
+    """
+
+    serialized = _serialize(value)
+    if isinstance(serialized, dict):
+        return serialized
+    raise TypeError(
+        f"Expected `{field_name}` to serialize into an object mapping, "
+        f"but got `{type(serialized).__name__}`."
+    )
+
+
+def _coerce_serialized_hit_rows(value: object, *, field_name: str) -> list[dict[str, Any]]:
+    """Return a list of search-hit mappings after defensive serialization."""
+
+    serialized = _serialize(value)
+    if serialized is None:
+        return []
+    if not isinstance(serialized, list):
+        raise TypeError(
+            f"Expected `{field_name}` to serialize into a list, "
+            f"but got `{type(serialized).__name__}`."
+        )
+
+    rows: list[dict[str, Any]] = []
+    for index, item in enumerate(serialized):
+        if not isinstance(item, dict):
+            raise TypeError(
+                f"Expected `{field_name}[{index}]` to serialize into an object mapping, "
+                f"but got `{type(item).__name__}`."
+            )
+        rows.append(item)
+    return rows
+
+
+async def _resolve_openclaw_tool_text_result(result: object) -> str:
+    """Normalize OpenClaw tool bridge results into plain text.
+
+    The public Agentic Memory tool implementations are MCP-decorated. Importing
+    them directly into FastAPI routes means the callable may return a coroutine
+    because the telemetry/rate-limit wrapper is async even when the underlying
+    tool logic is synchronous. The OpenClaw adapter should therefore:
+
+    1. await any awaitable result
+    2. preserve plain strings unchanged
+    3. JSON-stringify structured fallbacks so FastAPI never tries to serialize
+       a coroutine or opaque object itself
+    """
+
+    resolved = await result if inspect.isawaitable(result) else result
+    if isinstance(resolved, str):
+        return resolved
+
+    serialized = _serialize(resolved)
+    if isinstance(serialized, str):
+        return serialized
+    return json.dumps(serialized, indent=2, sort_keys=True, default=str)
 
 
 def _monotonic_now() -> float:
@@ -1038,17 +1126,21 @@ async def search_openclaw_memory(request: Request, body: OpenClawMemorySearchReq
         research_pipeline, conversation_pipeline = pipelines_for_openclaw_workspace(
             body.workspace_id
         )
-        response = search_all_memory_sync(
-            query=body.query,
-            limit=body.limit,
-            project_id=effective_project_id,
-            as_of=body.as_of,
-            modules=body.modules,
-            graph=graph,
-            research_pipeline=research_pipeline,
-            conversation_pipeline=conversation_pipeline,
-        )
-        payload = _serialize(response)
+        try:
+            response = search_all_memory_sync(
+                query=body.query,
+                limit=body.limit,
+                project_id=effective_project_id,
+                as_of=body.as_of,
+                modules=body.modules,
+                graph=graph,
+                research_pipeline=research_pipeline,
+                conversation_pipeline=conversation_pipeline,
+                fail_on_temporal_errors=True,
+            )
+        except TemporalRetrievalRequiredError as exc:
+            raise HTTPException(status_code=503, detail=exc.to_http_detail()) from exc
+        payload = _coerce_serialized_mapping(response, field_name="search_response")
         _write_cached_search_response(
             workspace_id=body.workspace_id,
             device_id=body.device_id,
@@ -1064,6 +1156,8 @@ async def search_openclaw_memory(request: Request, body: OpenClawMemorySearchReq
     else:
         payload = cached_payload
         cache_hit = True
+
+    raw_hits = _coerce_serialized_hit_rows(payload.get("results"), field_name="search_response.results")
 
     duration = time.perf_counter() - started
     record_openclaw_search(
@@ -1096,9 +1190,7 @@ async def search_openclaw_memory(request: Request, body: OpenClawMemorySearchReq
         "status": "ok",
         "identity": {**body.model_dump(), "project_id": effective_project_id},
         "cache_hit": cache_hit,
-        "results": [
-            _normalize_openclaw_hit(hit) for hit in payload.get("results", [])
-        ],
+        "results": [_normalize_openclaw_hit(hit) for hit in raw_hits],
         "response": payload,
     }
 
@@ -1178,11 +1270,13 @@ async def search_openclaw_tool_codebase(
     from agentic_memory.server.app import search_codebase
 
     ensure_workspace_access(request, body.workspace_id)
-    text = search_codebase(
-        query=body.query,
-        limit=body.limit,
-        domain=body.domain,
-        repo_id=body.repo_id,
+    text = await _resolve_openclaw_tool_text_result(
+        search_codebase(
+            query=body.query,
+            limit=body.limit,
+            domain=body.domain,
+            repo_id=body.repo_id,
+        )
     )
     return {
         "status": "ok",
@@ -1201,9 +1295,11 @@ async def get_openclaw_tool_file_dependencies(
     from agentic_memory.server.app import get_file_dependencies
 
     ensure_workspace_access(request, body.workspace_id)
-    text = get_file_dependencies(
-        file_path=body.file_path,
-        repo_id=body.repo_id,
+    text = await _resolve_openclaw_tool_text_result(
+        get_file_dependencies(
+            file_path=body.file_path,
+            repo_id=body.repo_id,
+        )
     )
     return {
         "status": "ok",
@@ -1222,11 +1318,13 @@ async def trace_openclaw_tool_execution_path(
     from agentic_memory.server.app import trace_execution_path
 
     ensure_workspace_access(request, body.workspace_id)
-    text = trace_execution_path(
-        start_symbol=body.start_symbol,
-        max_depth=body.max_depth,
-        force_refresh=body.force_refresh,
-        repo_id=body.repo_id,
+    text = await _resolve_openclaw_tool_text_result(
+        trace_execution_path(
+            start_symbol=body.start_symbol,
+            max_depth=body.max_depth,
+            force_refresh=body.force_refresh,
+            repo_id=body.repo_id,
+        )
     )
     return {
         "status": "ok",
@@ -1252,16 +1350,19 @@ async def search_openclaw_tool_conversations(
         explicit_project_id=body.project_id,
     )
     _, conversation_pipeline = pipelines_for_openclaw_workspace(body.workspace_id)
-    results = search_conversation_turns_sync(
-        conversation_pipeline,
-        query=body.query,
-        project_id=effective_project_id,
-        role=body.role,
-        limit=body.limit,
-        as_of=body.as_of,
-        log_prefix="openclaw.tools.search_conversations",
-        temporal_required=True,
-    )
+    try:
+        results = search_conversation_turns_sync(
+            conversation_pipeline,
+            query=body.query,
+            project_id=effective_project_id,
+            role=body.role,
+            limit=body.limit,
+            as_of=body.as_of,
+            log_prefix="openclaw.tools.search_conversations",
+            temporal_required=True,
+        )
+    except TemporalRetrievalRequiredError as exc:
+        raise HTTPException(status_code=503, detail=exc.to_http_detail()) from exc
     return {
         "status": "ok",
         "identity": {**body.model_dump(), "project_id": effective_project_id},
@@ -1306,16 +1407,19 @@ async def get_openclaw_tool_conversation_context(
 
     _, conversation_pipeline = pipelines_for_openclaw_workspace(body.workspace_id)
     conn = conversation_pipeline._conn  # type: ignore[attr-defined]
-    matched_turns = search_conversation_turns_sync(
-        conversation_pipeline,
-        query=body.query,
-        project_id=effective_project_id,
-        role=None,
-        limit=body.limit,
-        as_of=body.as_of,
-        log_prefix="openclaw.tools.get_conversation_context",
-        temporal_required=True,
-    )
+    try:
+        matched_turns = search_conversation_turns_sync(
+            conversation_pipeline,
+            query=body.query,
+            project_id=effective_project_id,
+            role=None,
+            limit=body.limit,
+            as_of=body.as_of,
+            log_prefix="openclaw.tools.get_conversation_context",
+            temporal_required=True,
+        )
+    except TemporalRetrievalRequiredError as exc:
+        raise HTTPException(status_code=503, detail=exc.to_http_detail()) from exc
     turns_with_context: list[dict[str, Any]] = []
     for turn in matched_turns:
         turn_data = dict(turn)

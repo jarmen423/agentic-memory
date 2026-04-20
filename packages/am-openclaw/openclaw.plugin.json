@@ -2,12 +2,16 @@
   "id": "agentic-memory",
   "name": "Agentic Memory",
   "description": "Memory capture, retrieval, and optional context augmentation for OpenClaw.",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "kind": [
     "memory",
     "context-engine"
   ],
   "uiHints": {
+    "backendKind": {
+      "label": "Backend Mode",
+      "help": "Use hosted for the managed Agentic Memory backend and self_hosted for your own local or operator-managed deployment."
+    },
     "backendUrl": {
       "label": "Backend URL",
       "placeholder": "http://127.0.0.1:8765",
@@ -53,6 +57,13 @@
       "schemaVersion": {
         "type": "integer",
         "default": 1
+      },
+      "backendKind": {
+        "type": "string",
+        "enum": [
+          "hosted",
+          "self_hosted"
+        ]
       },
       "backendUrl": {
         "type": "string"

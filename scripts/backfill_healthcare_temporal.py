@@ -16,7 +16,7 @@ Operational model:
     2. Reconstruct each normalized healthcare row from the export payload.
     3. Convert supported clinical rows into deterministic temporal claims
        using ``agentic_memory.healthcare.temporal_mapper``.
-    4. Send those claims to ``TemporalBridge.ingest_claims(...)`` in batches.
+    4. Send those claims to the backfill-optimized temporal reducer in batches.
 
 Important scope boundary:
     - Encounter rows are intentionally skipped because the current temporal
@@ -262,6 +262,9 @@ def flush_claim_batch(
         the same time, we do not want one bad claim to hide which record broke
         the batch. If the batched request fails, we fall back to row-by-row
         writes for that batch so the operator still gets precise error logs.
+        The bridge call here deliberately uses the backfill-only reducer so the
+        run skips optional contradiction/stat maintenance without changing the
+        normal application ingest path.
 
     Returns:
         Tuple ``(written, errors)`` for this batch.
@@ -270,7 +273,7 @@ def flush_claim_batch(
         return 0, 0
 
     try:
-        result = bridge.ingest_claims(claims=pending_claims)
+        result = bridge.ingest_claims_backfill(claims=pending_claims)
         written = int(result.get("written", len(pending_claims)))
         pending_claims.clear()
         return written, 0
@@ -285,7 +288,7 @@ def flush_claim_batch(
     errors = 0
     for claim in pending_claims:
         try:
-            bridge.ingest_claim(**claim)
+            bridge.ingest_claims_backfill(claims=[claim])
             written += 1
         except Exception as exc:  # noqa: BLE001
             errors += 1

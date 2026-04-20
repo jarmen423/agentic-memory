@@ -185,6 +185,25 @@ class TemporalBridge:
             }
         )
 
+    def ingest_claims_backfill(
+        self,
+        *,
+        claims: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Write many temporal claims using the backfill-optimized reducer.
+
+        This path intentionally skips expensive derived maintenance such as
+        contradiction scanning and edge-stat updates. It exists only for bulk
+        backfill workflows that care about preserving raw facts/evidence first
+        and can rebuild optional summaries later.
+        """
+        return self._request(
+            {
+                "op": "ingest_claims_backfill",
+                "claims": [self._claim_payload_from_kwargs(claim) for claim in claims],
+            }
+        )
+
     def ingest_relation(
         self,
         *,

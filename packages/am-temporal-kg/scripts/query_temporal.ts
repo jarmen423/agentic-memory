@@ -118,6 +118,11 @@ type IngestClaimsRequest = {
   claims: ClaimPayload[];
 };
 
+type IngestClaimsBackfillRequest = {
+  op: "ingest_claims_backfill";
+  claims: ClaimPayload[];
+};
+
 type IngestRelationRequest = {
   op: "ingest_relation";
   projectId: string;
@@ -142,6 +147,7 @@ type BridgeRequest =
   | RetrieveRequest
   | IngestClaimRequest
   | IngestClaimsRequest
+  | IngestClaimsBackfillRequest
   | IngestRelationRequest
   | ProjectStatsRequest;
 
@@ -283,6 +289,8 @@ type GeneratedConnection = {
   reducers: {
     ingestTemporalClaim(args: IngestTemporalClaimArgs): Promise<void>;
     ingestTemporalClaims(args: { claims: IngestTemporalClaimArgs[] }): Promise<void>;
+    ingestTemporalClaimBackfill(args: IngestTemporalClaimArgs): Promise<void>;
+    ingestTemporalClaimsBackfill(args: { claims: IngestTemporalClaimArgs[] }): Promise<void>;
     ingestTemporalEdge(args: IngestTemporalEdgeArgs): Promise<void>;
     upsertNode(args: UpsertNodeArgs): Promise<void>;
   };
@@ -623,6 +631,21 @@ export class TemporalQueryHelper {
     };
   }
 
+  async ingestClaimsBackfill(request: IngestClaimsBackfillRequest): Promise<JsonRecord> {
+    const connection = await this.getConnection();
+    const byPredicate = new Map<string, number>();
+    const argsList = request.claims.map((claim) => this.buildClaimArgs(claim));
+    for (const args of argsList) {
+      byPredicate.set(args.predicate, (byPredicate.get(args.predicate) ?? 0) + 1);
+    }
+    await connection.reducers.ingestTemporalClaimsBackfill({ claims: argsList });
+
+    return {
+      written: argsList.length,
+      byPredicate: Object.fromEntries(byPredicate),
+    };
+  }
+
   async ingestRelation(request: IngestRelationRequest): Promise<JsonRecord> {
     const connection = await this.getConnection();
     const nowUs = toMicros(request.nowUs);
@@ -786,6 +809,8 @@ export const runBridgeServer = async (): Promise<void> => {
         payload = await helper.ingestClaim(request);
       } else if (request.op === "ingest_claims") {
         payload = await helper.ingestClaims(request);
+      } else if (request.op === "ingest_claims_backfill") {
+        payload = await helper.ingestClaimsBackfill(request);
       } else if (request.op === "ingest_relation") {
         payload = await helper.ingestRelation(request);
       } else if (request.op === "project_stats") {

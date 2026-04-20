@@ -4,6 +4,8 @@ export {
   ingest_temporal_edge,
   ingest_temporal_claim,
   ingest_temporal_claims,
+  ingest_temporal_claim_backfill,
+  ingest_temporal_claims_backfill,
 } from "./reducers/ingest";
 export {
   seed_maintenance_jobs,

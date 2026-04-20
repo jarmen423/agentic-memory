@@ -7,6 +7,11 @@ import { EvidenceInput, TemporalClaimInput, spacetimedb } from "../schema";
 
 const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
 
+type EdgeIngestOptions = {
+  updateStats?: boolean;
+  applyContradictions?: boolean;
+};
+
 const upsertNodeRow = (
   ctx: any,
   args: { projectId: string; kind: string; name: string; nowUs: bigint },
@@ -204,7 +209,14 @@ const ingestTemporalEdgeRow = (
     };
     nowUs: bigint;
   },
+  options: EdgeIngestOptions = {},
 ): void => {
+  // Normal application reducers still compute derived metadata inline. The
+  // backfill-only reducers below pass explicit false flags so bulk historical
+  // replay can preserve raw facts/evidence without paying the O(graph-size)
+  // contradiction scan or per-edge stats maintenance cost on every insert.
+  const shouldUpdateStats = options.updateStats ?? true;
+  const shouldApplyContradictions = options.applyContradictions ?? true;
   const pred = normalizePredicate(args.pred);
   const subject = ctx.db.node.nodeId.find(args.subjId);
   const object = ctx.db.node.nodeId.find(args.objId);
@@ -253,15 +265,19 @@ const ingestTemporalEdgeRow = (
     evidence: args.evidence,
   });
   linkEvidence(ctx, edgeId, evidenceId, args.nowUs);
-  updateEdgeStats(ctx, {
-    projectId: args.projectId,
-    subjId: args.subjId,
-    pred,
-    objId: args.objId,
-    validFromUs: args.validFromUs,
-    validToUs: args.validToUs,
-  });
-  applyContradictions(ctx, edgeId, args.nowUs);
+  if (shouldUpdateStats) {
+    updateEdgeStats(ctx, {
+      projectId: args.projectId,
+      subjId: args.subjId,
+      pred,
+      objId: args.objId,
+      validFromUs: args.validFromUs,
+      validToUs: args.validToUs,
+    });
+  }
+  if (shouldApplyContradictions) {
+    applyContradictions(ctx, edgeId, args.nowUs);
+  }
 };
 
 export const upsert_node = spacetimedb.reducer(
@@ -410,6 +426,117 @@ export const ingest_temporal_claims = spacetimedb.reducer(
         },
         nowUs: claim.nowUs,
       });
+    }
+  },
+);
+
+export const ingest_temporal_claim_backfill = spacetimedb.reducer(
+  { name: "ingest_temporal_claim_backfill" },
+  {
+    projectId: t.string(),
+    subjectKind: t.string(),
+    subjectName: t.string(),
+    predicate: t.string(),
+    objectKind: t.string(),
+    objectName: t.string(),
+    validFromUs: t.i64(),
+    validToUs: t.option(t.i64()),
+    confidence: t.f32(),
+    evidence: EvidenceInput,
+    nowUs: t.i64(),
+  },
+  (ctx: any, args: any) => {
+    // This reducer exists only for bulk historical backfills. It intentionally
+    // keeps raw nodes/edges/evidence identical to the normal path while
+    // skipping optional derived summaries that can be rebuilt later.
+    const subjId = upsertNodeRow(ctx, {
+      projectId: args.projectId,
+      kind: args.subjectKind,
+      name: args.subjectName,
+      nowUs: args.nowUs,
+    });
+    const objId = upsertNodeRow(ctx, {
+      projectId: args.projectId,
+      kind: args.objectKind,
+      name: args.objectName,
+      nowUs: args.nowUs,
+    });
+
+    ingestTemporalEdgeRow(
+      ctx,
+      {
+        projectId: args.projectId,
+        subjId,
+        pred: args.predicate,
+        objId,
+        validFromUs: args.validFromUs,
+        validToUs: args.validToUs,
+        confidence: args.confidence,
+        evidence: {
+          sourceKind: args.evidence.sourceKind,
+          sourceId: args.evidence.sourceId,
+          sourceUri: args.evidence.sourceUri,
+          capturedAtUs: args.evidence.capturedAtUs,
+          rawExcerpt: args.evidence.rawExcerpt,
+          hash: args.evidence.hash,
+        },
+        nowUs: args.nowUs,
+      },
+      {
+        updateStats: false,
+        applyContradictions: false,
+      },
+    );
+  },
+);
+
+export const ingest_temporal_claims_backfill = spacetimedb.reducer(
+  { name: "ingest_temporal_claims_backfill" },
+  {
+    claims: t.array(TemporalClaimInput),
+  },
+  (ctx: any, args: any) => {
+    // Batched variant of the backfill reducer above. Keeping this reducer-side
+    // avoids paying one Python->Node->SpacetimeDB round-trip per claim.
+    for (const claim of args.claims) {
+      const subjId = upsertNodeRow(ctx, {
+        projectId: claim.projectId,
+        kind: claim.subjectKind,
+        name: claim.subjectName,
+        nowUs: claim.nowUs,
+      });
+      const objId = upsertNodeRow(ctx, {
+        projectId: claim.projectId,
+        kind: claim.objectKind,
+        name: claim.objectName,
+        nowUs: claim.nowUs,
+      });
+
+      ingestTemporalEdgeRow(
+        ctx,
+        {
+          projectId: claim.projectId,
+          subjId,
+          pred: claim.predicate,
+          objId,
+          validFromUs: claim.validFromUs,
+          validToUs: claim.validToUs,
+          confidence: claim.confidence,
+          evidence: {
+            sourceKind: claim.evidence.sourceKind,
+            sourceId: claim.evidence.sourceId,
+            sourceUri: claim.evidence.sourceUri,
+            capturedAtUs: claim.evidence.capturedAtUs,
+            rawExcerpt: claim.evidence.rawExcerpt,
+            hash: claim.evidence.hash,
+          },
+          nowUs: claim.nowUs,
+        },
+        {
+          updateStats: false,
+          applyContradictions: false,
+        },
+      );
     }
   },
 );

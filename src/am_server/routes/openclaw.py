@@ -421,6 +421,7 @@ def _invalidate_search_cache(
 def _resolve_active_project_id(
     *,
     workspace_id: str,
+    device_id: str | None = None,
     agent_id: str,
     session_id: str,
     explicit_project_id: str | None,
@@ -430,6 +431,14 @@ def _resolve_active_project_id(
     Request-time explicit project ids win. When omitted, the local product
     store is treated as the source of truth for the session's current active
     project binding.
+
+    Some OpenClaw tool contexts still omit the real runtime session id. The
+    plugin bridge compensates by sending a synthetic session token such as
+    ``agent-id:tools``. That synthetic id is useful for correlation, but it
+    does not match the project binding recorded by the real chat session. When
+    the exact session lookup misses, we do one narrow fallback to the latest
+    registered session for the same workspace/agent/device tuple before giving
+    up on active-project resolution.
     """
 
     if explicit_project_id:
@@ -441,6 +450,21 @@ def _resolve_active_project_id(
         agent_id=agent_id,
         session_id=session_id,
     )
+    if binding:
+        return binding["project_id"]
+
+    fallback_session_id = store.resolve_openclaw_session_id(
+        workspace_id=workspace_id,
+        agent_id=agent_id,
+        explicit_session_id=None,
+        device_id=device_id,
+    )
+    if fallback_session_id and fallback_session_id != session_id:
+        binding = store.get_active_project_for_openclaw_identity(
+            workspace_id=workspace_id,
+            agent_id=agent_id,
+            session_id=fallback_session_id,
+        )
     return binding["project_id"] if binding else None
 
 
@@ -1019,6 +1043,7 @@ async def ingest_openclaw_turn(request: Request, body: OpenClawTurnIngestRequest
     ensure_workspace_access(request, body.workspace_id)
     effective_project_id = _resolve_active_project_id(
         workspace_id=body.workspace_id,
+        device_id=body.device_id,
         agent_id=body.agent_id,
         session_id=body.session_id,
         explicit_project_id=body.project_id,
@@ -1104,6 +1129,7 @@ async def search_openclaw_memory(request: Request, body: OpenClawMemorySearchReq
     ensure_workspace_access(request, body.workspace_id)
     effective_project_id = _resolve_active_project_id(
         workspace_id=body.workspace_id,
+        device_id=body.device_id,
         agent_id=body.agent_id,
         session_id=body.session_id,
         explicit_project_id=body.project_id,
@@ -1345,6 +1371,7 @@ async def search_openclaw_tool_conversations(
     ensure_workspace_access(request, body.workspace_id)
     effective_project_id = _resolve_active_project_id(
         workspace_id=body.workspace_id,
+        device_id=body.device_id,
         agent_id=body.agent_id,
         session_id=body.session_id,
         explicit_project_id=body.project_id,
@@ -1392,6 +1419,7 @@ async def get_openclaw_tool_conversation_context(
     ensure_workspace_access(request, body.workspace_id)
     effective_project_id = _resolve_active_project_id(
         workspace_id=body.workspace_id,
+        device_id=body.device_id,
         agent_id=body.agent_id,
         session_id=body.session_id,
         explicit_project_id=body.project_id,
@@ -1477,6 +1505,7 @@ async def resolve_openclaw_context(request: Request, body: OpenClawContextResolv
     ensure_workspace_access(request, body.workspace_id)
     effective_project_id = _resolve_active_project_id(
         workspace_id=body.workspace_id,
+        device_id=body.device_id,
         agent_id=body.agent_id,
         session_id=body.session_id,
         explicit_project_id=body.project_id,

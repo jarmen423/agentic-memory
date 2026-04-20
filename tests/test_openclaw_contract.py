@@ -419,6 +419,71 @@ def test_openclaw_conversation_tool_temporal_failures_return_503(client, monkeyp
     assert error["details"]["module"] == "conversation"
 
 
+def test_openclaw_tool_project_lookup_falls_back_to_latest_registered_session(
+    client,
+    monkeypatch,
+):
+    """Tool routes should recover project scope when the SDK only exposes a synthetic session id.
+
+    The OpenClaw tool bridge currently falls back to session ids such as
+    ``alfred:tools`` when the SDK omits the live runtime session id. The backend
+    should re-resolve the latest registered session for that workspace/agent/device
+    tuple before it gives up on active-project lookup.
+    """
+
+    store = dependencies.get_product_store()
+    store.upsert_integration(
+        surface="openclaw",
+        target="workspace-1:agent-1:device-1",
+        status="connected",
+        config={
+            "workspace_id": "workspace-1",
+            "device_id": "device-1",
+            "agent_id": "agent-1",
+            "session_id": "session-real",
+        },
+    )
+    store.activate_project_for_openclaw_identity(
+        workspace_id="workspace-1",
+        device_id="device-1",
+        agent_id="agent-1",
+        session_id="session-real",
+        project_id="agentic-memory",
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_search(*args, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(
+        openclaw,
+        "pipelines_for_openclaw_workspace",
+        lambda workspace_id: ("research", MagicMock()),
+    )
+    monkeypatch.setattr(
+        "agentic_memory.server.tools.search_conversation_turns_sync",
+        fake_search,
+    )
+
+    response = client.post(
+        "/openclaw/tools/search-conversations",
+        headers={"Authorization": "Bearer new-key"},
+        json={
+            "workspace_id": "workspace-1",
+            "device_id": "device-1",
+            "agent_id": "agent-1",
+            "session_id": "agent-1:tools",
+            "query": "memory",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["identity"]["project_id"] == "agentic-memory"
+    assert captured["project_id"] == "agentic-memory"
+
+
 def test_openclaw_contract_metrics_include_openclaw_route_labels(client):
     """Authenticated `/metrics` should expose OpenClaw request series."""
 

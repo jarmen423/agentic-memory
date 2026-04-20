@@ -16,7 +16,7 @@ Operational model:
     2. Reconstruct each normalized healthcare row from the export payload.
     3. Convert supported clinical rows into deterministic temporal claims
        using ``agentic_memory.healthcare.temporal_mapper``.
-    4. Send those claims to ``TemporalBridge.ingest_claim(...)``.
+    4. Send those claims to ``TemporalBridge.ingest_claims(...)`` in batches.
 
 Important scope boundary:
     - Encounter rows are intentionally skipped because the current temporal
@@ -91,6 +91,15 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=1000,
         help="Log progress every N processed rows.",
+    )
+    parser.add_argument(
+        "--claim-batch-size",
+        type=int,
+        default=250,
+        help=(
+            "How many temporal claims to send in one bridge request. Larger "
+            "values reduce Python->Node round-trip overhead."
+        ),
     )
     parser.add_argument(
         "--shard-count",
@@ -241,6 +250,55 @@ def build_claim(item: dict[str, Any], *, project_id: str) -> dict[str, Any] | No
     return builder(row, project_id)
 
 
+def flush_claim_batch(
+    *,
+    bridge: TemporalBridge,
+    pending_claims: list[dict[str, Any]],
+) -> tuple[int, int]:
+    """Write one pending temporal batch, with row-level fallback on failure.
+
+    Why this helper exists:
+        Bulk bridge requests are the core temporal throughput improvement. At
+        the same time, we do not want one bad claim to hide which record broke
+        the batch. If the batched request fails, we fall back to row-by-row
+        writes for that batch so the operator still gets precise error logs.
+
+    Returns:
+        Tuple ``(written, errors)`` for this batch.
+    """
+    if not pending_claims:
+        return 0, 0
+
+    try:
+        result = bridge.ingest_claims(claims=pending_claims)
+        written = int(result.get("written", len(pending_claims)))
+        pending_claims.clear()
+        return written, 0
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Temporal claim batch failed for %d claims; retrying row-by-row. Error: %s",
+            len(pending_claims),
+            exc,
+        )
+
+    written = 0
+    errors = 0
+    for claim in pending_claims:
+        try:
+            bridge.ingest_claim(**claim)
+            written += 1
+        except Exception as exc:  # noqa: BLE001
+            errors += 1
+            logger.warning(
+                "Temporal backfill error for predicate=%s source_id=%s: %s",
+                claim.get("predicate"),
+                (claim.get("evidence") or {}).get("sourceId"),
+                exc,
+            )
+    pending_claims.clear()
+    return written, errors
+
+
 def main() -> None:
     """Run the temporal-only backfill from embedded healthcare chunks."""
     args = parse_args()
@@ -268,12 +326,13 @@ def main() -> None:
     )
 
     logger.info(
-        "Temporal backfill project_id=%s shard=%d/%d chunks=%d manifest_rows=%s",
+        "Temporal backfill project_id=%s shard=%d/%d chunks=%d manifest_rows=%s claim_batch_size=%d",
         project_id,
         args.shard_index,
         args.shard_count,
         len(chunk_paths),
         manifest.get("total_rows", "unknown"),
+        args.claim_batch_size,
     )
 
     bridge = build_temporal_bridge()
@@ -283,6 +342,7 @@ def main() -> None:
     skipped = 0
     errors = 0
     by_type: dict[str, int] = {}
+    pending_claims: list[dict[str, Any]] = []
 
     try:
         for item in iter_chunk_records(chunk_paths):
@@ -295,8 +355,14 @@ def main() -> None:
                 if claim is None:
                     skipped += 1
                 else:
-                    bridge.ingest_claim(**claim)
-                    written += 1
+                    pending_claims.append(claim)
+                    if len(pending_claims) >= args.claim_batch_size:
+                        batch_written, batch_errors = flush_claim_batch(
+                            bridge=bridge,
+                            pending_claims=pending_claims,
+                        )
+                        written += batch_written
+                        errors += batch_errors
             except Exception as exc:  # noqa: BLE001
                 errors += 1
                 logger.warning(
@@ -314,6 +380,14 @@ def main() -> None:
                     skipped,
                     errors,
                 )
+
+        if pending_claims:
+            batch_written, batch_errors = flush_claim_batch(
+                bridge=bridge,
+                pending_claims=pending_claims,
+            )
+            written += batch_written
+            errors += batch_errors
     finally:
         bridge.close()
 

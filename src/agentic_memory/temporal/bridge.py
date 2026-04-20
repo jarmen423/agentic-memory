@@ -120,6 +120,37 @@ class TemporalBridge:
             payload["nowUs"] = now_us
         return self._request(payload)
 
+    def ingest_claims(
+        self,
+        *,
+        claims: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Write many temporal claims in one bridge round-trip.
+
+        Why this exists:
+            The original temporal backfill path paid one Python -> Node -> RPC
+            round-trip per claim. That made the temporal stage effectively
+            row-by-row even after we split it from the fast bulk Neo4j import.
+            This method lets callers send a whole claim batch through the
+            helper in one JSON-lines request so the bridge overhead is paid far
+            less often.
+
+        Args:
+            claims: List of ``ingest_claim`` kwargs dicts. Each claim must
+                already be in the format produced by the healthcare temporal
+                mapper helpers.
+
+        Returns:
+            Helper response containing at least a ``written`` count and
+            predicate-level summary from the Node helper.
+        """
+        return self._request(
+            {
+                "op": "ingest_claims",
+                "claims": claims,
+            }
+        )
+
     def ingest_relation(
         self,
         *,
@@ -154,6 +185,25 @@ class TemporalBridge:
         if now_us is not None:
             payload["nowUs"] = now_us
         return self._request(payload)
+
+    def project_stats(
+        self,
+        *,
+        project_id: str,
+    ) -> dict[str, Any]:
+        """Return project-scoped node/evidence/edge counts from SpacetimeDB.
+
+        This lightweight inspection surface exists for temporal smoke-test
+        verification. It lets integrity checks compare the expected counts
+        derived from export chunks to what actually landed in the temporal
+        store, without needing a second custom client implementation.
+        """
+        return self._request(
+            {
+                "op": "project_stats",
+                "projectId": project_id,
+            }
+        )
 
     def close(self) -> None:
         """Terminate the child helper process if it is running."""

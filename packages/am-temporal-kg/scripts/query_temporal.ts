@@ -111,6 +111,13 @@ type IngestClaimRequest = {
   nowUs?: number | null;
 };
 
+type ClaimPayload = Omit<IngestClaimRequest, "op">;
+
+type IngestClaimsRequest = {
+  op: "ingest_claims";
+  claims: ClaimPayload[];
+};
+
 type IngestRelationRequest = {
   op: "ingest_relation";
   projectId: string;
@@ -126,7 +133,17 @@ type IngestRelationRequest = {
   nowUs?: number | null;
 };
 
-type BridgeRequest = RetrieveRequest | IngestClaimRequest | IngestRelationRequest;
+type ProjectStatsRequest = {
+  op: "project_stats";
+  projectId: string;
+};
+
+type BridgeRequest =
+  | RetrieveRequest
+  | IngestClaimRequest
+  | IngestClaimsRequest
+  | IngestRelationRequest
+  | ProjectStatsRequest;
 
 type HelperConfig = {
   stdbUri: string;
@@ -155,6 +172,24 @@ type EvidenceRow = {
   capturedAtUs: bigint;
   rawExcerpt?: string;
   hash: string;
+};
+
+type EdgeRow = {
+  edgeId: bigint;
+  familyId: bigint;
+  projectId: string;
+  subjId: bigint;
+  pred: string;
+  objId: bigint;
+  validFromUs: bigint;
+  validToUs?: bigint;
+  createdAtUs: bigint;
+  updatedAtUs: bigint;
+  confidence: number;
+  supportCount: number;
+  contradictionCount: number;
+  relevance: number;
+  lastReinforcedAtUs: bigint;
 };
 
 type RetrievalResultRow = {
@@ -243,6 +278,7 @@ type GeneratedConnection = {
   db: {
     node: { iter(): Iterable<NodeRow> };
     evidence: { iter(): Iterable<EvidenceRow> };
+    edge: { iter(): Iterable<EdgeRow> };
   };
   reducers: {
     ingestTemporalClaim(args: IngestTemporalClaimArgs): Promise<void>;
@@ -547,10 +583,9 @@ export class TemporalQueryHelper {
     };
   }
 
-  async ingestClaim(request: IngestClaimRequest): Promise<JsonRecord> {
-    const connection = await this.getConnection();
+  private buildClaimArgs(request: ClaimPayload): IngestTemporalClaimArgs {
     const nowUs = toMicros(request.nowUs);
-    const args: IngestTemporalClaimArgs = {
+    return {
       projectId: request.projectId,
       subjectKind: request.subjectKind ?? "unknown",
       subjectName: request.subjectName,
@@ -563,8 +598,29 @@ export class TemporalQueryHelper {
       evidence: normalizeEvidence(request.projectId, request.evidence, nowUs),
       nowUs,
     };
+  }
+
+  async ingestClaim(request: IngestClaimRequest): Promise<JsonRecord> {
+    const connection = await this.getConnection();
+    const args = this.buildClaimArgs(request);
     await connection.reducers.ingestTemporalClaim(args);
     return { subjectName: args.subjectName, predicate: args.predicate, objectName: args.objectName };
+  }
+
+  async ingestClaims(request: IngestClaimsRequest): Promise<JsonRecord> {
+    const connection = await this.getConnection();
+    const byPredicate = new Map<string, number>();
+
+    for (const claim of request.claims) {
+      const args = this.buildClaimArgs(claim);
+      await connection.reducers.ingestTemporalClaim(args);
+      byPredicate.set(args.predicate, (byPredicate.get(args.predicate) ?? 0) + 1);
+    }
+
+    return {
+      written: request.claims.length,
+      byPredicate: Object.fromEntries(byPredicate),
+    };
   }
 
   async ingestRelation(request: IngestRelationRequest): Promise<JsonRecord> {
@@ -607,6 +663,53 @@ export class TemporalQueryHelper {
       subjectNodeId: subjId.toString(),
       objectNodeId: objId.toString(),
       predicate: args.pred,
+    };
+  }
+
+  async projectStats(request: ProjectStatsRequest): Promise<JsonRecord> {
+    const connection = await this.getConnection();
+    const nodeByKind = new Map<string, number>();
+    const edgeByPredicate = new Map<string, number>();
+    let nodeTotal = 0;
+    let evidenceTotal = 0;
+    let edgeTotal = 0;
+
+    for (const row of connection.db.node.iter()) {
+      if (row.projectId !== request.projectId) {
+        continue;
+      }
+      nodeTotal += 1;
+      nodeByKind.set(row.kind, (nodeByKind.get(row.kind) ?? 0) + 1);
+    }
+
+    for (const row of connection.db.evidence.iter()) {
+      if (row.projectId !== request.projectId) {
+        continue;
+      }
+      evidenceTotal += 1;
+    }
+
+    for (const row of connection.db.edge.iter()) {
+      if (row.projectId !== request.projectId) {
+        continue;
+      }
+      edgeTotal += 1;
+      edgeByPredicate.set(row.pred, (edgeByPredicate.get(row.pred) ?? 0) + 1);
+    }
+
+    return {
+      projectId: request.projectId,
+      nodes: {
+        total: nodeTotal,
+        byKind: Object.fromEntries(nodeByKind),
+      },
+      evidence: {
+        total: evidenceTotal,
+      },
+      edges: {
+        total: edgeTotal,
+        byPredicate: Object.fromEntries(edgeByPredicate),
+      },
     };
   }
 
@@ -681,8 +784,12 @@ export const runBridgeServer = async (): Promise<void> => {
         payload = await helper.retrieve(request);
       } else if (request.op === "ingest_claim") {
         payload = await helper.ingestClaim(request);
+      } else if (request.op === "ingest_claims") {
+        payload = await helper.ingestClaims(request);
       } else if (request.op === "ingest_relation") {
         payload = await helper.ingestRelation(request);
+      } else if (request.op === "project_stats") {
+        payload = await helper.projectStats(request);
       } else {
         throw new Error(`Unsupported op: ${(request as BridgeRequest).op}`);
       }

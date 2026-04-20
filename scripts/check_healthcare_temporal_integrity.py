@@ -18,6 +18,7 @@ Why this exists:
 from __future__ import annotations
 
 import argparse
+import math
 import json
 import logging
 from pathlib import Path
@@ -39,6 +40,71 @@ from backfill_healthcare_temporal import (
 
 
 logger = logging.getLogger("check_healthcare_temporal_integrity")
+
+
+def _normalize_name(value: str) -> str:
+    """Match the SpacetimeDB helper's name normalization rule."""
+    return " ".join(value.strip().lower().split())
+
+
+def _normalize_predicate(value: str) -> str:
+    """Match the SpacetimeDB helper's predicate normalization rule."""
+    cleaned = []
+    for char in value.strip().upper():
+        if char.isalnum() or char == "_":
+            cleaned.append(char)
+        elif char in {" ", "-"}:
+            cleaned.append("_")
+    return "".join(cleaned)
+
+
+def _normalize_part(value: Any) -> str:
+    """Match the helper's string-normalization before hashing.
+
+    We do not need the exact hash value for integrity checks; we only need the
+    same equality semantics. Converting the same conceptual parts into a stable
+    tuple gives us that without re-implementing the FNV-1a hash.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        if isinstance(value, float):
+            return "0" if not math.isfinite(value) else str(value)
+        return str(value)
+    return str(value)
+
+
+def _edge_identity(claim: dict[str, Any]) -> tuple[str, ...]:
+    """Build the same logical edge identity used by the temporal reducer.
+
+    The reducer hashes project id, normalized node identity, normalized
+    predicate, and validity window into ``edgeId``. For smoke-test parity we
+    only need the same equality relation, so a normalized tuple is enough.
+    """
+    return (
+        _normalize_part(claim["project_id"]),
+        _normalize_part(claim["subject_kind"]),
+        _normalize_name(str(claim["subject_name"])),
+        _normalize_predicate(str(claim["predicate"])),
+        _normalize_part(claim["object_kind"]),
+        _normalize_name(str(claim["object_name"])),
+        _normalize_part(claim.get("valid_from_us")),
+        _normalize_part(claim.get("valid_to_us") if claim.get("valid_to_us") is not None else "open"),
+    )
+
+
+def _evidence_identity(claim: dict[str, Any]) -> tuple[str, ...]:
+    """Build the same logical evidence identity used by the temporal reducer."""
+    evidence = claim["evidence"]
+    return (
+        _normalize_part(claim["project_id"]),
+        _normalize_part(evidence["sourceKind"]),
+        _normalize_part(evidence["sourceId"]),
+        _normalize_part(evidence.get("hash")),
+        _normalize_part(evidence.get("capturedAtUs")),
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -95,6 +161,9 @@ def build_expected_stats(
     skipped = 0
     expected_written = 0
     by_predicate: dict[str, int] = {}
+    deduped_edges: set[tuple[str, ...]] = set()
+    deduped_evidence: set[tuple[str, ...]] = set()
+    deduped_by_predicate: dict[str, int] = {}
 
     for item in iter_chunk_records(chunk_paths):
         processed += 1
@@ -103,14 +172,23 @@ def build_expected_stats(
             skipped += 1
             continue
         expected_written += 1
-        predicate = str(claim["predicate"])
+        predicate = _normalize_predicate(str(claim["predicate"]))
         by_predicate[predicate] = by_predicate.get(predicate, 0) + 1
+        edge_id = _edge_identity(claim)
+        evidence_id = _evidence_identity(claim)
+        if edge_id not in deduped_edges:
+            deduped_edges.add(edge_id)
+            deduped_by_predicate[predicate] = deduped_by_predicate.get(predicate, 0) + 1
+        deduped_evidence.add(evidence_id)
 
     return {
         "processed": processed,
         "skipped": skipped,
-        "written": expected_written,
-        "byPredicate": dict(sorted(by_predicate.items())),
+        "rawWritten": expected_written,
+        "rawByPredicate": dict(sorted(by_predicate.items())),
+        "written": len(deduped_edges),
+        "evidence": len(deduped_evidence),
+        "byPredicate": dict(sorted(deduped_by_predicate.items())),
     }
 
 
@@ -132,9 +210,9 @@ def assert_stats_match(
         mismatches.append(
             f"edge total mismatch: expected {expected['written']} got {actual_edge_total}"
         )
-    if actual_evidence_total != int(expected["written"]):
+    if actual_evidence_total != int(expected["evidence"]):
         mismatches.append(
-            f"evidence total mismatch: expected {expected['written']} got {actual_evidence_total}"
+            f"evidence total mismatch: expected {expected['evidence']} got {actual_evidence_total}"
         )
     if actual_by_predicate != expected["byPredicate"]:
         mismatches.append(

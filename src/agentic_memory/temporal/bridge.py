@@ -85,6 +85,39 @@ class TemporalBridge:
             payload["asOfUs"] = as_of_us
         return self._request(payload)
 
+    @staticmethod
+    def _claim_payload_from_kwargs(
+        claim: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Convert Python-side claim kwargs into helper JSON payload shape.
+
+        The healthcare temporal mappers emit snake_case kwargs because they are
+        designed to be unpacked into ``TemporalBridge.ingest_claim(**claim)``.
+        The Node helper, however, speaks camelCase JSON keys. This adapter
+        keeps the single-claim and batched-claim paths semantically identical.
+        """
+        project_id = claim["project_id"]
+        payload: dict[str, Any] = {
+            "projectId": project_id,
+            "subjectKind": claim.get("subject_kind", "unknown"),
+            "subjectName": claim["subject_name"],
+            "predicate": claim["predicate"],
+            "objectKind": claim.get("object_kind", "unknown"),
+            "objectName": claim["object_name"],
+            "confidence": claim.get("confidence", 1.0),
+            "evidence": claim["evidence"],
+        }
+        valid_from_us = claim.get("valid_from_us")
+        valid_to_us = claim.get("valid_to_us")
+        now_us = claim.get("now_us")
+        if valid_from_us is not None:
+            payload["validFromUs"] = valid_from_us
+        if valid_to_us is not None:
+            payload["validToUs"] = valid_to_us
+        if now_us is not None:
+            payload["nowUs"] = now_us
+        return payload
+
     def ingest_claim(
         self,
         *,
@@ -101,23 +134,24 @@ class TemporalBridge:
         now_us: int | None = None,
     ) -> dict[str, Any]:
         """Write a subject-predicate-object claim to SpacetimeDB."""
-        payload: dict[str, Any] = {
+        payload = {
             "op": "ingest_claim",
-            "projectId": project_id,
-            "subjectKind": subject_kind,
-            "subjectName": subject_name,
-            "predicate": predicate,
-            "objectKind": object_kind,
-            "objectName": object_name,
-            "confidence": confidence,
-            "evidence": evidence,
+            **self._claim_payload_from_kwargs(
+                {
+                    "project_id": project_id,
+                    "subject_kind": subject_kind,
+                    "subject_name": subject_name,
+                    "predicate": predicate,
+                    "object_kind": object_kind,
+                    "object_name": object_name,
+                    "valid_from_us": valid_from_us,
+                    "valid_to_us": valid_to_us,
+                    "confidence": confidence,
+                    "evidence": evidence,
+                    "now_us": now_us,
+                }
+            ),
         }
-        if valid_from_us is not None:
-            payload["validFromUs"] = valid_from_us
-        if valid_to_us is not None:
-            payload["validToUs"] = valid_to_us
-        if now_us is not None:
-            payload["nowUs"] = now_us
         return self._request(payload)
 
     def ingest_claims(
@@ -147,7 +181,7 @@ class TemporalBridge:
         return self._request(
             {
                 "op": "ingest_claims",
-                "claims": claims,
+                "claims": [self._claim_payload_from_kwargs(claim) for claim in claims],
             }
         )
 

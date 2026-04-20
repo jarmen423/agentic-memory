@@ -425,6 +425,220 @@ This separation is important because:
 - the experiments do not require temporal writes to happen synchronously with
   graph creation
 
+### Current implementation status — 2026-04-18
+
+This plan started as a forward-looking acceleration sketch. It now has real
+implementation progress behind it.
+
+What has landed already:
+
+1. **Phase A landed**
+   - `ConnectionManager.setup_database()` now bootstraps `memory_unique` on
+     `(Memory.source_key, Memory.content_hash)` when the graph is clean.
+   - the writer layer can reuse a shared Neo4j runner / transaction
+   - the importer can batch row ingests into one explicit transaction
+2. **Phase B landed**
+   - `scripts/import_embedded_healthcare_chunks.py` supports
+     `--import-mode bulk`
+   - the bulk importer groups rows by healthcare record type and writes them
+     with `UNWIND` batches
+3. **The main hidden bottleneck was found and fixed**
+   - the biggest speedup did **not** come from batching alone
+   - it came from tightening the hot memory lookup path so Cypher matches stay
+     label-scoped on `:Memory` and can use the right composite schema objects
+4. **Phase C is partially landed**
+   - the importer now supports deterministic chunk sharding with:
+     - `--shard-count`
+     - `--shard-index`
+     - `--max-chunks`
+   - a VM-side launcher now exists:
+     - `D:\code\agentic-memory\scripts\run_parallel_healthcare_import.sh`
+   - note: the current implementation shards by **lexical chunk position**,
+     not by `hash(patient_id) % N`. That is good enough for controlled throughput
+     tests, but patient-based sharding may still be worth revisiting if overlap
+     or hotspot issues appear in multi-worker runs.
+
+### Benchmark snapshot — importer iteration results
+
+These measurements were taken during the `20k patients` (`mid`) import work.
+Treat them as engineering benchmarks, not publication-ready results.
+
+| Importer state | Graph state | Approx throughput | Notes |
+|---|---|---:|---|
+| Batched pipeline mode | dirty DB | ~6.5 rows/sec (~23.6k/hr) | first low-risk batching pass |
+| Early bulk mode | dirty DB | ~7.5 rows/sec (~27k/hr) | modest gain; bulk path alone was not enough |
+| Bulk + tightened memory lookups | dirty DB | ~299 rows/sec (~1.08M/hr) | first major breakthrough |
+| Clean bulk run + `memory_unique` | clean DB | ~244–258 rows/sec (~878k–930k/hr) | current meaningful baseline |
+| Clean bulk run + STU3 loader fix | clean DB | ~248.7 rows/sec (~895k/hr) | corrected full `20k` baseline with provider + medication paths restored |
+
+Interpretation:
+
+- Phase A helped
+- early Phase B helped a little
+- the lookup/schema fix changed the regime entirely
+- the clean single-worker run is now fast enough that parallelism is worth
+  testing on top of it, instead of being a rescue mission for a fundamentally
+  broken path
+
+### Corrected `20k` baseline — export and import timings
+
+This is the first `20k` run that should be treated as both:
+
+- the **accuracy** baseline for the STU3/FHIR path
+- the **performance** baseline for future temporal backfills and experiment runs
+
+Corrected export baseline (`synthea-scale-mid-fhirfix`):
+
+- source:
+  - `G:\My Drive\kubuntu\agentic-memory\big-healtcare-data\synthetic-data\fhir-output1`
+- embedding provider:
+  - `nemotron_local`
+- embedding model:
+  - `nvidia/llama-nemotron-embed-vl-1b-v2`
+- patients:
+  - `20000`
+- rows exported:
+  - `1152601`
+- chunk count:
+  - `145`
+- chunk size target:
+  - `8000`
+- embed batch size:
+  - `1024`
+- total embed time:
+  - `1356.895s` (~`22.6 min`)
+- total chunk-write time:
+  - `4846.503s` (~`80.8 min`)
+- total export wall-clock:
+  - `16283.134s` (~`271.4 min` / ~`4.52 hr`)
+
+Corrected import baseline (`/root/import-healthcare-fhirfix.log`):
+
+- import start:
+  - `2026-04-19 23:08:37.934`
+- import finish:
+  - `2026-04-20 00:25:51.932`
+- rows imported:
+  - `1152601`
+- import wall-clock:
+  - `4633.998s` (~`77.2 min` / ~`1.29 hr`)
+- effective import throughput:
+  - ~`248.7 rows/sec`
+  - ~`895k rows/hour`
+
+Corrected graph-integrity baseline:
+
+- total nodes:
+  - `1161307`
+- total relationships:
+  - `645210`
+- duplicate logical memory keys:
+  - `0`
+- memory labels:
+  - `Observation: 706127`
+  - `Encounter: 192816`
+  - `Procedure: 96536`
+  - `Condition: 73102`
+  - `Medication: 56687`
+- entity types:
+  - `patient: 17873`
+  - `provider: 17873`
+  - `diagnosis: 123`
+  - `medication: 99`
+  - `procedure: 71`
+- benchmark-critical relationships:
+  - `HAD_ENCOUNTER: 192816`
+  - `TREATED_BY: 192816`
+  - `DIAGNOSED_WITH: 73102`
+  - `MENTIONS: 129789`
+  - `PRESCRIBED: 56687`
+
+### Root cause found — semantic gap was in the STU3 FHIR loader
+
+After the first clean `20k` import, integrity checks showed a worrying shape:
+
+- `Medication` memory nodes were `0`
+- `Provider` entities were `0`
+- `TREATED_BY` and medication-side `MENTIONS` / `PRESCRIBED` paths were absent
+
+The fast importer was **not** the cause. The exported chunk corpus was already
+missing those facts.
+
+What the due diligence found in
+`D:\code\agentic-memory\src\agentic_memory\healthcare\fhir_loader.py`:
+
+1. **Encounter provider extraction was wrong for this STU3 export**
+   - the loader only read `participant[].individual`
+   - the real Synthea STU3 bundles store the provider on `serviceProvider`
+2. **Medication requests were losing their medication meaning**
+   - the loader expected `MedicationRequest.medicationCodeableConcept`
+   - the real STU3 bundles often leave that blank
+   - instead, they emit a preceding standalone `Medication` resource in the
+     same bundle with the RxNorm code/display
+
+The loader therefore needed to:
+
+- fall back to `Encounter.serviceProvider`
+- preserve enough bundle order to let later `MedicationRequest` rows inherit
+  code/display from the most recent `Medication` resource
+
+That patch is now implemented in:
+
+- `D:\code\agentic-memory\src\agentic_memory\healthcare\fhir_loader.py`
+- `D:\code\agentic-memory\tests\test_fhir_loader.py`
+
+### Verified sample rerun — patched export/import closes the missing paths
+
+To avoid hand-waving, the patched loader was tested end to end on a fresh,
+small rerun:
+
+- export source:
+  - `G:\My Drive\kubuntu\agentic-memory\big-healtcare-data\synthetic-data\synthea_1m_fhir_3_0_May_24.tar.gz`
+- fresh embedded sample:
+  - `50` patients
+  - `2545` rows
+  - output dir:
+    - `D:\code\agentic-memory\.tmp-healthcare-fhirfix-sample50`
+- imported into a clean Neo4j graph on the VM with the fast bulk path
+
+Artifact-level checks on the fresh export:
+
+- `432` encounter rows
+- `432 / 432` encounters had `PROVIDER`
+- `147` medication rows present in the exported chunks
+
+Graph-level checks after the clean sample import:
+
+- memory labels:
+  - `Encounter: 432`
+  - `Condition: 185`
+  - `Medication: 141`
+  - `Observation: 1554`
+  - `Procedure: 194`
+- entity types:
+  - `patient: 44`
+  - `provider: 44`
+  - `medication: 41`
+  - `diagnosis: 53`
+  - `procedure: 26`
+- relationship families:
+  - `HAD_ENCOUNTER: 432`
+  - `TREATED_BY: 432`
+  - `DIAGNOSED_WITH: 185`
+  - `MENTIONS: 326`
+  - `PRESCRIBED: 141`
+- duplicate logical memory keys:
+  - `0`
+
+Conclusion from the sample rerun:
+
+- the missing provider and medication paths were caused by STU3 parsing
+  assumptions, not the accelerated importer
+- the patched loader restores those paths in both the exported chunk files and
+  the imported Neo4j graph
+- the existing clean `20k` import should now be treated as a **performance**
+  proof, not an accuracy baseline, because it was built from the pre-fix export
+
 ### Recommended files to add or modify
 
 Likely modifications:
@@ -446,6 +660,16 @@ Likely new files:
 
 The current importer remains the **reference implementation** until the fast
 path proves parity against it.
+
+Important clarification:
+
+- the fast importer is intended to preserve the **current actual healthcare
+  importer semantics**
+- if this differs from older aspirational notes in this document, the code path
+  wins until the reference importer is changed and parity is re-established
+- this matters especially for relationship families that may exist in the
+  broader healthcare model but are not currently emitted by the present import
+  path
 
 #### Step 1 — create a gold-standard subset
 
@@ -555,6 +779,110 @@ following are true:
 
 If any of those fail, the acceleration path is a performance experiment, not a
 production-ready replacement.
+
+### Post-run plan — what to do immediately after the clean `20k` import finishes
+
+The current clean single-worker import is the first run that matters for both
+throughput and accuracy work. Once it completes, do the following in order.
+
+#### Step A — capture the final clean-run benchmark
+
+Record:
+
+- total imported rows
+- total elapsed wall-clock time
+- effective rows/sec and rows/hour
+- total chunk count imported
+- final graph node / relationship counts
+
+This becomes the baseline that all future 2-worker and 4-worker tests must beat.
+
+#### Step B — run immediate graph-integrity checks
+
+On the finished clean graph, verify:
+
+- `memory_unique` still exists
+- duplicate `(source_key, content_hash)` counts remain zero
+- counts by key labels are plausible:
+  - `Memory:Healthcare:Encounter`
+  - `Memory:Healthcare:Condition`
+  - `Memory:Healthcare:Medication`
+  - `Memory:Healthcare:Observation`
+  - `Memory:Healthcare:Procedure`
+  - `Entity:Patient`
+  - `Entity:Provider`
+  - `Entity:Diagnosis`
+  - `Entity:Medication`
+  - `Entity:Procedure`
+- counts by benchmark-critical relationship families are plausible:
+  - `HAD_ENCOUNTER`
+  - `TREATED_BY`
+  - `DIAGNOSED_WITH`
+  - `PRESCRIBED`
+  - `MENTIONS`
+
+If these fail, stop before doing parallel runs.
+
+#### Step C — prove fast-path parity on a small gold subset
+
+Use a fixed small subset such as:
+
+- 100 patients
+- then 500 patients
+
+Import each subset with:
+
+- the current reference importer path
+- the accelerated importer path
+
+Then compare:
+
+- node counts
+- relationship counts
+- key sets
+- sampled properties
+
+This is the first real semantic parity gate.
+
+#### Step D — run clean parallel throughput tests
+
+Only after the clean single-worker baseline and integrity checks pass:
+
+1. wipe the graph again
+2. run `2` workers with the sharded launcher
+3. if the result is stable and duplicate-free, wipe again and run `4` workers
+
+Use:
+
+- `D:\code\agentic-memory\scripts\run_parallel_healthcare_import.sh`
+
+Goal:
+
+- determine whether Neo4j still scales with modest worker parallelism now that
+  the hot lookup path is fixed
+
+#### Step E — freeze the import path and move back to experiment science
+
+Once the importer is both fast enough and parity-safe:
+
+- stop iterating on importer mechanics
+- run the healthcare QA / retrieval experiments on the clean `20k` graph
+- collect the first scale-validity results that actually matter to the research
+  question
+
+#### Step F — temporal remains separate
+
+Do **not** put temporal back into the hot graph import loop yet.
+
+After the graph path is signed off:
+
+- build or run the temporal-only backfill
+- benchmark it independently
+- keep its cost and failure modes separate from graph ingestion
+- use `D:\code\agentic-memory\scripts\check_healthcare_temporal_integrity.py`
+  on a smoke subset before the full temporal run
+- use `D:\code\agentic-memory\scripts\run_parallel_healthcare_temporal_backfill.sh`
+  for multi-worker temporal throughput tests on the VM-local SpacetimeDB
 
 1. **Research-credit GCP/AWS VM.** Spin up ~500 GB disk + 32 GB RAM,
    run the 1M ingest and experiments, shut down. ~$100–200 of credits

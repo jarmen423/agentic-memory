@@ -63,6 +63,11 @@ from am_server.models import (
     OpenClawMemoryReadRequest,
     OpenClawMemorySearchRequest,
     OpenClawSessionRegisterRequest,
+    OpenClawToolConversationContextRequest,
+    OpenClawToolConversationSearchRequest,
+    OpenClawToolFileDependenciesRequest,
+    OpenClawToolSearchCodebaseRequest,
+    OpenClawToolTraceExecutionPathRequest,
     OpenClawTurnIngestRequest,
 )
 from agentic_memory.server.unified_search import search_all_memory_sync
@@ -532,6 +537,83 @@ def _format_conversation_read_document(
             )
 
     return "\n\n".join(section for section in sections if section.strip())
+
+
+def _format_openclaw_tool_search_results(
+    title: str,
+    query: str,
+    results: Iterable[dict[str, Any]],
+) -> str:
+    """Render normalized search hits into one compact text response.
+
+    The OpenClaw tool bridge returns plain text so the agent can use the result
+    without needing to reason about a secondary JSON envelope. We still keep the
+    raw payload in the HTTP response for debugging and future structured usage.
+    """
+
+    normalized_results = list(results)
+    if not normalized_results:
+        return f"## {title}\n\nQuery: `{query}`\n\nNo results found."
+
+    lines = [f"## {title}", "", f"Query: `{query}`", ""]
+    for index, hit in enumerate(normalized_results, start=1):
+        title_text = str(hit.get("title") or hit.get("name") or hit.get("path") or "result")
+        path = str(hit.get("path") or "unknown")
+        score = hit.get("score")
+        snippet = str(hit.get("snippet") or hit.get("content") or hit.get("text") or "").strip()
+
+        lines.append(f"{index}. {title_text}")
+        lines.append(f"Path: `{path}`")
+        if isinstance(score, (int, float)):
+            lines.append(f"Score: {float(score):.3f}")
+        if snippet:
+            lines.append(f"Snippet: {snippet}")
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+def _format_openclaw_conversation_context_text(
+    *,
+    query: str,
+    project_id: str,
+    turns: Iterable[dict[str, Any]],
+) -> str:
+    """Render structured conversation-context rows into a readable report."""
+
+    matched_turns = list(turns)
+    if not matched_turns:
+        return (
+            "## Conversation Context\n\n"
+            f"Query: `{query}`\n"
+            f"Project: `{project_id}`\n\n"
+            "No conversation context found."
+        )
+
+    lines = [
+        "## Conversation Context",
+        "",
+        f"Query: `{query}`",
+        f"Project: `{project_id}`",
+        "",
+    ]
+    for index, turn in enumerate(matched_turns, start=1):
+        lines.append(
+            f"{index}. session `{turn.get('session_id', 'unknown')}` turn #{turn.get('turn_index', '?')}"
+        )
+        lines.append(f"Role: `{turn.get('role', 'unknown')}`")
+        content = str(turn.get("content") or "").strip()
+        if content:
+            lines.append(f"Content: {content}")
+        context_window = turn.get("context_window") or []
+        if context_window:
+            lines.append("Context window:")
+            for neighbor in context_window:
+                lines.append(
+                    f"- `{neighbor.get('role', 'unknown')}` turn #{neighbor.get('turn_index', '?')}: "
+                    f"{neighbor.get('content', '')}"
+                )
+        lines.append("")
+    return "\n".join(lines).strip()
 
 
 @router.post("/openclaw/session/register")
@@ -1083,6 +1165,186 @@ async def read_openclaw_memory(request: Request, body: OpenClawMemoryReadRequest
         "text": _format_conversation_read_document(turn, neighbors),
         "matched_turn": turn,
         "neighbors": neighbors,
+    }
+
+
+@router.post("/openclaw/tools/search-codebase")
+async def search_openclaw_tool_codebase(
+    request: Request,
+    body: OpenClawToolSearchCodebaseRequest,
+) -> dict:
+    """Bridge the public `search_codebase` tool into the OpenClaw plugin surface."""
+
+    from agentic_memory.server.app import search_codebase
+
+    ensure_workspace_access(request, body.workspace_id)
+    text = search_codebase(
+        query=body.query,
+        limit=body.limit,
+        domain=body.domain,
+        repo_id=body.repo_id,
+    )
+    return {
+        "status": "ok",
+        "identity": body.model_dump(),
+        "text": text,
+    }
+
+
+@router.post("/openclaw/tools/get-file-dependencies")
+async def get_openclaw_tool_file_dependencies(
+    request: Request,
+    body: OpenClawToolFileDependenciesRequest,
+) -> dict:
+    """Bridge the public `get_file_dependencies` tool into OpenClaw."""
+
+    from agentic_memory.server.app import get_file_dependencies
+
+    ensure_workspace_access(request, body.workspace_id)
+    text = get_file_dependencies(
+        file_path=body.file_path,
+        repo_id=body.repo_id,
+    )
+    return {
+        "status": "ok",
+        "identity": body.model_dump(),
+        "text": text,
+    }
+
+
+@router.post("/openclaw/tools/trace-execution-path")
+async def trace_openclaw_tool_execution_path(
+    request: Request,
+    body: OpenClawToolTraceExecutionPathRequest,
+) -> dict:
+    """Bridge the public `trace_execution_path` tool into OpenClaw."""
+
+    from agentic_memory.server.app import trace_execution_path
+
+    ensure_workspace_access(request, body.workspace_id)
+    text = trace_execution_path(
+        start_symbol=body.start_symbol,
+        max_depth=body.max_depth,
+        force_refresh=body.force_refresh,
+        repo_id=body.repo_id,
+    )
+    return {
+        "status": "ok",
+        "identity": body.model_dump(),
+        "text": text,
+    }
+
+
+@router.post("/openclaw/tools/search-conversations")
+async def search_openclaw_tool_conversations(
+    request: Request,
+    body: OpenClawToolConversationSearchRequest,
+) -> dict:
+    """Bridge `search_conversations` into OpenClaw with session/project routing."""
+
+    from agentic_memory.server.tools import search_conversation_turns_sync
+
+    ensure_workspace_access(request, body.workspace_id)
+    effective_project_id = _resolve_active_project_id(
+        workspace_id=body.workspace_id,
+        agent_id=body.agent_id,
+        session_id=body.session_id,
+        explicit_project_id=body.project_id,
+    )
+    _, conversation_pipeline = pipelines_for_openclaw_workspace(body.workspace_id)
+    results = search_conversation_turns_sync(
+        conversation_pipeline,
+        query=body.query,
+        project_id=effective_project_id,
+        role=body.role,
+        limit=body.limit,
+        as_of=body.as_of,
+        log_prefix="openclaw.tools.search_conversations",
+        temporal_required=True,
+    )
+    return {
+        "status": "ok",
+        "identity": {**body.model_dump(), "project_id": effective_project_id},
+        "text": _format_openclaw_tool_search_results(
+            "Conversation Search",
+            body.query,
+            results,
+        ),
+        "payload": {
+            "results": results,
+        },
+    }
+
+
+@router.post("/openclaw/tools/get-conversation-context")
+async def get_openclaw_tool_conversation_context(
+    request: Request,
+    body: OpenClawToolConversationContextRequest,
+) -> dict:
+    """Bridge `get_conversation_context` into OpenClaw with active-project resolution."""
+
+    from agentic_memory.server.tools import (
+        _fetch_conversation_context_window,
+        search_conversation_turns_sync,
+    )
+
+    ensure_workspace_access(request, body.workspace_id)
+    effective_project_id = _resolve_active_project_id(
+        workspace_id=body.workspace_id,
+        agent_id=body.agent_id,
+        session_id=body.session_id,
+        explicit_project_id=body.project_id,
+    )
+    if not effective_project_id:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Conversation context requires an active project. "
+                "Start a project for this session or pass an explicit project_id."
+            ),
+        )
+
+    _, conversation_pipeline = pipelines_for_openclaw_workspace(body.workspace_id)
+    conn = conversation_pipeline._conn  # type: ignore[attr-defined]
+    matched_turns = search_conversation_turns_sync(
+        conversation_pipeline,
+        query=body.query,
+        project_id=effective_project_id,
+        role=None,
+        limit=body.limit,
+        as_of=body.as_of,
+        log_prefix="openclaw.tools.get_conversation_context",
+        temporal_required=True,
+    )
+    turns_with_context: list[dict[str, Any]] = []
+    for turn in matched_turns:
+        turn_data = dict(turn)
+        turn_data["context_window"] = (
+            _fetch_conversation_context_window(
+                conn,
+                session_id=turn["session_id"],
+                turn_index=turn["turn_index"],
+                as_of=body.as_of,
+            )
+            if body.include_session_context
+            else []
+        )
+        turns_with_context.append(turn_data)
+
+    payload = {
+        "query": body.query,
+        "project_id": effective_project_id,
+        "turns": turns_with_context,
+    }
+    return {
+        "status": "ok",
+        "identity": {**body.model_dump(), "project_id": effective_project_id},
+        "text": _format_openclaw_conversation_context_text(
+            query=body.query,
+            project_id=effective_project_id,
+            turns=turns_with_context,
+        ),
+        "payload": payload,
     }
 
 

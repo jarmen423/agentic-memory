@@ -1,4 +1,39 @@
 declare module "openclaw/plugin-sdk/core" {
+  export type OpenClawToolResult = {
+    content: Array<{
+      type: "text";
+      text: string;
+    }>;
+    structuredContent?: unknown;
+  };
+
+  export type OpenClawPluginToolContext = {
+    config?: Record<string, unknown>;
+    runtimeConfig?: Record<string, unknown>;
+    workspaceDir?: string;
+    agentDir?: string;
+    agentId?: string;
+    sessionKey?: string;
+    sessionId?: string;
+  };
+
+  export type OpenClawAgentTool = {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+    execute(
+      id: string,
+      params: Record<string, unknown>,
+    ): Promise<OpenClawToolResult> | OpenClawToolResult;
+  };
+
+  export type OpenClawPluginToolFactory =
+    (ctx: OpenClawPluginToolContext) =>
+      | OpenClawAgentTool
+      | OpenClawAgentTool[]
+      | null
+      | undefined;
+
   export type OpenClawMemoryRuntime = {
     getMemorySearchManager(params: {
       cfg: unknown;
@@ -24,6 +59,13 @@ declare module "openclaw/plugin-sdk/core" {
   };
 
   export type OpenClawPluginApi = {
+    id?: string;
+    name?: string;
+    version?: string;
+    description?: string;
+    source?: string;
+    rootDir?: string;
+    config?: Record<string, unknown>;
     pluginConfig: Record<string, unknown>;
     registrationMode?: "full" | "cli-metadata";
     logger?: {
@@ -32,6 +74,14 @@ declare module "openclaw/plugin-sdk/core" {
       warn?: (...args: unknown[]) => void;
       error?: (...args: unknown[]) => void;
     };
+    registerTool?(
+      tool: OpenClawAgentTool | OpenClawPluginToolFactory,
+      opts?: {
+        optional?: boolean;
+        name?: string;
+        names?: string[];
+      },
+    ): void;
     registerCli?(
       registrar: (params: {
         program: unknown;

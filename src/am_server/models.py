@@ -366,6 +366,49 @@ class OpenClawTurnIngestRequest(OpenClawProjectScopedIdentityModel):
     source_key: str = "chat_openclaw"
 
 
+class OpenClawToolSearchCodebaseRequest(OpenClawProjectScopedIdentityModel):
+    """Request body for the OpenClaw `search_codebase` tool bridge."""
+
+    query: str
+    limit: int = 5
+    domain: str = "code"
+    repo_id: str | None = None
+
+
+class OpenClawToolFileDependenciesRequest(OpenClawProjectScopedIdentityModel):
+    """Request body for the OpenClaw `get_file_dependencies` tool bridge."""
+
+    file_path: str
+    repo_id: str | None = None
+
+
+class OpenClawToolTraceExecutionPathRequest(OpenClawProjectScopedIdentityModel):
+    """Request body for the OpenClaw `trace_execution_path` tool bridge."""
+
+    start_symbol: str
+    max_depth: int = 2
+    force_refresh: bool = False
+    repo_id: str | None = None
+
+
+class OpenClawToolConversationSearchRequest(OpenClawProjectScopedIdentityModel):
+    """Request body for the OpenClaw `search_conversations` tool bridge."""
+
+    query: str
+    limit: int = 10
+    role: str | None = None
+    as_of: str | None = None
+
+
+class OpenClawToolConversationContextRequest(OpenClawProjectScopedIdentityModel):
+    """Request body for the OpenClaw `get_conversation_context` tool bridge."""
+
+    query: str
+    limit: int = 5
+    include_session_context: bool = True
+    as_of: str | None = None
+
+
 class OpenClawDashboardMetricCardModel(BaseModel):
     """One top-level dashboard metric card."""
 

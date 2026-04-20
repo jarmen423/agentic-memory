@@ -23,6 +23,7 @@ import {
   createAgenticMemoryMemoryRuntime,
 } from "./runtime.js";
 import { registerAgenticMemoryCli, type AgenticMemoryCliContext } from "./setup.js";
+import { createAgenticMemoryTools, toolErrorResult } from "./tools.js";
 import {
   asRecord,
   asString,
@@ -57,16 +58,29 @@ export default definePluginEntry({
   kind: ["memory", "context-engine"] as any,
   configSchema: PLUGIN_CONFIG_SCHEMA,
   register(api: any) {
+    const rootConfig = asRecord(api.config);
+    const rootPlugins = asRecord(rootConfig.plugins);
+    const rootSlots = asRecord(rootPlugins.slots);
+    const activeMemorySlot = asString(rootSlots.memory);
+    const descriptors = [
+      {
+        name: PLUGIN_ID,
+        description: "Configure the Agentic Memory plugin",
+        hasSubcommands: true,
+      },
+    ];
+    if (activeMemorySlot === PLUGIN_ID) {
+      descriptors.push({
+        name: "memory",
+        description: "Agentic Memory-backed memory status and search commands",
+        hasSubcommands: true,
+      });
+    }
+
     api.registerCli(({ program, config, workspaceDir, logger }: AgenticMemoryCliContext) => {
       registerAgenticMemoryCli({ program, config, workspaceDir, logger });
     }, {
-      descriptors: [
-        {
-          name: PLUGIN_ID,
-          description: "Configure the Agentic Memory plugin",
-          hasSubcommands: true,
-        },
-      ],
+      descriptors,
     });
 
     if (api.registrationMode === "cli-metadata") {
@@ -98,6 +112,30 @@ export default definePluginEntry({
     // exclusive registration surface.
     api.registerMemoryPromptSection(buildMemoryPromptSection);
     api.registerMemoryRuntime(memoryRuntime);
+
+    api.registerTool?.((toolContext: any) => {
+      try {
+        return createAgenticMemoryTools(
+          toolContext ?? {},
+          asRecord(api.pluginConfig),
+          api.logger,
+        );
+      } catch (error) {
+        api.logger?.warn?.("Failed to register Agentic Memory OpenClaw tools.");
+        return [{
+          name: "agentic_memory_tool_bridge_error",
+          description: "Explain why the Agentic Memory OpenClaw tool bridge failed to load.",
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: {},
+          },
+          async execute() {
+            return toolErrorResult(error);
+          },
+        }];
+      }
+    });
 
     api.registerContextEngine(config.contextEngineId, async () => {
       return new AgenticMemoryContextEngine(client, config);

@@ -23,6 +23,36 @@ type BackendErrorEnvelope = {
 };
 
 /**
+ * Common OpenClaw identity payload sent by plugin-owned runtime, CLI, and tool
+ * bridge requests.
+ *
+ * Keeping this shape in the backend client makes it easier to evolve the HTTP
+ * contract without duplicating the same identity object in several modules.
+ */
+export type OpenClawBackendIdentityPayload = {
+  workspace_id: string;
+  device_id: string;
+  agent_id: string;
+  session_id: string;
+  project_id?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+/**
+ * JSON shape returned by the plugin's tool-bridge endpoints.
+ *
+ * Each route returns a human-readable `text` field for the OpenClaw tool
+ * surface plus an optional structured `payload` that the plugin can surface in
+ * `structuredContent`.
+ */
+export type OpenClawBackendTextToolResponse<TPayload = unknown> = {
+  status: "ok";
+  text: string;
+  payload?: TPayload;
+  identity?: Record<string, unknown>;
+};
+
+/**
  * Stable backend error type used by the plugin runtime and setup commands.
  *
  * The backend now returns a machine-readable error envelope. This class keeps
@@ -240,5 +270,83 @@ export class AgenticMemoryBackendClient {
    */
   async post<T>(path: string, payload: Record<string, unknown>): Promise<T> {
     return this.requestJson<T>("POST", path, payload);
+  }
+
+  /**
+   * Run unified memory search through the OpenClaw-specific backend contract.
+   *
+   * This is the same search surface used by the runtime memory adapter. The
+   * tool bridge reuses it so OpenClaw's explicit tools and memory runtime stay
+   * grounded in the same backend search implementation.
+   */
+  async searchAllMemory(payload: OpenClawBackendIdentityPayload & {
+    query: string;
+    limit?: number;
+    as_of?: string | null;
+    modules?: string[] | null;
+  }): Promise<{
+    results?: Array<Record<string, unknown>>;
+    response?: Record<string, unknown>;
+    identity?: Record<string, unknown>;
+  }> {
+    return this.post("/openclaw/memory/search", payload);
+  }
+
+  /**
+   * Run codebase search through the OpenClaw tool bridge.
+   */
+  async searchCodebaseTool(payload: OpenClawBackendIdentityPayload & {
+    query: string;
+    limit?: number;
+    domain?: string;
+    repo_id?: string | null;
+  }): Promise<OpenClawBackendTextToolResponse> {
+    return this.post("/openclaw/tools/search-codebase", payload);
+  }
+
+  /**
+   * Return direct and reverse import relationships for one file.
+   */
+  async getFileDependenciesTool(payload: OpenClawBackendIdentityPayload & {
+    file_path: string;
+    repo_id?: string | null;
+  }): Promise<OpenClawBackendTextToolResponse> {
+    return this.post("/openclaw/tools/get-file-dependencies", payload);
+  }
+
+  /**
+   * Trace likely execution edges for one function or symbol.
+   */
+  async traceExecutionPathTool(payload: OpenClawBackendIdentityPayload & {
+    start_symbol: string;
+    max_depth?: number;
+    force_refresh?: boolean;
+    repo_id?: string | null;
+  }): Promise<OpenClawBackendTextToolResponse> {
+    return this.post("/openclaw/tools/trace-execution-path", payload);
+  }
+
+  /**
+   * Search conversation memory with OpenClaw identity/project routing applied.
+   */
+  async searchConversationsTool(payload: OpenClawBackendIdentityPayload & {
+    query: string;
+    limit?: number;
+    role?: string | null;
+    as_of?: string | null;
+  }): Promise<OpenClawBackendTextToolResponse> {
+    return this.post("/openclaw/tools/search-conversations", payload);
+  }
+
+  /**
+   * Retrieve a structured conversation-context bundle for one query.
+   */
+  async getConversationContextTool(payload: OpenClawBackendIdentityPayload & {
+    query: string;
+    limit?: number;
+    include_session_context?: boolean;
+    as_of?: string | null;
+  }): Promise<OpenClawBackendTextToolResponse> {
+    return this.post("/openclaw/tools/get-conversation-context", payload);
   }
 }

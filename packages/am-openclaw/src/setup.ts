@@ -15,6 +15,7 @@ import {
   runAgenticMemoryDoctor,
   validateSetupAgainstContract,
 } from "./doctor.js";
+import { AgenticMemorySearchManager } from "./runtime.js";
 import {
   asRecord,
   asString,
@@ -27,6 +28,7 @@ import {
   PLUGIN_CONFIG_SCHEMA_VERSION,
   PLUGIN_ID,
   PluginLogger,
+  resolveAgenticMemoryPluginConfig,
 } from "./shared.js";
 
 export type SetupCommandOptions = {
@@ -84,6 +86,20 @@ export type AgenticMemoryCliContext = {
   logger: PluginLogger;
 };
 
+type MemoryStatusCommandOptions = {
+  agent?: string;
+  json?: boolean;
+  deep?: boolean;
+};
+
+type MemorySearchCommandOptions = {
+  query?: string;
+  agent?: string;
+  maxResults?: number;
+  minScore?: number;
+  json?: boolean;
+};
+
 function isInteractiveTerminal(): boolean {
   return Boolean(input.isTTY && output.isTTY);
 }
@@ -93,6 +109,12 @@ function resolveExistingPluginConfig(config: OpenClawConfig): Record<string, unk
   const entries = asRecord(plugins.entries);
   const pluginEntry = asRecord(entries[PLUGIN_ID]);
   return asRecord(pluginEntry.config);
+}
+
+function isAgenticMemoryActiveMemoryPlugin(config: OpenClawConfig): boolean {
+  const plugins = asRecord(config.plugins);
+  const slots = asRecord(plugins.slots);
+  return asString(slots.memory) === PLUGIN_ID;
 }
 
 function resolveExistingMode(config: OpenClawConfig): "capture_only" | "augment_context" {
@@ -862,5 +884,137 @@ export function registerAgenticMemoryCli(ctx: AgenticMemoryCliContext): void {
         },
         options.json,
       );
+    });
+
+  if (!isAgenticMemoryActiveMemoryPlugin(ctx.config)) {
+    return;
+  }
+
+  const memory = ctx.program
+    .command("memory")
+    .description("Agentic Memory-backed memory status and search commands");
+
+  memory
+    .command("status")
+    .description("Show Agentic Memory runtime status for the active OpenClaw memory plugin")
+    .option("--agent <id>", "Override the configured agent id")
+    .option("--deep", "Include backend readiness checks", false)
+    .option("--json", "Print machine-readable JSON", false)
+    .action(async (options: MemoryStatusCommandOptions) => {
+      const existing = resolveExistingPluginConfig(ctx.config);
+      const resolved = resolveAgenticMemoryPluginConfig(
+        {
+          ...existing,
+          ...(options.agent ? { agentId: options.agent } : {}),
+        },
+        options.agent,
+      );
+      const client = new AgenticMemoryBackendClient(resolved, ctx.logger);
+      const manager = new AgenticMemorySearchManager(client, resolved);
+      const status = manager.status();
+      let doctor: Awaited<ReturnType<typeof runAgenticMemoryDoctor>> | null = null;
+
+      if (options.deep) {
+        doctor = await runAgenticMemoryDoctor(client, resolved);
+      }
+
+      const payload = {
+        ok: true,
+        provider: status.provider,
+        backend: status.backend,
+        custom: status.custom ?? {},
+        deep: doctor
+          ? {
+              setupReady: doctor.contract.readiness.setup_ready,
+              captureOnlyReady: doctor.contract.readiness.capture_only_ready,
+              augmentContextReady: doctor.contract.readiness.augment_context_ready,
+              blockingServices: doctor.contract.readiness.blocking_services,
+            }
+          : null,
+      };
+
+      if (options.json) {
+        output.write(`${JSON.stringify(payload, null, 2)}\n`);
+        return;
+      }
+
+      output.write("Agentic Memory memory status\n");
+      output.write(`Provider: ${status.provider}\n`);
+      output.write(`Backend: ${status.backend}\n`);
+      output.write(`Backend URL: ${String(status.custom?.backendUrl ?? "unknown")}\n`);
+      output.write(`Workspace: ${String(status.custom?.workspaceId ?? "unknown")}\n`);
+      output.write(`Device: ${String(status.custom?.deviceId ?? "unknown")}\n`);
+      output.write(`Agent: ${String(status.custom?.agentId ?? "unknown")}\n`);
+      output.write(`Mode: ${String(status.custom?.mode ?? "unknown")}\n`);
+      if (doctor) {
+        output.write(`Setup ready: ${doctor.contract.readiness.setup_ready ? "yes" : "no"}\n`);
+        output.write(
+          `Capture-only ready: ${doctor.contract.readiness.capture_only_ready ? "yes" : "no"}\n`,
+        );
+        output.write(
+          `Augment-context ready: ${doctor.contract.readiness.augment_context_ready ? "yes" : "no"}\n`,
+        );
+        if (doctor.contract.readiness.blocking_services.length > 0) {
+          output.write(
+            `Blocking services: ${doctor.contract.readiness.blocking_services.join(", ")}\n`,
+          );
+        }
+      }
+    });
+
+  memory
+    .command("search [query]")
+    .description("Search Agentic Memory from the OpenClaw memory CLI surface")
+    .option("--query <text>", "Explicit query text")
+    .option("--agent <id>", "Override the configured agent id")
+    .option("--max-results <n>", "Maximum results to return", (value: string) => Number(value))
+    .option("--min-score <n>", "Minimum score threshold", (value: string) => Number(value))
+    .option("--json", "Print machine-readable JSON", false)
+    .action(async (queryArg: string | undefined, options: MemorySearchCommandOptions) => {
+      const query = options.query?.trim() || queryArg?.trim();
+      if (!query) {
+        throw new Error("Provide a query either positionally or with --query.");
+      }
+
+      const existing = resolveExistingPluginConfig(ctx.config);
+      const resolved = resolveAgenticMemoryPluginConfig(
+        {
+          ...existing,
+          ...(options.agent ? { agentId: options.agent } : {}),
+        },
+        options.agent,
+      );
+      const client = new AgenticMemoryBackendClient(resolved, ctx.logger);
+      const manager = new AgenticMemorySearchManager(client, resolved);
+      const searchOptions: {
+        maxResults?: number;
+        minScore?: number;
+      } = {};
+      if (options.maxResults !== undefined) {
+        searchOptions.maxResults = options.maxResults;
+      }
+      if (options.minScore !== undefined) {
+        searchOptions.minScore = options.minScore;
+      }
+      const hits = await manager.search(query, searchOptions);
+
+      if (options.json) {
+        output.write(`${JSON.stringify({ ok: true, query, results: hits }, null, 2)}\n`);
+        return;
+      }
+
+      if (hits.length === 0) {
+        output.write(`No Agentic Memory hits found for "${query}".\n`);
+        return;
+      }
+
+      output.write(`Agentic Memory results for "${query}"\n`);
+      for (const [index, hit] of hits.entries()) {
+        output.write(`${index + 1}. ${hit.path}\n`);
+        output.write(`   score=${hit.score.toFixed(3)} source=${hit.source}\n`);
+        if (hit.snippet) {
+          output.write(`   ${hit.snippet}\n`);
+        }
+      }
     });
 }

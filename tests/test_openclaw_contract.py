@@ -529,6 +529,96 @@ def test_openclaw_tool_conversation_search_without_project_stays_best_effort(
     assert captured["temporal_required"] is False
 
 
+def test_openclaw_tool_conversation_search_ignores_unknown_identity_shaped_project_id(
+    client,
+    monkeypatch,
+):
+    """Ignore LLM-invented project ids that only mirror the current identity.
+
+    OpenClaw models sometimes guess ``project_id`` by copying ``workspace_id``
+    or ``agent_id``. Those values should not force temporal retrieval unless
+    the backend already knows them as real projects.
+    """
+
+    captured: dict[str, object] = {}
+
+    def fake_search(*args, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(
+        openclaw,
+        "pipelines_for_openclaw_workspace",
+        lambda workspace_id: ("research", MagicMock()),
+    )
+    monkeypatch.setattr(
+        "agentic_memory.server.tools.search_conversation_turns_sync",
+        fake_search,
+    )
+
+    response = client.post(
+        "/openclaw/tools/search-conversations",
+        headers={"Authorization": "Bearer new-key"},
+        json={
+            "workspace_id": "workspace-1",
+            "device_id": "device-1",
+            "agent_id": "agent-1",
+            "session_id": "session-1",
+            "project_id": "workspace-1",
+            "query": "memory",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["identity"]["project_id"] is None
+    assert captured["project_id"] is None
+    assert captured["temporal_required"] is False
+
+
+def test_openclaw_tool_conversation_search_keeps_registered_identity_shaped_project_id(
+    client,
+    monkeypatch,
+):
+    """Honor identity-shaped project ids once the store knows they are real."""
+
+    store = dependencies.get_product_store()
+    store.upsert_project(project_id="workspace-1", title="Workspace One")
+
+    captured: dict[str, object] = {}
+
+    def fake_search(*args, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(
+        openclaw,
+        "pipelines_for_openclaw_workspace",
+        lambda workspace_id: ("research", MagicMock()),
+    )
+    monkeypatch.setattr(
+        "agentic_memory.server.tools.search_conversation_turns_sync",
+        fake_search,
+    )
+
+    response = client.post(
+        "/openclaw/tools/search-conversations",
+        headers={"Authorization": "Bearer new-key"},
+        json={
+            "workspace_id": "workspace-1",
+            "device_id": "device-1",
+            "agent_id": "agent-1",
+            "session_id": "session-1",
+            "project_id": "workspace-1",
+            "query": "memory",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["identity"]["project_id"] == "workspace-1"
+    assert captured["project_id"] == "workspace-1"
+    assert captured["temporal_required"] is True
+
+
 def test_openclaw_memory_search_without_project_avoids_temporal_fail_closed(
     client,
     monkeypatch,
@@ -557,6 +647,46 @@ def test_openclaw_memory_search_without_project_avoids_temporal_fail_closed(
             "device_id": "device-1",
             "agent_id": "agent-1",
             "session_id": "session-1",
+            "query": "memory",
+            "modules": ["conversation"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["identity"]["project_id"] is None
+    assert captured["project_id"] is None
+    assert captured["fail_on_temporal_errors"] is False
+
+
+def test_openclaw_memory_search_ignores_unknown_identity_shaped_project_id(
+    client,
+    monkeypatch,
+):
+    """Unified search should not fail closed on a hallucinated project id."""
+
+    captured: dict[str, object] = {}
+
+    def fake_unified_search(**kwargs):
+        captured.update(kwargs)
+        return UnifiedSearchResponse(results=[], errors=[])
+
+    monkeypatch.setattr(openclaw, "graph_for_openclaw_workspace", lambda workspace_id: object())
+    monkeypatch.setattr(
+        openclaw,
+        "pipelines_for_openclaw_workspace",
+        lambda workspace_id: ("research", "conversation"),
+    )
+    monkeypatch.setattr(openclaw, "search_all_memory_sync", fake_unified_search)
+
+    response = client.post(
+        "/openclaw/memory/search",
+        headers={"Authorization": "Bearer new-key"},
+        json={
+            "workspace_id": "workspace-1",
+            "device_id": "device-1",
+            "agent_id": "agent-1",
+            "session_id": "session-1",
+            "project_id": "agent-1",
             "query": "memory",
             "modules": ["conversation"],
         },

@@ -441,6 +441,13 @@ def _resolve_active_project_id(
     up on active-project resolution.
     """
 
+    explicit_project_id = _normalize_explicit_project_id(
+        workspace_id=workspace_id,
+        device_id=device_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        explicit_project_id=explicit_project_id,
+    )
     if explicit_project_id:
         return explicit_project_id
 
@@ -466,6 +473,55 @@ def _resolve_active_project_id(
             session_id=fallback_session_id,
         )
     return binding["project_id"] if binding else None
+
+
+def _normalize_explicit_project_id(
+    *,
+    workspace_id: str,
+    device_id: str | None,
+    agent_id: str,
+    session_id: str,
+    explicit_project_id: str | None,
+) -> str | None:
+    """Return a caller-supplied ``project_id`` only when it looks intentional.
+
+    OpenClaw tool-calling models sometimes invent ``project_id`` values by
+    copying the current identity, for example using ``workspace_id="alfred"``
+    and then also sending ``project_id="alfred"``. That is not a real project
+    selection, but it used to force the backend down the temporal-first
+    retrieval path, which then failed closed for general conversation memory.
+
+    To keep "just chat" memory resilient, we treat those identity-shaped ids as
+    suspicious. They are only honored when the product store already knows that
+    id as a real project definition or active binding. Any other non-empty id
+    is preserved exactly as supplied.
+    """
+
+    if explicit_project_id is None:
+        return None
+
+    normalized = explicit_project_id.strip()
+    if not normalized:
+        return None
+
+    identity_tokens = {workspace_id.strip(), agent_id.strip(), session_id.strip()}
+    if device_id:
+        identity_tokens.add(device_id.strip())
+
+    # Most explicit project ids are deliberate; only identity-shaped values need
+    # extra scrutiny because OpenClaw models sometimes hallucinate them.
+    if normalized not in identity_tokens:
+        return normalized
+
+    store = get_product_store()
+    payload = store.status_payload()
+    known_project_ids = {
+        str(record.get("project_id", "")).strip()
+        for bucket in ("projects", "active_projects")
+        for record in payload.get(bucket, [])
+        if isinstance(record, dict) and str(record.get("project_id", "")).strip()
+    }
+    return normalized if normalized in known_project_ids else None
 
 
 def _resolve_openclaw_session_id(

@@ -88,6 +88,11 @@ from agentic_memory.temporal.seeds import (
 from agentic_memory.web.pipeline import ResearchIngestionPipeline
 from agentic_memory.ingestion.graph import KnowledgeGraphBuilder
 from agentic_memory.server.code_search import SAFE_RETRIEVAL_POLICY, search_code
+from agentic_memory.server.repo_identity import (
+    list_known_project_ids,
+    list_known_repo_ids,
+    list_project_and_repo_ids_payload,
+)
 from agentic_memory.server.reranking import (
     build_yaml_card,
     candidate_limit_for_domain,
@@ -1612,6 +1617,38 @@ def _list_known_repo_ids() -> list[str]:
         return []
 
 
+def _list_known_project_ids() -> list[str]:
+    """Return the sorted list of distinct ``project_id`` values stored in the graph."""
+
+    from agentic_memory.server.app import get_graph
+
+    graph = get_graph()
+    if graph is None:
+        logger.warning("_list_known_project_ids: graph unavailable; returning [].")
+        return []
+    return list_known_project_ids(graph)
+
+
+def list_project_and_repo_ids() -> dict[str, Any]:
+    """Return the simple discovery payload for agent-facing repo/project lookup.
+
+    This helper backs the MCP tool and any adapter layer that needs the same
+    outward contract without re-querying the graph differently.
+    """
+
+    from agentic_memory.server.app import get_graph
+
+    graph = get_graph()
+    if graph is None:
+        return {
+            "status": "error",
+            "message": "graph unavailable; cannot list project and repo ids.",
+            "project_ids": [],
+            "repo_ids": [],
+        }
+    return list_project_and_repo_ids_payload(graph)
+
+
 def _create_project_marker(repo_id: str, display_name: str | None = None) -> dict:
     """Upsert a ``(:Project {repo_id})`` marker so ``repo_id`` is a known id.
 
@@ -1845,6 +1882,18 @@ def register_project_scope_tools(
             "status": "ok",
             "known_repos": _list_known_repo_ids(),
         }
+
+    @mcp.tool(  # type: ignore[attr-defined]
+        **_tool_registration_kwargs(
+            "list_project_and_repo_ids",
+            "List the currently known project_id and repo_id values so agents can pick an exact scope.",
+            annotation_resolver,
+        )
+    )
+    async def list_project_and_repo_ids_tool(ctx: Context | None = None) -> dict:
+        """Enumerate outward-facing repo ids plus project ids for agent discovery."""
+
+        return list_project_and_repo_ids()
 
     @mcp.tool(  # type: ignore[attr-defined]
         **_tool_registration_kwargs(

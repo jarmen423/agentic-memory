@@ -67,11 +67,18 @@ from am_server.models import (
     OpenClawMemorySearchRequest,
     OpenClawSessionRegisterRequest,
     OpenClawToolConversationContextRequest,
+    OpenClawToolIdentityRequest,
     OpenClawToolConversationSearchRequest,
     OpenClawToolFileDependenciesRequest,
     OpenClawToolSearchCodebaseRequest,
     OpenClawToolTraceExecutionPathRequest,
     OpenClawTurnIngestRequest,
+)
+from agentic_memory.server.repo_identity import (
+    format_unknown_repo_id_message,
+    list_project_and_repo_ids_payload,
+    outward_repo_id_for_stored_repo_id,
+    resolve_repo_id,
 )
 from agentic_memory.server.temporal_contract import TemporalRetrievalRequiredError
 from agentic_memory.server.unified_search import search_all_memory_sync
@@ -82,7 +89,10 @@ PROJECT_STATUS_CACHE_TTL_SECONDS = 60.0
 SEARCH_CACHE_TTL_SECONDS = 30.0
 _CACHE_LOCK = Lock()
 _PROJECT_STATUS_CACHE: dict[tuple[str, str, str, str], tuple[float, dict[str, Any] | None]] = {}
-_SEARCH_CACHE: dict[tuple[str, str, str, str, str | None, str, int, str | None, tuple[str, ...]], tuple[float, dict[str, Any]]] = {}
+_SEARCH_CACHE: dict[
+    tuple[str, str, str, str, str | None, str | None, str, int, str | None, tuple[str, ...]],
+    tuple[float, dict[str, Any]]
+] = {}
 _CACHE_MISS = object()
 
 
@@ -225,11 +235,12 @@ def _search_cache_key(
     agent_id: str,
     session_id: str,
     project_id: str | None,
+    repo_id: str | None,
     query: str,
     limit: int,
     as_of: str | None,
     modules: list[str] | None,
-) -> tuple[str, str, str, str, str | None, str, int, str | None, tuple[str, ...]]:
+) -> tuple[str, str, str, str, str | None, str | None, str, int, str | None, tuple[str, ...]]:
     """Return the cache key for one OpenClaw search request.
 
     The cache key stays fully identity-scoped so one agent or workspace never
@@ -243,6 +254,7 @@ def _search_cache_key(
         agent_id,
         session_id,
         project_id,
+        repo_id,
         query,
         limit,
         as_of,
@@ -311,6 +323,7 @@ def _read_cached_search_response(
     agent_id: str,
     session_id: str,
     project_id: str | None,
+    repo_id: str | None,
     query: str,
     limit: int,
     as_of: str | None,
@@ -324,6 +337,7 @@ def _read_cached_search_response(
         agent_id=agent_id,
         session_id=session_id,
         project_id=project_id,
+        repo_id=repo_id,
         query=query,
         limit=limit,
         as_of=as_of,
@@ -348,6 +362,7 @@ def _write_cached_search_response(
     agent_id: str,
     session_id: str,
     project_id: str | None,
+    repo_id: str | None,
     query: str,
     limit: int,
     as_of: str | None,
@@ -362,6 +377,7 @@ def _write_cached_search_response(
         agent_id=agent_id,
         session_id=session_id,
         project_id=project_id,
+        repo_id=repo_id,
         query=query,
         limit=limit,
         as_of=as_of,
@@ -610,6 +626,8 @@ def _normalize_openclaw_hit(hit: dict[str, Any]) -> dict[str, Any]:
 
     return {
         **hit,
+        "repo_id": metadata.get("repo_id"),
+        "project_id": metadata.get("project_id"),
         "path": path,
         "start_line": line_number,
         "end_line": line_number,
@@ -617,6 +635,40 @@ def _normalize_openclaw_hit(hit: dict[str, Any]) -> dict[str, Any]:
         "content": snippet,
         "citation": f"{path}#L{line_number}",
     }
+
+
+def _raise_unknown_repo_id(repo_resolution: dict[str, Any]) -> None:
+    """Raise a stable HTTP 400 for an explicit unknown repo id."""
+
+    suggestions = repo_resolution.get("suggestions") or []
+    suggestion_text = ", ".join(f"`{repo_id}`" for repo_id in suggestions) if suggestions else "`none`"
+    raise HTTPException(
+        status_code=400,
+        detail={
+            "code": "unknown_repo_id",
+            "message": (
+                f"Unknown repo_id `{repo_resolution.get('requested_repo_id')}`. "
+                f"Known repo_ids: {suggestion_text}"
+            ),
+            "details": repo_resolution,
+        },
+    )
+
+
+def _resolve_explicit_repo_scope(
+    graph: Any,
+    repo_id: str | None,
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Resolve one explicit repo filter against the graph's known repo identities."""
+
+    if repo_id is None:
+        return None, None
+
+    resolution = resolve_repo_id(graph, repo_id)
+    resolution_payload = resolution.to_dict()
+    if resolution.repo_resolution_status == "unknown_repo_id":
+        _raise_unknown_repo_id(resolution_payload)
+    return resolution.stored_repo_id, resolution_payload
 
 
 def _fetch_conversation_turn_by_source_id(
@@ -1197,19 +1249,21 @@ async def search_openclaw_memory(request: Request, body: OpenClawMemorySearchReq
     )
     started = time.perf_counter()
     cache_hit = False
+    graph = graph_for_openclaw_workspace(body.workspace_id)
+    resolved_repo_id, repo_resolution = _resolve_explicit_repo_scope(graph, body.repo_id)
     cached_payload = _read_cached_search_response(
         workspace_id=body.workspace_id,
         device_id=body.device_id,
         agent_id=body.agent_id,
         session_id=body.session_id,
         project_id=effective_project_id,
+        repo_id=resolved_repo_id,
         query=body.query,
         limit=body.limit,
         as_of=body.as_of,
         modules=body.modules,
     )
     if cached_payload is None:
-        graph = graph_for_openclaw_workspace(body.workspace_id)
         research_pipeline, conversation_pipeline = pipelines_for_openclaw_workspace(
             body.workspace_id
         )
@@ -1218,6 +1272,7 @@ async def search_openclaw_memory(request: Request, body: OpenClawMemorySearchReq
                 query=body.query,
                 limit=body.limit,
                 project_id=effective_project_id,
+                repo_id=resolved_repo_id,
                 as_of=body.as_of,
                 modules=body.modules,
                 graph=graph,
@@ -1234,6 +1289,7 @@ async def search_openclaw_memory(request: Request, body: OpenClawMemorySearchReq
             agent_id=body.agent_id,
             session_id=body.session_id,
             project_id=effective_project_id,
+            repo_id=resolved_repo_id,
             query=body.query,
             limit=body.limit,
             as_of=body.as_of,
@@ -1245,6 +1301,17 @@ async def search_openclaw_memory(request: Request, body: OpenClawMemorySearchReq
         cache_hit = True
 
     raw_hits = _coerce_serialized_hit_rows(payload.get("results"), field_name="search_response.results")
+    for hit in raw_hits:
+        metadata = hit.get("metadata") or {}
+        stored_repo_id = metadata.get("repo_id")
+        outward_repo_id = outward_repo_id_for_stored_repo_id(graph, stored_repo_id) if stored_repo_id else None
+        if outward_repo_id:
+            metadata["stored_repo_id"] = stored_repo_id
+            metadata["repo_id"] = outward_repo_id
+            hit["metadata"] = metadata
+    payload["results"] = raw_hits
+    if repo_resolution is not None:
+        payload["repo_resolution"] = repo_resolution
 
     duration = time.perf_counter() - started
     record_openclaw_search(
@@ -1275,7 +1342,11 @@ async def search_openclaw_memory(request: Request, body: OpenClawMemorySearchReq
     )
     return {
         "status": "ok",
-        "identity": {**body.model_dump(), "project_id": effective_project_id},
+        "identity": {
+            **body.model_dump(),
+            "project_id": effective_project_id,
+            **({"repo_id": repo_resolution["resolved_repo_id"]} if repo_resolution else {}),
+        },
         "cache_hit": cache_hit,
         "results": [_normalize_openclaw_hit(hit) for hit in raw_hits],
         "response": payload,
@@ -1357,18 +1428,42 @@ async def search_openclaw_tool_codebase(
     from agentic_memory.server.app import search_codebase
 
     ensure_workspace_access(request, body.workspace_id)
+    graph = graph_for_openclaw_workspace(body.workspace_id)
+    resolved_repo_id, repo_resolution = _resolve_explicit_repo_scope(graph, body.repo_id)
     text = await _resolve_openclaw_tool_text_result(
         search_codebase(
             query=body.query,
             limit=body.limit,
             domain=body.domain,
-            repo_id=body.repo_id,
+            repo_id=resolved_repo_id,
         )
     )
     return {
         "status": "ok",
-        "identity": body.model_dump(),
+        "identity": {
+            **body.model_dump(),
+            **({"repo_id": repo_resolution["resolved_repo_id"]} if repo_resolution else {}),
+        },
         "text": text,
+        "payload": {"repo_resolution": repo_resolution} if repo_resolution else {},
+    }
+
+
+@router.post("/openclaw/tools/list-project-and-repo-ids")
+async def list_openclaw_project_and_repo_ids(
+    request: Request,
+    body: OpenClawToolIdentityRequest,
+) -> dict:
+    """List known project ids and outward-facing repo ids for OpenClaw agents."""
+
+    ensure_workspace_access(request, body.workspace_id)
+    graph = graph_for_openclaw_workspace(body.workspace_id)
+    payload = list_project_and_repo_ids_payload(graph)
+    return {
+        "status": "ok",
+        "identity": body.model_dump(),
+        "text": json.dumps(payload, indent=2, sort_keys=True),
+        "payload": payload,
     }
 
 

@@ -28,6 +28,7 @@ test("tool bridge exposes the expected Agentic Memory tool names", () => {
   assert.deepEqual(
     tools.map((tool) => tool.name),
     [
+      "list_project_and_repo_ids",
       "search_codebase",
       "get_file_dependencies",
       "trace_execution_path",
@@ -36,6 +37,48 @@ test("tool bridge exposes the expected Agentic Memory tool names", () => {
       "get_conversation_context",
     ],
   );
+});
+
+test("list_project_and_repo_ids tool calls the dedicated OpenClaw listing route", async () => {
+  const tools = createAgenticMemoryTools(createContext(), createPluginConfig());
+  const tool = tools.find((entry) => entry.name === "list_project_and_repo_ids");
+  assert.ok(tool);
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    assert.equal(
+      String(input),
+      "http://127.0.0.1:8765/openclaw/tools/list-project-and-repo-ids",
+    );
+    assert.equal(init?.method, "POST");
+    return new Response(
+      JSON.stringify({
+        status: "ok",
+        text: "{\n  \"project_ids\": [\"alfred\"],\n  \"repo_ids\": [\"jarmen423/agentic-memory\"]\n}",
+        payload: {
+          status: "ok",
+          project_ids: ["alfred"],
+          repo_ids: ["jarmen423/agentic-memory"],
+        },
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  };
+
+  try {
+    const response = await tool.execute("call-0", {});
+    assert.match(response.content[0]?.text ?? "", /project_ids/);
+    assert.deepEqual(response.structuredContent, {
+      status: "ok",
+      project_ids: ["alfred"],
+      repo_ids: ["jarmen423/agentic-memory"],
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("search_all_memory tool reuses the OpenClaw memory search route with runtime session identity", async () => {

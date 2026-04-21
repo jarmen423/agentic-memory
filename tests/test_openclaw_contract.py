@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from am_server import dependencies
 from am_server.app import create_app
 from am_server.routes import openclaw
+from agentic_memory.server.repo_identity import RepoResolution
 from agentic_memory.server.result_types import UnifiedMemoryHit, UnifiedSearchResponse
 from agentic_memory.server.temporal_contract import TemporalRetrievalRequiredError
 
@@ -133,6 +134,7 @@ def test_openclaw_openapi_includes_tool_bridge_routes():
     assert "/openclaw/tools/trace-execution-path" in paths
     assert "/openclaw/tools/search-conversations" in paths
     assert "/openclaw/tools/get-conversation-context" in paths
+    assert "/openclaw/tools/list-project-and-repo-ids" in paths
 
 
 def test_openclaw_contract_managed_workspace_keys_are_workspace_scoped(monkeypatch, tmp_path):
@@ -358,6 +360,18 @@ def test_openclaw_tool_bridge_awaits_decorated_tool_results(client, monkeypatch)
         "agentic_memory.server.app.search_codebase",
         fake_search_codebase,
     )
+    monkeypatch.setattr(openclaw, "graph_for_openclaw_workspace", lambda workspace_id: object())
+    monkeypatch.setattr(
+        openclaw,
+        "resolve_repo_id",
+        lambda graph, repo_id: RepoResolution(
+            requested_repo_id=repo_id,
+            resolved_repo_id="jarmen423/agentic-memory",
+            stored_repo_id="D:/code/agentic-memory",
+            repo_resolution_status="alias_resolved",
+            suggestions=[],
+        ),
+    )
 
     response = client.post(
         "/openclaw/tools/search-codebase",
@@ -374,6 +388,78 @@ def test_openclaw_tool_bridge_awaits_decorated_tool_results(client, monkeypatch)
 
     assert response.status_code == 200
     assert "Awaited successfully." in response.json()["text"]
+    assert response.json()["payload"]["repo_resolution"]["resolved_repo_id"] == "jarmen423/agentic-memory"
+
+
+def test_openclaw_list_project_and_repo_ids_route_returns_simple_discovery_payload(
+    client,
+    monkeypatch,
+):
+    """OpenClaw should expose the simplified project/repo discovery route."""
+
+    monkeypatch.setattr(openclaw, "graph_for_openclaw_workspace", lambda workspace_id: object())
+    monkeypatch.setattr(
+        openclaw,
+        "list_project_and_repo_ids_payload",
+        lambda graph: {
+            "status": "ok",
+            "project_ids": ["alfred"],
+            "repo_ids": ["jarmen423/agentic-memory", "jarmen423/m26pipeline"],
+        },
+    )
+
+    response = client.post(
+        "/openclaw/tools/list-project-and-repo-ids",
+        headers={"Authorization": "Bearer new-key"},
+        json={
+            "workspace_id": "workspace-1",
+            "device_id": "device-1",
+            "agent_id": "agent-1",
+            "session_id": "session-1",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["payload"]["project_ids"] == ["alfred"]
+    assert "jarmen423/m26pipeline" in body["payload"]["repo_ids"]
+
+
+def test_openclaw_tool_codebase_rejects_unknown_explicit_repo_id(client, monkeypatch):
+    """Explicit unknown repo ids should fail loudly instead of looking like no matches."""
+
+    monkeypatch.setattr(openclaw, "graph_for_openclaw_workspace", lambda workspace_id: object())
+    monkeypatch.setattr(
+        openclaw,
+        "resolve_repo_id",
+        lambda graph, repo_id: RepoResolution(
+            requested_repo_id=repo_id,
+            resolved_repo_id=None,
+            stored_repo_id=None,
+            repo_resolution_status="unknown_repo_id",
+            suggestions=["jarmen423/agentic-memory"],
+        ),
+    )
+
+    response = client.post(
+        "/openclaw/tools/search-codebase",
+        headers={"Authorization": "Bearer new-key"},
+        json={
+            "workspace_id": "workspace-1",
+            "device_id": "device-1",
+            "agent_id": "agent-1",
+            "session_id": "session-1",
+            "query": "memory",
+            "repo_id": "~/m26pipeline",
+        },
+    )
+
+    _assert_error_envelope(
+        response,
+        code="unknown_repo_id",
+        status_code=400,
+        message_contains="Unknown repo_id",
+    )
 
 
 def test_openclaw_conversation_tool_temporal_failures_return_503(client, monkeypatch):

@@ -1,6 +1,7 @@
 """Tests for the MCP server and tools."""
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 from unittest.mock import Mock, patch
@@ -362,6 +363,75 @@ class TestSearchCodebase:
                 retrieval_policy="safe",
             )
 
+    def test_search_codebase_displays_outward_repo_id(self):
+        """Formatted code results should expose repo identity for natural discovery."""
+
+        mock_graph = Mock()
+        mock_graph.repo_id = "D:/code/agentic-memory"
+        fake_rows = [
+            {
+                "name": "fn",
+                "score": 0.9,
+                "text": "def fn(): pass",
+                "sig": "a.py:fn",
+                "path": "a.py",
+                "labels": ["Function"],
+                "repo_id": "D:/code/agentic-memory",
+                "retrieval_provenance": {
+                    "policy": "safe",
+                    "mode": "semantic_only",
+                    "graph_reranking_applied": False,
+                    "graph_edge_types_used": [],
+                },
+            }
+        ]
+
+        with (
+            patch("agentic_memory.server.app.graph", mock_graph),
+            patch("agentic_memory.server.app.search_code", return_value=fake_rows),
+            patch(
+                "agentic_memory.server.app.outward_repo_id_for_stored_repo_id",
+                return_value="jarmen423/agentic-memory",
+            ),
+        ):
+            from agentic_memory.server.app import search_codebase
+
+            result = _mcp_call(search_codebase, query="test query")
+
+            assert "Repo ID: `jarmen423/agentic-memory`" in result
+
+    def test_search_codebase_unknown_repo_id_returns_explicit_error(self):
+        """Explicit invalid repo filters should not collapse into 'no results'."""
+
+        mock_graph = Mock()
+        mock_graph.repo_id = None
+
+        with (
+            patch("agentic_memory.server.app.graph", mock_graph),
+            patch(
+                "agentic_memory.server.app.resolve_repo_id",
+                return_value=SimpleNamespace(
+                    repo_resolution_status="unknown_repo_id",
+                    requested_repo_id="~/m26pipeline",
+                    resolved_repo_id=None,
+                    stored_repo_id=None,
+                    suggestions=["jarmen423/agentic-memory"],
+                    to_dict=lambda: {
+                        "requested_repo_id": "~/m26pipeline",
+                        "resolved_repo_id": None,
+                        "stored_repo_id": None,
+                        "repo_resolution_status": "unknown_repo_id",
+                        "suggestions": ["jarmen423/agentic-memory"],
+                    },
+                ),
+            ),
+        ):
+            from agentic_memory.server.app import search_codebase
+
+            result = _mcp_call(search_codebase, query="test query", repo_id="~/m26pipeline")
+
+            assert "unknown repo_id" in result.lower()
+
     def test_search_codebase_error(self):
         """Test search error handling."""
         mock_graph = Mock()
@@ -446,6 +516,58 @@ class TestSearchCodebase:
 
             assert "git graph data not found" in result.lower()
             mock_graph.semantic_search.assert_not_called()
+
+    def test_search_all_memory_formats_repo_and_project_identity(self):
+        """Unified search output should surface repo and project identity on hits."""
+
+        mock_graph = Mock()
+        mock_graph.repo_id = "D:/code/agentic-memory"
+        payload = {
+            "results": [
+                {
+                    "module": "code",
+                    "source_kind": "code_entity",
+                    "source_id": "a.py:fn",
+                    "title": "fn",
+                    "excerpt": "def fn(): pass",
+                    "score": 0.9,
+                    "metadata": {"repo_id": "D:/code/agentic-memory"},
+                },
+                {
+                    "module": "conversation",
+                    "source_kind": "conversation_turn",
+                    "source_id": "session-1:0",
+                    "title": "user turn",
+                    "excerpt": "health check",
+                    "score": 0.8,
+                    "metadata": {"project_id": "alfred"},
+                },
+            ],
+            "errors": [],
+        }
+
+        with (
+            patch("agentic_memory.server.app.graph", mock_graph),
+            patch(
+                "agentic_memory.server.app.search_all_memory_sync",
+                return_value=SimpleNamespace(to_dict=lambda: payload),
+            ),
+            patch("agentic_memory.server.app._get_research_pipeline", return_value=Mock()),
+            patch(
+                "agentic_memory.server.app._get_mcp_conversation_pipeline",
+                return_value=Mock(),
+            ),
+            patch(
+                "agentic_memory.server.app.outward_repo_id_for_stored_repo_id",
+                return_value="jarmen423/agentic-memory",
+            ),
+        ):
+            from agentic_memory.server.app import search_all_memory
+
+            result = _mcp_call(search_all_memory, query="health check")
+
+            assert "Repo ID: `jarmen423/agentic-memory`" in result
+            assert "Project ID: `alfred`" in result
 
 
 class TestGitMCPTools:

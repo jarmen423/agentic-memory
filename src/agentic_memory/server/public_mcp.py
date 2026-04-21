@@ -35,7 +35,7 @@ from __future__ import annotations
 from mcp.server.fastmcp import FastMCP
 
 from am_server.mcp_profiles import public_tool_annotations
-from agentic_memory.server.tools import register_conversation_tools
+from agentic_memory.server.tools import list_project_and_repo_ids, register_conversation_tools
 
 public_mcp = FastMCP("Agentic Memory Public")
 
@@ -167,6 +167,13 @@ def search_all_memory(
         as_of=as_of,
         modules=modules,
     )
+
+
+@_public_tool("list_project_and_repo_ids")
+def list_project_and_repo_ids_tool() -> dict:
+    """List the currently known project ids and outward-facing repo ids."""
+
+    return list_project_and_repo_ids()
 
 
 @_public_tool("search_web_memory")

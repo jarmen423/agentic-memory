@@ -52,6 +52,7 @@ PUBLIC_MCP_TOOL_NAMES: tuple[str, ...] = (
     "get_file_dependencies",
     "trace_execution_path",
     "search_all_memory",
+    "list_project_and_repo_ids",
     "search_web_memory",
     "memory_ingest_research",
     "search_conversations",
@@ -91,6 +92,7 @@ def _memory_write_tool_annotations(title: str) -> ToolAnnotations:
 
 
 PUBLIC_TOOL_ANNOTATIONS: dict[str, ToolAnnotations] = {
+    "list_project_and_repo_ids": _read_tool_annotations("List Project And Repo IDs"),
     "search_codebase": _read_tool_annotations("Search Codebase"),
     "get_file_dependencies": _read_tool_annotations("Get File Dependencies"),
     "trace_execution_path": _read_tool_annotations("Trace Execution Path"),

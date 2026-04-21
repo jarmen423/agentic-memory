@@ -64,6 +64,11 @@ from agentic_memory.server.code_search import (
     normalize_retrieval_policy,
     search_code,
 )
+from agentic_memory.server.repo_identity import (
+    format_unknown_repo_id_message,
+    outward_repo_id_for_stored_repo_id,
+    resolve_repo_id,
+)
 from agentic_memory.server.research_search import search_research
 from agentic_memory.server.temporal_contract import (
     TemporalRetrievalRequiredError,
@@ -460,7 +465,11 @@ def _validate_git_graph_data(current_graph: KnowledgeGraphBuilder) -> Optional[s
     return None
 
 
-def _format_code_results(results: List[Dict[str, Any]]) -> str:
+def _format_code_results(
+    results: List[Dict[str, Any]],
+    *,
+    repo_resolution: dict[str, Any] | None = None,
+) -> str:
     """Render code search rows (with optional ``retrieval_provenance``) for the LLM.
 
     When the first row includes provenance (policy, mode, graph rerank flags,
@@ -498,6 +507,17 @@ def _format_code_results(results: List[Dict[str, Any]]) -> str:
             output += f"- Note: {note}\n"
         output += "\n"
 
+    if repo_resolution and repo_resolution.get("requested_repo_id"):
+        output += "Repo scope:\n"
+        output += f"- Requested repo_id: `{repo_resolution.get('requested_repo_id')}`\n"
+        if repo_resolution.get("resolved_repo_id"):
+            output += f"- Resolved repo_id: `{repo_resolution.get('resolved_repo_id')}`\n"
+        if repo_resolution.get("repo_resolution_status"):
+            output += (
+                f"- Resolution status: `{repo_resolution.get('repo_resolution_status')}`\n"
+            )
+        output += "\n"
+
     for i, r in enumerate(results, 1):
         name = r.get("name", "Unknown")
         score = r.get("score", 0)
@@ -510,6 +530,8 @@ def _format_code_results(results: List[Dict[str, Any]]) -> str:
         if sig:
             output += f" (`{sig}`)"
         output += f" [Score: {score:.2f}]\n"
+        if r.get("repo_id"):
+            output += f"   Repo ID: `{r['repo_id']}`\n"
         if path:
             output += f"   Path: `{path}`\n"
         if labels:
@@ -667,7 +689,24 @@ def search_codebase(
 
     normalized_query = query.strip()
     safe_limit = max(1, int(limit))
-    resolved_repo_id = repo_id or current_graph.repo_id
+    repo_resolution: dict[str, Any] | None = None
+    if repo_id is not None:
+        resolution = resolve_repo_id(current_graph, repo_id)
+        if resolution.repo_resolution_status == "unknown_repo_id":
+            return format_unknown_repo_id_message(resolution)
+        resolved_repo_id = resolution.stored_repo_id
+        repo_resolution = resolution.to_dict()
+    else:
+        resolved_repo_id = current_graph.repo_id
+        if resolved_repo_id is not None:
+            outward_repo_id = outward_repo_id_for_stored_repo_id(current_graph, resolved_repo_id)
+            repo_resolution = {
+                "requested_repo_id": None,
+                "resolved_repo_id": outward_repo_id,
+                "stored_repo_id": resolved_repo_id,
+                "repo_resolution_status": "default_graph_scope",
+            }
+
     resolved_retrieval_policy = None
     if domain_mode in {"code", "hybrid"}:
         resolved_retrieval_policy = normalize_retrieval_policy(
@@ -692,9 +731,18 @@ def search_codebase(
                 repo_id=resolved_repo_id,
                 retrieval_policy=resolved_retrieval_policy or SAFE_RETRIEVAL_POLICY,
             )
+            for row in results:
+                stored_repo_id = row.get("repo_id") or resolved_repo_id
+                outward_repo_id = outward_repo_id_for_stored_repo_id(current_graph, stored_repo_id)
+                if outward_repo_id:
+                    row["repo_id"] = outward_repo_id
             if not results:
+                if repo_resolution and repo_resolution.get("resolved_repo_id"):
+                    return f"No relevant code found for repo_id `{repo_resolution['resolved_repo_id']}`."
                 return "No relevant code found."
-            return validate_tool_output(_format_code_results(results))
+            return validate_tool_output(
+                _format_code_results(results, repo_resolution=repo_resolution)
+            )
 
         git_graph_error = _validate_git_graph_data(current_graph)
         if git_graph_error:
@@ -733,11 +781,16 @@ def search_codebase(
             repo_id=resolved_repo_id,
             retrieval_policy=resolved_retrieval_policy or SAFE_RETRIEVAL_POLICY,
         )
+        for row in code_results:
+            stored_repo_id = row.get("repo_id") or resolved_repo_id
+            outward_repo_id = outward_repo_id_for_stored_repo_id(current_graph, stored_repo_id)
+            if outward_repo_id:
+                row["repo_id"] = outward_repo_id
         output = "## Hybrid Search Results\n\n"
 
         if code_results:
             output += "### Code Results\n"
-            output += _format_code_results(code_results)
+            output += _format_code_results(code_results, repo_resolution=repo_resolution)
             output += "\n\n"
         else:
             output += "### Code Results\nNo relevant code found.\n\n"
@@ -1814,13 +1867,29 @@ def _format_unified_search_results(payload: dict[str, Any]) -> str:
     """
     results = payload.get("results") or []
     errors = payload.get("errors") or []
+    repo_resolution = payload.get("repo_resolution") or {}
     if not results:
+        if repo_resolution.get("requested_repo_id") and repo_resolution.get("resolved_repo_id"):
+            return (
+                "No relevant memory found.\n\n"
+                f"Repo scope: `{repo_resolution['resolved_repo_id']}`"
+            )
         if errors:
             details = ", ".join(f"{err['module']}: {err['message']}" for err in errors)
             return f"No relevant memory found.\n\nWarnings: {details}"
         return "No relevant memory found."
 
     output = f"Found {len(results)} unified memory result(s):\n\n"
+    if repo_resolution.get("requested_repo_id"):
+        output += "Repo scope:\n"
+        output += f"- Requested repo_id: `{repo_resolution.get('requested_repo_id')}`\n"
+        if repo_resolution.get("resolved_repo_id"):
+            output += f"- Resolved repo_id: `{repo_resolution.get('resolved_repo_id')}`\n"
+        if repo_resolution.get("repo_resolution_status"):
+            output += (
+                f"- Resolution status: `{repo_resolution.get('repo_resolution_status')}`\n"
+            )
+        output += "\n"
     for index, hit in enumerate(results, 1):
         module = hit.get("module", "unknown")
         title = hit.get("title") or hit.get("source_id") or "Untitled"
@@ -1829,10 +1898,15 @@ def _format_unified_search_results(payload: dict[str, Any]) -> str:
         temporal_tag = " temporal" if hit.get("temporal_applied") else ""
         rerank_tag = " reranked" if hit.get("rerank_score") is not None else ""
         excerpt = str(hit.get("excerpt") or "")[:300]
+        metadata = hit.get("metadata") or {}
         output += (
             f"{index}. [{module}{temporal_tag}{rerank_tag}] {title} "
             f"[{source_kind}] [Score: {score:.2f}]\n"
         )
+        if metadata.get("repo_id"):
+            output += f"   Repo ID: `{metadata['repo_id']}`\n"
+        if metadata.get("project_id"):
+            output += f"   Project ID: `{metadata['project_id']}`\n"
         if hit.get("rerank_score") is not None:
             output += f"   Rerank: {float(hit['rerank_score']):.2f}\n"
         if excerpt:
@@ -1936,6 +2010,14 @@ def search_all_memory(
         requested_modules = [part.strip() for part in modules.split(",") if part.strip()]
 
     # Structured merge in unified_search; string formatting stays in this MCP layer.
+    repo_resolution: dict[str, Any] | None = None
+    if repo_id is not None and current_graph is not None:
+        resolution = resolve_repo_id(current_graph, repo_id)
+        if resolution.repo_resolution_status == "unknown_repo_id":
+            return format_unknown_repo_id_message(resolution)
+        repo_id = resolution.stored_repo_id
+        repo_resolution = resolution.to_dict()
+
     try:
         payload = search_all_memory_sync(
             query=query,
@@ -1952,6 +2034,21 @@ def search_all_memory(
     except TemporalRetrievalRequiredError as exc:
         logger.warning("Unified search temporal contract failed: %s", exc)
         return temporal_error_string(exc)
+
+    for hit in payload.get("results") or []:
+        metadata = hit.get("metadata") or {}
+        stored_repo_id = metadata.get("repo_id")
+        outward_repo_id = (
+            outward_repo_id_for_stored_repo_id(current_graph, stored_repo_id)
+            if current_graph is not None and stored_repo_id
+            else None
+        )
+        if outward_repo_id:
+            metadata["stored_repo_id"] = stored_repo_id
+            metadata["repo_id"] = outward_repo_id
+            hit["metadata"] = metadata
+    if repo_resolution is not None:
+        payload["repo_resolution"] = repo_resolution
     return validate_tool_output(_format_unified_search_results(payload))
 
 

@@ -140,12 +140,21 @@ function formatSearchResults(
       (typeof hit.name === "string" && hit.name) ||
       path;
     const score = typeof hit.score === "number" ? hit.score.toFixed(3) : "n/a";
+    const repoId = typeof hit.repo_id === "string" && hit.repo_id ? hit.repo_id : undefined;
+    const projectId =
+      typeof hit.project_id === "string" && hit.project_id ? hit.project_id : undefined;
     const snippet =
       (typeof hit.snippet === "string" && hit.snippet) ||
       (typeof hit.text === "string" && hit.text) ||
       (typeof hit.content === "string" && hit.content) ||
       "";
     lines.push(`${index + 1}. ${titleText}`);
+    if (repoId) {
+      lines.push(`Repo ID: \`${repoId}\``);
+    }
+    if (projectId) {
+      lines.push(`Project ID: \`${projectId}\``);
+    }
     lines.push(`Path: \`${path}\``);
     lines.push(`Score: ${score}`);
     if (snippet) {
@@ -168,6 +177,22 @@ export function createAgenticMemoryTools(
   const client = new AgenticMemoryBackendClient(resolved, logger);
 
   return [
+    {
+      name: "list_project_and_repo_ids",
+      description:
+        "List the currently known project_id and repo_id values so scoped searches can use exact identities.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {},
+      },
+      async execute() {
+        const response = await client.listProjectAndRepoIdsTool(
+          buildToolIdentity(resolved, ctx),
+        );
+        return textToolResult(response.text, response.payload);
+      },
+    },
     {
       name: "search_codebase",
       description:
@@ -262,6 +287,7 @@ export function createAgenticMemoryTools(
         properties: {
           query: { type: "string" },
           limit: { type: "number" },
+          repo_id: { type: "string" },
           as_of: { type: "string" },
           modules: {
             type: "array",
@@ -281,6 +307,7 @@ export function createAgenticMemoryTools(
           query,
           ...withDefinedProperties({
             limit: readOptionalNumber(params, "limit"),
+            repo_id: readOptionalString(params, "repo_id"),
             as_of: readOptionalString(params, "as_of"),
             modules,
           }),

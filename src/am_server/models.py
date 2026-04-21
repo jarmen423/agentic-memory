@@ -315,6 +315,7 @@ class OpenClawMemorySearchRequest(OpenClawProjectScopedIdentityModel):
 
     query: str
     limit: int = 10
+    repo_id: str | None = None
     as_of: str | None = None
     modules: list[str] | None = None
 
@@ -407,6 +408,10 @@ class OpenClawToolConversationContextRequest(OpenClawProjectScopedIdentityModel)
     limit: int = 5
     include_session_context: bool = True
     as_of: str | None = None
+
+
+class OpenClawToolIdentityRequest(OpenClawIdentityModel):
+    """Identity-only request body for OpenClaw tool routes without extra inputs."""
 
 
 class OpenClawDashboardMetricCardModel(BaseModel):

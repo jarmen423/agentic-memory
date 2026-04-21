@@ -223,6 +223,7 @@ def _normalize_conversation_results(
                 ),
                 retrieval_provenance=dict(row.get("retrieval_provenance") or {}),
                 metadata={
+                    "project_id": row.get("project_id"),
                     "session_id": session_id,
                     "turn_index": turn_index,
                     "role": row.get("role"),

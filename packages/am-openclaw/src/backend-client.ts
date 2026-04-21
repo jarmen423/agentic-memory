@@ -282,6 +282,7 @@ export class AgenticMemoryBackendClient {
   async searchAllMemory(payload: OpenClawBackendIdentityPayload & {
     query: string;
     limit?: number;
+    repo_id?: string | null;
     as_of?: string | null;
     modules?: string[] | null;
   }): Promise<{
@@ -302,6 +303,15 @@ export class AgenticMemoryBackendClient {
     repo_id?: string | null;
   }): Promise<OpenClawBackendTextToolResponse> {
     return this.post("/openclaw/tools/search-codebase", payload);
+  }
+
+  /**
+   * List known project ids and repo ids for explicit agent-side scope selection.
+   */
+  async listProjectAndRepoIdsTool(
+    payload: OpenClawBackendIdentityPayload,
+  ): Promise<OpenClawBackendTextToolResponse> {
+    return this.post("/openclaw/tools/list-project-and-repo-ids", payload);
   }
 
   /**

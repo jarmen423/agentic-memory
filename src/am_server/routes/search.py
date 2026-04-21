@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from am_server.auth import require_auth
 from am_server.dependencies import get_conversation_pipeline, get_pipeline
 from agentic_memory.server.app import get_graph
+from agentic_memory.server.repo_identity import outward_repo_id_for_stored_repo_id, resolve_repo_id
 from agentic_memory.server.temporal_contract import TemporalRetrievalRequiredError
 from agentic_memory.server.unified_search import search_all_memory_sync
 
@@ -66,6 +67,22 @@ async def search_all(
     if modules:
         requested_modules = [part.strip() for part in modules.split(",") if part.strip()]
 
+    repo_resolution = None
+    current_graph = get_graph()
+    if repo_id is not None and current_graph is not None:
+        resolution = resolve_repo_id(current_graph, repo_id)
+        repo_resolution = resolution.to_dict()
+        if resolution.repo_resolution_status == "unknown_repo_id":
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "unknown_repo_id",
+                    "message": f"Unknown repo_id `{repo_id}`.",
+                    "details": repo_resolution,
+                },
+            )
+        repo_id = resolution.stored_repo_id
+
     try:
         # Single entry point: merges graph + pipeline-backed search according to filters/modules.
         payload = search_all_memory_sync(
@@ -75,11 +92,27 @@ async def search_all(
             repo_id=repo_id,
             as_of=as_of,
             modules=requested_modules,
-            graph=get_graph(),
+            graph=current_graph,
             research_pipeline=get_pipeline(),
             conversation_pipeline=get_conversation_pipeline(),
             fail_on_temporal_errors=True,
         )
     except TemporalRetrievalRequiredError as exc:
         raise HTTPException(status_code=503, detail=exc.to_http_detail()) from exc
-    return payload.to_dict()
+    result = payload.to_dict()
+    if current_graph is not None:
+        for hit in result.get("results") or []:
+            metadata = hit.get("metadata") or {}
+            stored_repo_id = metadata.get("repo_id")
+            outward_repo_id = (
+                outward_repo_id_for_stored_repo_id(current_graph, stored_repo_id)
+                if stored_repo_id
+                else None
+            )
+            if outward_repo_id:
+                metadata["stored_repo_id"] = stored_repo_id
+                metadata["repo_id"] = outward_repo_id
+                hit["metadata"] = metadata
+    if repo_resolution is not None:
+        result["repo_resolution"] = repo_resolution
+    return result

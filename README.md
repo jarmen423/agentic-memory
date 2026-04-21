@@ -1,169 +1,174 @@
-# 🧠 Agentic Memory
+<p align="center">
+  <img src="https://raw.githubusercontent.com/jarmen423/agentic-memory/main/assets/logo.svg" alt="Agentic Memory" width="120">
+</p>
 
-> **Multi-Domain Memory Layer for AI Agents**
+<h1 align="center">Agentic Memory</h1>
 
-Agentic Memory gives AI agents persistent, searchable memory across four domains: **code**, **git history**, **web research**, and **conversations** — all stored in a unified Neo4j graph and exposed via MCP.
+<p align="center">
+  <b>Memory that understands time.</b>
+</p>
 
-**Core Value Prop:** *"Don't let your agent work from a blank slate. Give it memory."*
+<p align="center">
+  The first agent memory system built on a time-aware knowledge graph.<br>
+  Query what was true last week. Track how claims evolve. Retrieve with confidence — all via MCP.
+</p>
+
+<p align="center">
+  <a href="https://pypi.org/project/agent-memory-labs/"><img src="https://img.shields.io/pypi/v/agent-memory-labs?style=flat-square&color=00F0FF&labelColor=0A0A0F" alt="PyPI"></a>
+  <a href="https://pypi.org/project/agent-memory-labs/"><img src="https://img.shields.io/pypi/pyversions/agent-memory-labs?style=flat-square&color=FF006E&labelColor=0A0A0F" alt="Python"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-BSL--1.1-F59E0B?style=flat-square&labelColor=0A0A0F" alt="License"></a>
+  <a href="https://agentmemorylabs.com"><img src="https://img.shields.io/badge/website-agentmemorylabs.com-00F0FF?style=flat-square&labelColor=0A0A0F" alt="Website"></a>
+</p>
 
 ---
 
-## ✨ Features
+## What is Agentic Memory?
 
-| Feature | Description |
-|---------|-------------|
-| **📊 Code Graph** | Structural understanding of files, entities, imports, and on-demand execution tracing — not just text similarity |
-| **💬 Conversation Memory** | Stores and retrieves past agent/user exchanges by semantic similarity |
-| **🌐 Research & Web Memory** | Ingests URLs, PDFs, and research reports as searchable findings |
-| **🧬 Git Graph (Opt-in)** | Adds commit/author/file-version history in the same Neo4j DB |
-| **🔍 Unified Search** | `search_all_memory` spans all domains in a single query |
-| **⚡ Real-time Sync** | File watcher automatically updates the code graph as you work |
-| **🤖 MCP Protocol** | Drop-in integration with Claude, Cursor, Windsurf, and any MCP-compatible AI |
-| **⏱️ Temporal GraphRAG** | Time-aware graph layer for deterministic retrieval at any point in time |
+Most AI agents start every session with a blank slate. **Agentic Memory** fixes that.
+
+It gives your agents **persistent, searchable memory** across four domains — code, conversations, research, and git history — stored in a unified Neo4j graph and exposed through the Model Context Protocol (MCP). Agents can recall what they learned yesterday, last week, or last month.
+
+The killer feature? **Temporal GraphRAG**. Every relationship in the graph carries a validity interval. Ask "what did we decide about the auth flow in March?" and get a temporally consistent answer — not today's guess.
 
 ---
 
-## 🚀 Quick Start
+## Features
 
-### 1. Install globally
+### Temporal GraphRAG
+Time-aware graph layer powered by SpacetimeDB. Query what was true at any point in time with deterministic temporal retrieval. Track claim evolution, detect contradictions, and retrieve with confidence intervals.
+
+### Code Memory
+Structural understanding of files, entities, imports, and on-demand execution tracing — not just text similarity. Your agent knows *where* things are and *how* they connect.
+
+### Research Memory
+Ingest URLs, PDFs, and research reports as searchable findings. Schedule recurring research sessions. Build a living knowledge base that grows over time.
+
+### Conversation Memory
+Stores and retrieves past agent/user exchanges by semantic similarity. Never lose context between sessions. Search across months of conversations in milliseconds.
+
+### Git Graph (Opt-in)
+Adds commit/author/file-version history to the same Neo4j graph. Ask temporal questions about your codebase: "who wrote this function and when?"
+
+### Unified Search
+`search_all_memory` spans all domains in a single query — code, research, conversations, and git history — with cross-domain relevance ranking.
+
+### Real-time Sync
+File watcher automatically updates the code graph as you work. No manual re-indexing required.
+
+### MCP Native
+Drop-in integration with Claude, Cursor, ChatGPT, Windsurf, Codex, and any MCP-compatible AI. One protocol, every client.
+
+---
+
+## Quick Start
 
 ```bash
-# Recommended: Use pipx for isolated global installation
+# Install globally (recommended)
 pipx install agent-memory-labs
 
-# Or with uv tooling
+# Or with uv
 uv tool install agent-memory-labs
-uvx --from agent-memory-labs agent-memory --help
 
-# Or use pip in a virtualenv
-pip install agent-memory-labs
-```
-
-After a `pipx` install:
-- `agent-memory` is available globally on that machine
-- you install the CLI once, not once per repository
-- each repository keeps its own local Agentic Memory config under `.agentic-memory/`
-
-### 2. Initialize in any repository
-
-```bash
+# Initialize in any repository
 cd /path/to/your/repo
 agent-memory init
+
+# Index your code
+agent-memory index
+
+# Start the MCP server
+agent-memory serve
 ```
 
-The interactive wizard will guide you through:
-- Neo4j setup (local Docker, Aura cloud, or custom)
-- Code embedding provider selection
-- Gemini API key by default for code semantic search
-- File extensions to index
-
-By default, `agent-memory init` configures the `code` module to use
-`gemini-embedding-2-preview` so code memory stays aligned with the rest of the
-multimodal Agentic Memory system. If you want code memory completely separate,
-you can switch the `code` module to another text embedding provider such as
-OpenAI.
-
-### Multi-Repo Workflow
-
-If a machine hosts more than one repository, the normal flow is still:
-
-```bash
-cd /path/to/repo-a
-agent-memory init
-
-cd /path/to/repo-b
-agent-memory init
-```
-
-After that, Agentic Memory discovers the active repository from your current
-working directory.
+That's it. Your repository is now indexed and ready for AI agents.
 
 ---
 
-## 📖 Usage
+## Usage
 
-### Code memory
+### Code Memory
 
 ```bash
-# Setup/config for code memory in this repo
-agent-memory init
-
-# Show repository status and statistics
-agent-memory status
-
-# One-time structural code ingest (files, entities, imports)
-agent-memory index
-
-# Full repo rebuild after embedding-model or task-format changes
-agent-memory index --full
-
-# Continuous structural code ingest on file changes
-agent-memory watch
-
-# JIT trace one function's likely execution neighborhood
+agent-memory init                 # Setup wizard
+agent-memory status               # Repository statistics
+agent-memory index                # One-time structural ingest
+agent-memory index --full         # Full rebuild
+agent-memory watch                # Continuous sync on file changes
 agent-memory trace-execution src/app.py:run_checkout --json
-
-# Start MCP server for AI agents
-agent-memory serve
-
-# Semantic search across code
-agent-memory search "where is the auth logic?"
 ```
 
-### Research memory
+### Research Memory
 
 ```bash
-# Ingest a URL as a research finding
 agent-memory research "https://example.com/article"
-
-# Search across ingested research
 agent-memory search "What did I read about vector databases?" --domain web
 ```
 
-### Conversation memory
+### Conversation Memory
 
 ```bash
-# Search past conversations
 agent-memory search "What did we decide about the auth flow?" --domain chat
 ```
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
-Agentic Memory is built on a few key ideas:
+```
+AI Agent (Claude/Cursor/etc.)
+        |
+    MCP Protocol
+        |
++-------+-------+
+|  Agentic Memory  |
++------------------+
+|  Unified Graph   |  <-- Neo4j (code + chat + research + git)
+|  Temporal Layer  |  <-- SpacetimeDB (validity intervals, PPR)
+|  Embeddings      |  <-- Gemini / OpenAI / Nemotron
++------------------+
+```
 
-1. **Structural code graphs** — We parse ASTs and imports to understand code structure, not just file contents.
-2. **Unified Neo4j backend** — All memory domains live in one graph database for cross-domain queries.
-3. **MCP-native** — The primary interface is the Model Context Protocol, making it compatible with any MCP client.
-4. **Temporal awareness** — Git history and time-sliced queries let you ask "what did the code look like last month?"
+1. **Structural code graphs** — AST parsing and import analysis, not just file contents
+2. **Unified Neo4j backend** — All memory domains live in one graph database
+3. **MCP-native** — Primary interface is the Model Context Protocol
+4. **Temporal awareness** — Git history and time-sliced queries built into the graph
 
 ---
 
-## 📦 Packages
-
-| Package | Description | Location |
-|---------|-------------|----------|
-| `agent-memory-labs` | Core Python package (PyPI) | This repo |
-| `agentic-memory-openclaw` | OpenClaw plugin (npm) | `packages/am-openclaw/` |
-| `am-temporal-kg` | Temporal GraphRAG utilities | `packages/am-temporal-kg/` |
-| `am-sync-neo4j` | Neo4j sync helpers | `packages/am-sync-neo4j/` |
-
----
-
-## 🛠 Self-Hosting
+## Self-Hosting
 
 Agentic Memory is designed to be fully self-hostable:
 
-- **Neo4j** (Community Edition works fine)
+- **Neo4j** Community Edition
 - **Python 3.10+**
 - **Embedding provider API key** (Gemini, OpenAI, or Groq)
 
-For detailed self-hosting instructions, see [docs/SETUP_FULL_STACK.md](docs/SETUP_FULL_STACK.md).
+See [docs/SETUP_FULL_STACK.md](docs/SETUP_FULL_STACK.md) for detailed instructions.
 
 ---
 
-## 🤝 Contributing
+## Integrations
+
+Works out of the box with:
+
+**Claude** · **Cursor** · **ChatGPT** · **Windsurf** · **Codex**
+
+Any MCP-compatible client can connect to `agent-memory serve` and immediately search across all indexed memory domains.
+
+---
+
+## Packages
+
+| Package | Description | Install |
+|---------|-------------|---------|
+| `agent-memory-labs` | Core Python package | `pipx install agent-memory-labs` |
+| `agentic-memory-openclaw` | OpenClaw plugin | `openclaw plugin install agentic-memory-openclaw` |
+| `am-temporal-kg` | Temporal GraphRAG utilities | npm / pnpm |
+| `am-sync-neo4j` | Neo4j sync helpers | npm / pnpm |
+
+---
+
+## Contributing
 
 We welcome contributions to the core indexing, search, and MCP surfaces.
 
@@ -172,25 +177,25 @@ We welcome contributions to the core indexing, search, and MCP surfaces.
 3. Run tests: `pytest`
 4. Submit a PR
 
-Please keep PRs focused on the self-hostable core. Hosted backend changes are maintained separately.
+Please keep PRs focused on the self-hostable core.
 
 ---
 
-## 📄 License
+## License
 
-This project is licensed under the Business Source License 1.1 (BSL 1.1).
+This project is licensed under the **Business Source License 1.1 (BSL 1.1)**.
 
-- **Source available** for non-production use, research, and evaluation
-- **Time-delayed open source** — converts to a standard open-source license after 4 years
-- **Commercial use** requires a license — contact us for hosted options
+- Source available for non-production use, research, and evaluation
+- Converts to a standard open-source license after 4 years
+- Commercial use requires a license — [contact us](https://agentmemorylabs.com)
 
 See [LICENSE](LICENSE) for full terms.
 
 ---
 
-## 🔗 Links
-
-- **Docs**: [docs/INSTALLATION.md](docs/INSTALLATION.md)
-- **Troubleshooting**: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
-- **API Reference**: [docs/API.md](docs/API.md)
-- **Website**: https://agentmemorylabs.com
+<p align="center">
+  <a href="https://agentmemorylabs.com">Website</a> ·
+  <a href="docs/INSTALLATION.md">Docs</a> ·
+  <a href="docs/TROUBLESHOOTING.md">Troubleshooting</a> ·
+  <a href="docs/API.md">API Reference</a>
+</p>

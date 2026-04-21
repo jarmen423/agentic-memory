@@ -1,0 +1,223 @@
+{
+  "code": {
+    "repo_id": "repo-smoke",
+    "baseline_rows_by_query": {
+      "where is rerank provider failover implemented": [
+        {
+          "name": "rerank_documents",
+          "sig": "src/agentic_memory/server/reranking.py::rerank_documents",
+          "path": "src/agentic_memory/server/reranking.py",
+          "text": "Rerank one list of serialized candidate documents with fallback to OpenRouter on retryable provider failures.",
+          "score": 0.92
+        },
+        {
+          "name": "search_research",
+          "sig": "src/agentic_memory/server/research_search.py::search_research",
+          "path": "src/agentic_memory/server/research_search.py",
+          "text": "Run research retrieval with temporal enrichment and optional reranking.",
+          "score": 0.58
+        }
+      ],
+      "where is code graph personalized page rank implemented": [
+        {
+          "name": "_run_personalized_page_rank",
+          "sig": "src/agentic_memory/server/code_search.py::_run_personalized_page_rank",
+          "path": "src/agentic_memory/server/code_search.py",
+          "text": "Run a small in-memory Personalized PageRank walk.",
+          "score": 0.91
+        },
+        {
+          "name": "_materialize_ranked_rows",
+          "sig": "src/agentic_memory/server/code_search.py::_materialize_ranked_rows",
+          "path": "src/agentic_memory/server/code_search.py",
+          "text": "Merge baseline scores and PPR scores into one ranked result list.",
+          "score": 0.66
+        }
+      ],
+      "where is research retrieval with temporal enrichment implemented": [
+        {
+          "name": "search_research",
+          "sig": "src/agentic_memory/server/research_search.py::search_research",
+          "path": "src/agentic_memory/server/research_search.py",
+          "text": "Run research retrieval with temporal enrichment and optional reranking.",
+          "score": 0.89
+        },
+        {
+          "name": "_normalize_temporal_results",
+          "sig": "src/agentic_memory/server/research_search.py::_normalize_temporal_results",
+          "path": "src/agentic_memory/server/research_search.py",
+          "text": "Normalize temporal graph payloads into a stable research row shape.",
+          "score": 0.63
+        }
+      ],
+      "where is conversation temporal search implemented": [
+        {
+          "name": "search_conversation_turns_sync",
+          "sig": "src/agentic_memory/server/tools.py::search_conversation_turns_sync",
+          "path": "src/agentic_memory/server/tools.py",
+          "text": "Temporal-first conversation search with deterministic text fallback.",
+          "score": 0.93
+        },
+        {
+          "name": "_apply_conversation_rerank",
+          "sig": "src/agentic_memory/server/tools.py::_apply_conversation_rerank",
+          "path": "src/agentic_memory/server/tools.py",
+          "text": "Apply learned reranking to conversation turn rows.",
+          "score": 0.62
+        }
+      ],
+      "where are recent openclaw searches assembled for the dashboard": [
+        {
+          "name": "_build_recent_searches",
+          "sig": "src/am_server/routes/dashboard.py::_build_recent_searches",
+          "path": "src/am_server/routes/dashboard.py",
+          "text": "Return recent search and context activity from the bounded event log.",
+          "score": 0.9
+        },
+        {
+          "name": "dashboard_recent_searches",
+          "sig": "src/am_server/routes/dashboard.py::dashboard_recent_searches",
+          "path": "src/am_server/routes/dashboard.py",
+          "text": "Return recent OpenClaw search and context-resolve events.",
+          "score": 0.67
+        }
+      ]
+    },
+    "neighborhoods_by_query": {
+      "where is rerank provider failover implemented": {
+        "seed_ids": [1],
+        "adjacency": {"1": [[2, 1.0]], "2": [[1, 1.0]]},
+        "node_meta": {
+          "1": {"labels": ["Function"], "props": {"name": "rerank_documents", "signature": "src/agentic_memory/server/reranking.py::rerank_documents", "path": "src/agentic_memory/server/reranking.py", "code": "fallback to openrouter on retryable provider failures"}},
+          "2": {"labels": ["File"], "props": {"name": "reranking.py", "path": "src/agentic_memory/server/reranking.py", "code": "shared reranking helpers"}}
+        }
+      },
+      "where is code graph personalized page rank implemented": {
+        "seed_ids": [10],
+        "adjacency": {"10": [[11, 0.9]], "11": [[10, 0.9]]},
+        "node_meta": {
+          "10": {"labels": ["Function"], "props": {"name": "_run_personalized_page_rank", "signature": "src/agentic_memory/server/code_search.py::_run_personalized_page_rank", "path": "src/agentic_memory/server/code_search.py", "code": "personalized pagerank walk"}},
+          "11": {"labels": ["Function"], "props": {"name": "_materialize_ranked_rows", "signature": "src/agentic_memory/server/code_search.py::_materialize_ranked_rows", "path": "src/agentic_memory/server/code_search.py", "code": "merge baseline and ppr scores"}}
+        }
+      },
+      "where is research retrieval with temporal enrichment implemented": {
+        "seed_ids": [20],
+        "adjacency": {"20": [[21, 0.7]], "21": [[20, 0.7]]},
+        "node_meta": {
+          "20": {"labels": ["Function"], "props": {"name": "search_research", "signature": "src/agentic_memory/server/research_search.py::search_research", "path": "src/agentic_memory/server/research_search.py", "code": "research retrieval with temporal enrichment"}},
+          "21": {"labels": ["Function"], "props": {"name": "_normalize_temporal_results", "signature": "src/agentic_memory/server/research_search.py::_normalize_temporal_results", "path": "src/agentic_memory/server/research_search.py", "code": "normalize temporal results"}}
+        }
+      },
+      "where is conversation temporal search implemented": {
+        "seed_ids": [30],
+        "adjacency": {"30": [[31, 1.0]], "31": [[30, 1.0]]},
+        "node_meta": {
+          "30": {"labels": ["Function"], "props": {"name": "search_conversation_turns_sync", "signature": "src/agentic_memory/server/tools.py::search_conversation_turns_sync", "path": "src/agentic_memory/server/tools.py", "code": "temporal-first conversation search"}},
+          "31": {"labels": ["Function"], "props": {"name": "_apply_conversation_rerank", "signature": "src/agentic_memory/server/tools.py::_apply_conversation_rerank", "path": "src/agentic_memory/server/tools.py", "code": "conversation reranking"}}
+        }
+      },
+      "where are recent openclaw searches assembled for the dashboard": {
+        "seed_ids": [40],
+        "adjacency": {"40": [[41, 0.9]], "41": [[40, 0.9]]},
+        "node_meta": {
+          "40": {"labels": ["Function"], "props": {"name": "_build_recent_searches", "signature": "src/am_server/routes/dashboard.py::_build_recent_searches", "path": "src/am_server/routes/dashboard.py", "code": "recent search event shaping"}},
+          "41": {"labels": ["Function"], "props": {"name": "dashboard_recent_searches", "signature": "src/am_server/routes/dashboard.py::dashboard_recent_searches", "path": "src/am_server/routes/dashboard.py", "code": "dashboard recent searches route"}}
+        }
+      }
+    }
+  },
+  "research": {
+    "baseline_rows_by_query": {
+      "what database does agentic memory use for its structural graph": [
+        {"text": "Agentic Memory uses Neo4j as the structural graph database for its code and conversation memory.", "source_agent": "deep_research_agent", "research_question": "What backs the structural graph?", "confidence": "high", "source_key": "deep_research_agent", "content_hash": "finding-neo4j", "project_id": "proj-smoke", "ingested_at": "2026-03-21T09:00:00+00:00", "entities": ["Agentic Memory", "Neo4j"], "entity_types": ["project", "technology"], "node_labels": ["Memory", "Research", "Finding"], "score": 0.92},
+        {"text": "Phase 8 uses SpacetimeDB for temporal maintenance, decay, and retrieval experiments.", "source_agent": "deep_research_agent", "research_question": "What backs the structural graph?", "confidence": "medium", "source_key": "deep_research_agent", "content_hash": "finding-stdb", "project_id": "proj-smoke", "ingested_at": "2026-03-21T09:05:00+00:00", "entities": ["Phase 8", "SpacetimeDB"], "entity_types": ["concept", "technology"], "node_labels": ["Memory", "Research", "Finding"], "score": 0.55}
+      ],
+      "what does phase 8 use for temporal storage": [
+        {"text": "Phase 8 uses SpacetimeDB for temporal maintenance, decay, and retrieval experiments.", "source_agent": "deep_research_agent", "research_question": "What does phase 8 use?", "confidence": "high", "source_key": "deep_research_agent", "content_hash": "finding-stdb", "project_id": "proj-smoke", "ingested_at": "2026-03-21T09:05:00+00:00", "entities": ["Phase 8", "SpacetimeDB"], "entity_types": ["concept", "technology"], "node_labels": ["Memory", "Research", "Finding"], "score": 0.94},
+        {"text": "Agentic Memory uses Neo4j as the structural graph database for its code and conversation memory.", "source_agent": "deep_research_agent", "research_question": "What does phase 8 use?", "confidence": "medium", "source_key": "deep_research_agent", "content_hash": "finding-neo4j", "project_id": "proj-smoke", "ingested_at": "2026-03-21T09:00:00+00:00", "entities": ["Agentic Memory", "Neo4j"], "entity_types": ["project", "technology"], "node_labels": ["Memory", "Research", "Finding"], "score": 0.52}
+      ],
+      "what endpoint does the rerank integration call": [
+        {"text": "The rerank integration calls POST https://api.cohere.com/v2/rerank as the primary provider path.", "source_agent": "deep_research_agent", "research_question": "Which endpoint does reranking use?", "confidence": "high", "source_key": "deep_research_agent", "content_hash": "finding-cohere-endpoint", "project_id": "proj-smoke", "ingested_at": "2026-04-13T10:00:00+00:00", "entities": ["Cohere", "v2/rerank"], "entity_types": ["business", "technology"], "node_labels": ["Memory", "Research", "Finding"], "score": 0.95},
+        {"text": "OpenRouter should only be used as a narrow fallback path when the primary rerank provider fails retryably.", "source_agent": "deep_research_agent", "research_question": "Which endpoint does reranking use?", "confidence": "medium", "source_key": "deep_research_agent", "content_hash": "finding-openrouter-fallback", "project_id": "proj-smoke", "ingested_at": "2026-04-13T10:05:00+00:00", "entities": ["OpenRouter"], "entity_types": ["business"], "node_labels": ["Memory", "Research", "Finding"], "score": 0.57}
+      ],
+      "which provider is the narrow rerank fallback path": [
+        {"text": "OpenRouter should only be used as a narrow fallback path when the primary rerank provider fails retryably.", "source_agent": "deep_research_agent", "research_question": "Which provider is the fallback?", "confidence": "high", "source_key": "deep_research_agent", "content_hash": "finding-openrouter-fallback", "project_id": "proj-smoke", "ingested_at": "2026-04-13T10:05:00+00:00", "entities": ["OpenRouter"], "entity_types": ["business"], "node_labels": ["Memory", "Research", "Finding"], "score": 0.96},
+        {"text": "The rerank integration calls POST https://api.cohere.com/v2/rerank as the primary provider path.", "source_agent": "deep_research_agent", "research_question": "Which provider is the fallback?", "confidence": "medium", "source_key": "deep_research_agent", "content_hash": "finding-cohere-endpoint", "project_id": "proj-smoke", "ingested_at": "2026-04-13T10:00:00+00:00", "entities": ["Cohere"], "entity_types": ["business"], "node_labels": ["Memory", "Research", "Finding"], "score": 0.49}
+      ],
+      "what metrics does the retrieval eval harness track": [
+        {"text": "The retrieval eval harness tracks Recall@10, Recall@pool, MRR@10, NDCG@10, Success@5, and latency/fallback stats.", "source_agent": "deep_research_agent", "research_question": "What metrics should eval track?", "confidence": "high", "source_key": "deep_research_agent", "content_hash": "finding-eval-metrics", "project_id": "proj-smoke", "ingested_at": "2026-04-13T10:08:00+00:00", "entities": ["Recall@10", "MRR@10", "NDCG@10"], "entity_types": ["concept", "concept", "concept"], "node_labels": ["Memory", "Research", "Finding"], "score": 0.97},
+        {"text": "OpenRouter should only be used as a narrow fallback path when the primary rerank provider fails retryably.", "source_agent": "deep_research_agent", "research_question": "What metrics should eval track?", "confidence": "low", "source_key": "deep_research_agent", "content_hash": "finding-openrouter-fallback", "project_id": "proj-smoke", "ingested_at": "2026-04-13T10:05:00+00:00", "entities": ["OpenRouter"], "entity_types": ["business"], "node_labels": ["Memory", "Research", "Finding"], "score": 0.33}
+      ]
+    },
+    "temporal_rows_by_query": {
+      "what database does agentic memory use for its structural graph": [
+        {"subject": {"name": "Agentic Memory"}, "predicate": "USES", "object": {"name": "Neo4j"}, "confidence": 0.95, "relevance": 0.96, "evidence": [{"sourceKind": "research_finding", "sourceId": "finding-neo4j", "rawExcerpt": "Agentic Memory uses Neo4j as the structural graph database for its code and conversation memory."}]}
+      ],
+      "what does phase 8 use for temporal storage": [
+        {"subject": {"name": "Phase 8"}, "predicate": "USES", "object": {"name": "SpacetimeDB"}, "confidence": 0.95, "relevance": 0.97, "evidence": [{"sourceKind": "research_finding", "sourceId": "finding-stdb", "rawExcerpt": "Phase 8 uses SpacetimeDB for temporal maintenance, decay, and retrieval experiments."}]}
+      ],
+      "what endpoint does the rerank integration call": [
+        {"subject": {"name": "Rerank Integration"}, "predicate": "CALLS", "object": {"name": "https://api.cohere.com/v2/rerank"}, "confidence": 0.94, "relevance": 0.95, "evidence": [{"sourceKind": "research_finding", "sourceId": "finding-cohere-endpoint", "rawExcerpt": "The rerank integration calls POST https://api.cohere.com/v2/rerank as the primary provider path."}]}
+      ],
+      "which provider is the narrow rerank fallback path": [
+        {"subject": {"name": "Rerank Failover"}, "predicate": "USES_FALLBACK", "object": {"name": "OpenRouter"}, "confidence": 0.94, "relevance": 0.95, "evidence": [{"sourceKind": "research_finding", "sourceId": "finding-openrouter-fallback", "rawExcerpt": "OpenRouter should only be used as a narrow fallback path when the primary rerank provider fails retryably."}]}
+      ],
+      "what metrics does the retrieval eval harness track": [
+        {"subject": {"name": "Eval Harness"}, "predicate": "TRACKS", "object": {"name": "Recall@10, Recall@pool, MRR@10, NDCG@10, Success@5"}, "confidence": 0.93, "relevance": 0.95, "evidence": [{"sourceKind": "research_finding", "sourceId": "finding-eval-metrics", "rawExcerpt": "The retrieval eval harness tracks Recall@10, Recall@pool, MRR@10, NDCG@10, Success@5, and latency/fallback stats."}]}
+      ]
+    }
+  },
+  "conversation": {
+    "baseline_rows_by_query": {
+      "what backs the memory graph right now": [
+        {"session_id": "sess-001", "turn_index": 0, "role": "assistant", "content": "We still rely on Neo4j for the structural memory graph in agentic-memory.", "source_agent": "codex", "timestamp": "2026-03-20T12:00:00+00:00", "ingested_at": "2026-03-20T12:00:00+00:00", "entities": ["Neo4j"], "entity_types": ["technology"], "score": 0.93}
+      ],
+      "what did we say phase 8 introduced beside neo4j": [
+        {"session_id": "sess-001", "turn_index": 1, "role": "assistant", "content": "Phase 8 introduced a SpacetimeDB temporal layer beside the Neo4j graph.", "source_agent": "codex", "timestamp": "2026-03-20T12:01:00+00:00", "ingested_at": "2026-03-20T12:01:00+00:00", "entities": ["SpacetimeDB", "Neo4j"], "entity_types": ["technology", "technology"], "score": 0.94}
+      ],
+      "which provider should be primary for reranking": [
+        {"session_id": "sess-001", "turn_index": 2, "role": "assistant", "content": "Direct Cohere should stay the primary rerank provider.", "source_agent": "codex", "timestamp": "2026-04-13T10:10:00+00:00", "ingested_at": "2026-04-13T10:10:00+00:00", "entities": ["Cohere"], "entity_types": ["business"], "score": 0.95}
+      ],
+      "when should openrouter be used for reranking": [
+        {"session_id": "sess-001", "turn_index": 3, "role": "assistant", "content": "OpenRouter should only be used for retryable provider failures or rate limits.", "source_agent": "codex", "timestamp": "2026-04-13T10:11:00+00:00", "ingested_at": "2026-04-13T10:11:00+00:00", "entities": ["OpenRouter"], "entity_types": ["business"], "score": 0.95}
+      ],
+      "what retrieval metrics do we care about": [
+        {"session_id": "sess-001", "turn_index": 4, "role": "assistant", "content": "We care about Recall@10, Recall@pool, MRR@10, NDCG@10, Success@5, and latency/fallback stats.", "source_agent": "codex", "timestamp": "2026-04-13T10:12:00+00:00", "ingested_at": "2026-04-13T10:12:00+00:00", "entities": ["Recall@10", "MRR@10", "NDCG@10"], "entity_types": ["concept", "concept", "concept"], "score": 0.96}
+      ]
+    },
+    "temporal_rows_by_query": {
+      "what backs the memory graph right now": [
+        {"confidence": 0.95, "relevance": 0.96, "evidence": [{"sourceKind": "conversation_turn", "sourceId": "sess-001:0"}]}
+      ],
+      "what did we say phase 8 introduced beside neo4j": [
+        {"confidence": 0.95, "relevance": 0.97, "evidence": [{"sourceKind": "conversation_turn", "sourceId": "sess-001:1"}]}
+      ],
+      "which provider should be primary for reranking": [
+        {"confidence": 0.95, "relevance": 0.97, "evidence": [{"sourceKind": "conversation_turn", "sourceId": "sess-001:2"}]}
+      ],
+      "when should openrouter be used for reranking": [
+        {"confidence": 0.95, "relevance": 0.97, "evidence": [{"sourceKind": "conversation_turn", "sourceId": "sess-001:3"}]}
+      ],
+      "what retrieval metrics do we care about": [
+        {"confidence": 0.95, "relevance": 0.97, "evidence": [{"sourceKind": "conversation_turn", "sourceId": "sess-001:4"}]}
+      ]
+    },
+    "hydrated_rows_by_query": {
+      "what backs the memory graph right now": [
+        {"session_id": "sess-001", "turn_index": 0, "role": "assistant", "content": "We still rely on Neo4j for the structural memory graph in agentic-memory.", "source_agent": "codex", "timestamp": "2026-03-20T12:00:00+00:00", "ingested_at": "2026-03-20T12:00:00+00:00", "entities": ["Neo4j"], "entity_types": ["technology"], "score": 0.96}
+      ],
+      "what did we say phase 8 introduced beside neo4j": [
+        {"session_id": "sess-001", "turn_index": 1, "role": "assistant", "content": "Phase 8 introduced a SpacetimeDB temporal layer beside the Neo4j graph.", "source_agent": "codex", "timestamp": "2026-03-20T12:01:00+00:00", "ingested_at": "2026-03-20T12:01:00+00:00", "entities": ["SpacetimeDB", "Neo4j"], "entity_types": ["technology", "technology"], "score": 0.97}
+      ],
+      "which provider should be primary for reranking": [
+        {"session_id": "sess-001", "turn_index": 2, "role": "assistant", "content": "Direct Cohere should stay the primary rerank provider.", "source_agent": "codex", "timestamp": "2026-04-13T10:10:00+00:00", "ingested_at": "2026-04-13T10:10:00+00:00", "entities": ["Cohere"], "entity_types": ["business"], "score": 0.97}
+      ],
+      "when should openrouter be used for reranking": [
+        {"session_id": "sess-001", "turn_index": 3, "role": "assistant", "content": "OpenRouter should only be used for retryable provider failures or rate limits.", "source_agent": "codex", "timestamp": "2026-04-13T10:11:00+00:00", "ingested_at": "2026-04-13T10:11:00+00:00", "entities": ["OpenRouter"], "entity_types": ["business"], "score": 0.97}
+      ],
+      "what retrieval metrics do we care about": [
+        {"session_id": "sess-001", "turn_index": 4, "role": "assistant", "content": "We care about Recall@10, Recall@pool, MRR@10, NDCG@10, Success@5, and latency/fallback stats.", "source_agent": "codex", "timestamp": "2026-04-13T10:12:00+00:00", "ingested_at": "2026-04-13T10:12:00+00:00", "entities": ["Recall@10", "MRR@10", "NDCG@10"], "entity_types": ["concept", "concept", "concept"], "score": 0.98}
+      ]
+    }
+  }
+}

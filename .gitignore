@@ -1,0 +1,101 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+.venv-*/
+venv-*/
+.pytest_cache/
+pytest-cache-files-*/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
+*.egg
+*.whl
+
+# Node
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+.cache/
+
+# Environment and secrets — NEVER commit these
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+*secret*
+*credential*
+*password*
+*token*
+.secrets/
+
+# Agentic Memory local configs (contain DB URIs, API keys)
+.agentic-memory/
+.codememory/
+.cursor/
+.claude/
+.kilo/
+
+# SpacetimeDB generated bindings
+packages/am-temporal-kg/generated-bindings/
+
+# Wrangler / Cloudflare
+.wrangler/
+wrangler.toml
+wrangler.jsonc
+!deploy/cloudflare-public-edge/wrangler.jsonc
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Local agent/editor artifacts
+.repomix-output.md
+
+# Healthcare datasets and experiments
+experiments/healthcare/datasets/
+experiments/healthcare/*.csv
+experiments/healthcare/*.jsonl
+experiments/healthcare/*.ndjson
+*.fhir
+*.hl7
+
+# Internal planning (should never be in public repo)
+.planning/
+planning/
+
+# Deployment configs (host-specific)
+deploy/systemd/*.env
+deploy/systemd/*.key
+deploy/cloudflare-public-edge/.wrangler/
+
+# Docker compose with potential secrets
+docker-compose.override.yml
+.env.production
+.env.production.example
+
+# Misc
+*.sqlite3
+*.db
+telemetry.sqlite3

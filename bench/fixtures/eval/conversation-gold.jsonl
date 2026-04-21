@@ -1,0 +1,5 @@
+{"query_id":"conversation-gold-001","domain":"conversation","query":"what backs the memory graph right now","project_id":"proj-smoke","expected_ids":["sess-001:0"],"graded_relevance":{"sess-001:0":2}}
+{"query_id":"conversation-gold-002","domain":"conversation","query":"what did we say phase 8 introduced beside neo4j","project_id":"proj-smoke","expected_ids":["sess-001:1"],"graded_relevance":{"sess-001:1":2}}
+{"query_id":"conversation-gold-003","domain":"conversation","query":"which provider should be primary for reranking","project_id":"proj-smoke","expected_ids":["sess-001:2"],"graded_relevance":{"sess-001:2":2}}
+{"query_id":"conversation-gold-004","domain":"conversation","query":"when should openrouter be used for reranking","project_id":"proj-smoke","expected_ids":["sess-001:3"],"graded_relevance":{"sess-001:3":2}}
+{"query_id":"conversation-gold-005","domain":"conversation","query":"what retrieval metrics do we care about","project_id":"proj-smoke","expected_ids":["sess-001:4"],"graded_relevance":{"sess-001:4":2}}

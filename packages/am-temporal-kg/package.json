@@ -1,0 +1,24 @@
+{
+  "name": "am-temporal-kg",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "SpacetimeDB temporal maintenance module for Agentic Memory",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.scripts.json --noEmit",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "bridge": "tsx scripts/query_temporal.ts",
+    "publish:local": "node ../../scripts/spacetime-target.mjs publish-temporal",
+    "generate:bindings": "node ../../scripts/spacetime-target.mjs generate-temporal-bindings"
+  },
+  "dependencies": {
+    "spacetimedb": "2.0.1",
+    "undici": "^6.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

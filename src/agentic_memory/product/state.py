@@ -1,0 +1,1599 @@
+"""Persistent local product-state store used by CLI and desktop control surfaces.
+
+The OpenClaw foundation wave changes the storage engine behind this file from a
+plain JSON document to SQLite-backed persistence while keeping the public
+`ProductStateStore` method contract stable.
+
+Why this file exists:
+
+- CLI commands need a local control-plane store even when no remote product API
+  exists.
+- OpenClaw project/session semantics depend on durable local state so project
+  commands can infer the active session without asking for extra flags.
+- Future agents should be able to understand the storage contract directly from
+  this module without any prior chat context.
+
+Why SQLite instead of JSON:
+
+- JSON rewrites the entire document on every update and provides no concurrency
+  coordination.
+- SQLite gives us atomic commits, write locking, and crash recovery while still
+  letting us preserve the current dict-shaped state payload.
+
+Design choice for this phase:
+
+- We intentionally keep the external payload shape the same.
+- Internally we store one normalized JSON document inside a SQLite table.
+- This keeps route and CLI callers stable while making durability better now.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import os
+import secrets
+import sqlite3
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Generator
+
+DEFAULT_PRODUCT_STATE_ENV_VARS = (
+    "AGENTIC_MEMORY_PRODUCT_STATE",
+    "CODEMEMORY_PRODUCT_STATE",
+)
+DEFAULT_PRODUCT_STATE_PATH = Path.home() / ".agentic-memory" / "product-state.json"
+DEFAULT_EVENT_CAP = 200
+DEFAULT_ONBOARDING_STEPS = (
+    "runtime_bootstrap",
+    "repo_added",
+    "integration_connected",
+    "first_index_complete",
+    "first_useful_result",
+)
+DEFAULT_COMPONENTS = {
+    "cli": "available",
+    "desktop_shell": "unknown",
+    "server": "unknown",
+    "browser_extension": "unknown",
+    "mcp": "unknown",
+    "proxy": "unknown",
+    "openclaw_memory": "unknown",
+    "openclaw_context_engine": "unknown",
+}
+DEFAULT_PROJECT_AUTOMATION_KIND = "research_ingestion"
+_SQLITE_MAGIC = b"SQLite format 3\x00"
+
+
+def _utc_now() -> str:
+    """Return an ISO8601 UTC timestamp."""
+
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _normalize_oauth_resource(resource: str | None) -> str:
+    """Normalize OAuth resource URLs so equivalent host forms compare equal.
+
+    Why this exists:
+    - Some MCP clients send the resource as ``https://host`` while others send
+      ``https://host/``.
+    - The public MCP auth surface should treat those as the same protected
+      resource instead of issuing a token for one form and rejecting it when
+      the client presents it against the other.
+
+    Args:
+        resource: Raw OAuth resource string from a request or stored record.
+
+    Returns:
+        The normalized resource string with surrounding whitespace removed and a
+        trailing slash stripped from non-root host forms.
+    """
+
+    return str(resource or "").strip().rstrip("/")
+
+
+class ProductStateStore:
+    """Manage the local persisted state for product-facing workflows.
+
+    Public callers should still think in terms of a single state document. This
+    class now handles loading, normalizing, and transactionally saving that
+    document through SQLite.
+    """
+
+    def __init__(self, state_path: str | Path | None = None) -> None:
+        self.state_path = Path(state_path or self._resolve_state_path()).expanduser().resolve()
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        self._initialize_store()
+
+    @staticmethod
+    def _resolve_state_path() -> Path:
+        for env_name in DEFAULT_PRODUCT_STATE_ENV_VARS:
+            raw = os.environ.get(env_name)
+            if raw:
+                return Path(raw)
+        return DEFAULT_PRODUCT_STATE_PATH
+
+    def _default_state(self) -> dict[str, Any]:
+        timestamp = _utc_now()
+        return {
+            "schema_version": 1,
+            "app": {
+                "last_seen_at": None,
+                "updated_at": timestamp,
+                "onboarding": {
+                    "required_steps": list(DEFAULT_ONBOARDING_STEPS),
+                    "completed_steps": [],
+                    "updated_at": timestamp,
+                },
+            },
+            "repos": [],
+            "integrations": [],
+            "projects": [],
+            "active_projects": [],
+            "project_automations": [],
+            "hosted_api_keys": [],
+            "oauth_clients": [],
+            "oauth_users": [],
+            "oauth_authorization_codes": [],
+            "oauth_access_tokens": [],
+            "oauth_refresh_tokens": [],
+            "usage_counters": [],
+            "events": [],
+            "runtime": {
+                "components": {
+                    name: {
+                        "status": status,
+                        "details": {},
+                        "updated_at": timestamp,
+                    }
+                    for name, status in DEFAULT_COMPONENTS.items()
+                }
+            },
+        }
+
+    def load(self) -> dict[str, Any]:
+        """Return the normalized current state payload from SQLite."""
+
+        with self._connect() as conn:
+            return self._load_state_from_connection(conn)
+
+    def touch(self) -> dict[str, Any]:
+        """Update last-seen timestamps and persist the state atomically."""
+
+        return self._update(lambda state: self._touch_state(state))
+
+    def upsert_repo(
+        self,
+        repo_path: str | Path,
+        *,
+        label: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create or update one tracked repository entry."""
+
+        resolved = Path(repo_path).expanduser().resolve()
+        repo_record = {
+            "path": str(resolved),
+            "label": label or resolved.name,
+            "initialized": self._repo_initialized(resolved),
+            "metadata": metadata or {},
+            "updated_at": _utc_now(),
+        }
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            repos = state["repos"]
+            for index, existing in enumerate(repos):
+                if existing["path"] == repo_record["path"]:
+                    repos[index] = {**existing, **repo_record}
+                    self._touch_state(state)
+                    return repos[index]
+
+            repos.append(repo_record)
+            repos.sort(key=lambda item: item["path"])
+            self._touch_state(state)
+            return repo_record
+
+        return self._update(mutate)
+
+    def upsert_integration(
+        self,
+        *,
+        surface: str,
+        target: str,
+        status: str,
+        config: dict[str, Any] | None = None,
+        last_error: str | None = None,
+    ) -> dict[str, Any]:
+        """Create or update one integration record keyed by `(surface, target)`."""
+
+        surface_name = surface.strip()
+        target_name = target.strip()
+        if not surface_name or not target_name:
+            raise ValueError("surface and target are required")
+
+        record = {
+            "surface": surface_name,
+            "target": target_name,
+            "status": status.strip(),
+            "config": config or {},
+            "last_error": last_error,
+            "updated_at": _utc_now(),
+        }
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            integrations = state["integrations"]
+            for index, existing in enumerate(integrations):
+                if existing["surface"] == surface_name and existing["target"] == target_name:
+                    integrations[index] = {**existing, **record}
+                    self._touch_state(state)
+                    return integrations[index]
+
+            integrations.append(record)
+            integrations.sort(key=lambda item: (item["surface"], item["target"]))
+            self._touch_state(state)
+            return record
+
+        return self._update(mutate)
+
+    def upsert_project(
+        self,
+        *,
+        project_id: str,
+        title: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create or update a reusable project definition."""
+
+        normalized_project_id = project_id.strip()
+        if not normalized_project_id:
+            raise ValueError("project_id is required")
+
+        record = {
+            "project_id": normalized_project_id,
+            "title": (title or normalized_project_id).strip(),
+            "metadata": metadata or {},
+            "updated_at": _utc_now(),
+        }
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            projects = state["projects"]
+            for index, existing in enumerate(projects):
+                if existing["project_id"] == normalized_project_id:
+                    projects[index] = {**existing, **record}
+                    self._touch_state(state)
+                    return projects[index]
+
+            projects.append(record)
+            projects.sort(key=lambda item: item["project_id"])
+            self._touch_state(state)
+            return record
+
+        return self._update(mutate)
+
+    def activate_project_for_openclaw_identity(
+        self,
+        *,
+        workspace_id: str,
+        agent_id: str,
+        session_id: str,
+        project_id: str,
+        device_id: str | None = None,
+        title: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Bind a project to one OpenClaw workspace/agent/session tuple."""
+
+        project = self.upsert_project(
+            project_id=project_id,
+            title=title,
+            metadata=metadata or {},
+        )
+        binding = {
+            "workspace_id": workspace_id.strip(),
+            "agent_id": agent_id.strip(),
+            "session_id": session_id.strip(),
+            "device_id": device_id.strip() if device_id else None,
+            "project_id": project["project_id"],
+            "activated_at": _utc_now(),
+            "updated_at": _utc_now(),
+            "metadata": metadata or {},
+        }
+        if not binding["workspace_id"] or not binding["agent_id"] or not binding["session_id"]:
+            raise ValueError("workspace_id, agent_id, and session_id are required")
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            active_projects = state["active_projects"]
+            for index, existing in enumerate(active_projects):
+                if (
+                    existing["workspace_id"] == binding["workspace_id"]
+                    and existing["agent_id"] == binding["agent_id"]
+                    and existing["session_id"] == binding["session_id"]
+                ):
+                    binding["activated_at"] = existing.get("activated_at", binding["activated_at"])
+                    active_projects[index] = {**existing, **binding}
+                    self._touch_state(state)
+                    return active_projects[index]
+
+            active_projects.append(binding)
+            active_projects.sort(
+                key=lambda item: (item["workspace_id"], item["agent_id"], item["session_id"])
+            )
+            self._touch_state(state)
+            return binding
+
+        return self._update(mutate)
+
+    def deactivate_project_for_openclaw_identity(
+        self,
+        *,
+        workspace_id: str,
+        agent_id: str,
+        session_id: str,
+    ) -> dict[str, Any] | None:
+        """Remove the active project binding for one OpenClaw session."""
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any] | None:
+            active_projects = state["active_projects"]
+            for index, existing in enumerate(active_projects):
+                if (
+                    existing["workspace_id"] == workspace_id
+                    and existing["agent_id"] == agent_id
+                    and existing["session_id"] == session_id
+                ):
+                    removed = active_projects.pop(index)
+                    self._touch_state(state)
+                    return removed
+            return None
+
+        return self._update(mutate)
+
+    def get_active_project_for_openclaw_identity(
+        self,
+        *,
+        workspace_id: str,
+        agent_id: str,
+        session_id: str,
+    ) -> dict[str, Any] | None:
+        """Return the active project binding for one OpenClaw session if any."""
+
+        state = self.load()
+        for binding in state["active_projects"]:
+            if (
+                binding["workspace_id"] == workspace_id
+                and binding["agent_id"] == agent_id
+                and binding["session_id"] == session_id
+            ):
+                return binding
+        return None
+
+    def get_openclaw_session_registration(
+        self,
+        *,
+        workspace_id: str,
+        agent_id: str,
+        device_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Return the latest registered OpenClaw session for one identity tuple."""
+
+        normalized_workspace_id = workspace_id.strip()
+        normalized_agent_id = agent_id.strip()
+        normalized_device_id = device_id.strip() if device_id else None
+        if not normalized_workspace_id or not normalized_agent_id:
+            raise ValueError("workspace_id and agent_id are required")
+
+        state = self.load()
+        for integration in reversed(state["integrations"]):
+            if integration.get("surface") != "openclaw":
+                continue
+
+            config = integration.get("config", {})
+            if not isinstance(config, dict):
+                continue
+
+            if config.get("workspace_id") != normalized_workspace_id:
+                continue
+            if config.get("agent_id") != normalized_agent_id:
+                continue
+            if normalized_device_id and config.get("device_id") != normalized_device_id:
+                continue
+
+            session_id = config.get("session_id")
+            if isinstance(session_id, str) and session_id.strip():
+                return integration
+
+        return None
+
+    def resolve_openclaw_session_id(
+        self,
+        *,
+        workspace_id: str,
+        agent_id: str,
+        explicit_session_id: str | None = None,
+        device_id: str | None = None,
+    ) -> str | None:
+        """Resolve the active OpenClaw session id for one agent."""
+
+        if explicit_session_id and explicit_session_id.strip():
+            return explicit_session_id.strip()
+
+        registration = self.get_openclaw_session_registration(
+            workspace_id=workspace_id,
+            agent_id=agent_id,
+            device_id=device_id,
+        )
+        if not registration:
+            return None
+
+        config = registration.get("config", {})
+        if isinstance(config, dict):
+            session_id = config.get("session_id")
+            if isinstance(session_id, str) and session_id.strip():
+                return session_id.strip()
+        return None
+
+    def upsert_project_automation(
+        self,
+        *,
+        workspace_id: str,
+        project_id: str,
+        enabled: bool = True,
+        automation_kind: str = DEFAULT_PROJECT_AUTOMATION_KIND,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create or update a workspace-scoped automation for a project."""
+
+        normalized_workspace_id = workspace_id.strip()
+        normalized_project_id = project_id.strip()
+        normalized_kind = automation_kind.strip()
+        if not normalized_workspace_id or not normalized_project_id or not normalized_kind:
+            raise ValueError("workspace_id, project_id, and automation_kind are required")
+
+        self.upsert_project(project_id=normalized_project_id, metadata=metadata or {})
+        record = {
+            "workspace_id": normalized_workspace_id,
+            "project_id": normalized_project_id,
+            "automation_kind": normalized_kind,
+            "enabled": bool(enabled),
+            "metadata": metadata or {},
+            "updated_at": _utc_now(),
+        }
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            automations = state["project_automations"]
+            for index, existing in enumerate(automations):
+                if (
+                    existing["workspace_id"] == normalized_workspace_id
+                    and existing["project_id"] == normalized_project_id
+                    and existing["automation_kind"] == normalized_kind
+                ):
+                    automations[index] = {**existing, **record}
+                    self._touch_state(state)
+                    return automations[index]
+
+            automations.append(record)
+            automations.sort(
+                key=lambda item: (
+                    item["workspace_id"],
+                    item["project_id"],
+                    item["automation_kind"],
+                )
+            )
+            self._touch_state(state)
+            return record
+
+        return self._update(mutate)
+
+    def issue_hosted_workspace_api_key(
+        self,
+        *,
+        workspace_id: str,
+        label: str | None = None,
+        created_by: str = "operator",
+        raw_token: str | None = None,
+    ) -> dict[str, Any]:
+        """Create one managed-beta API key bound to a single workspace."""
+
+        normalized_workspace_id = workspace_id.strip()
+        normalized_label = (label or f"{normalized_workspace_id} hosted key").strip()
+        token = (raw_token or secrets.token_urlsafe(24)).strip()
+        if not normalized_workspace_id:
+            raise ValueError("workspace_id is required")
+        if not token:
+            raise ValueError("raw token must not be empty")
+
+        timestamp = _utc_now()
+        record = {
+            "key_id": f"wk_{secrets.token_hex(8)}",
+            "workspace_id": normalized_workspace_id,
+            "label": normalized_label,
+            "token_hash": self._hash_api_token(token),
+            "token_prefix": token[:8],
+            "status": "active",
+            "created_by": created_by.strip() or "operator",
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "last_used_at": None,
+        }
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            keys = state["hosted_api_keys"]
+            keys.append(record)
+            keys.sort(key=lambda item: (item["workspace_id"], item["label"], item["key_id"]))
+            self._touch_state(state)
+            return {**record, "token": token}
+
+        return self._update(mutate)
+
+    def lookup_hosted_workspace_api_key(self, raw_token: str) -> dict[str, Any] | None:
+        """Return the active workspace-bound key record matching a raw token."""
+
+        token_hash = self._hash_api_token(raw_token.strip())
+        if not token_hash:
+            return None
+
+        state = self.load()
+        for record in state["hosted_api_keys"]:
+            if record.get("status") != "active":
+                continue
+            if record.get("token_hash") == token_hash:
+                return record
+        return None
+
+    def touch_hosted_workspace_api_key_use(self, key_id: str) -> dict[str, Any] | None:
+        """Update the last-used timestamp for one hosted workspace key."""
+
+        normalized_key_id = key_id.strip()
+        if not normalized_key_id:
+            raise ValueError("key_id is required")
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any] | None:
+            for index, existing in enumerate(state["hosted_api_keys"]):
+                if existing.get("key_id") != normalized_key_id:
+                    continue
+                updated = {
+                    **existing,
+                    "last_used_at": _utc_now(),
+                    "updated_at": _utc_now(),
+                }
+                state["hosted_api_keys"][index] = updated
+                self._touch_state(state)
+                return updated
+            return None
+
+        return self._update(mutate)
+
+    def revoke_hosted_workspace_api_key(self, key_id: str) -> dict[str, Any] | None:
+        """Mark one hosted workspace key inactive without removing audit history."""
+
+        normalized_key_id = key_id.strip()
+        if not normalized_key_id:
+            raise ValueError("key_id is required")
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any] | None:
+            for index, existing in enumerate(state["hosted_api_keys"]):
+                if existing.get("key_id") != normalized_key_id:
+                    continue
+                updated = {
+                    **existing,
+                    "status": "revoked",
+                    "updated_at": _utc_now(),
+                }
+                state["hosted_api_keys"][index] = updated
+                self._touch_state(state)
+                return updated
+            return None
+
+        return self._update(mutate)
+
+    def upsert_oauth_user(
+        self,
+        *,
+        username: str,
+        password: str,
+        workspace_id: str,
+        display_name: str | None = None,
+        created_by: str = "operator",
+        scopes: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Create or update one operator-managed OAuth user for public MCP auth."""
+
+        normalized_username = username.strip().lower()
+        normalized_workspace_id = workspace_id.strip()
+        if not normalized_username or not normalized_workspace_id:
+            raise ValueError("username and workspace_id are required")
+        if not password.strip():
+            raise ValueError("password is required")
+
+        timestamp = _utc_now()
+        record = {
+            "user_id": f"ou_{secrets.token_hex(8)}",
+            "username": normalized_username,
+            "display_name": (display_name or normalized_username).strip(),
+            "workspace_id": normalized_workspace_id,
+            "password_hash": self._hash_password(password),
+            "scopes": sorted(set(scopes or ["mcp:tools"])),
+            "status": "active",
+            "created_by": created_by.strip() or "operator",
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "last_login_at": None,
+        }
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            users = state["oauth_users"]
+            for index, existing in enumerate(users):
+                if existing.get("username") != normalized_username:
+                    continue
+                updated = {
+                    **existing,
+                    "display_name": record["display_name"],
+                    "workspace_id": record["workspace_id"],
+                    "password_hash": record["password_hash"],
+                    "scopes": record["scopes"],
+                    "status": "active",
+                    "created_by": record["created_by"],
+                    "updated_at": timestamp,
+                }
+                users[index] = updated
+                self._touch_state(state)
+                return updated
+
+            users.append(record)
+            users.sort(key=lambda item: item["username"])
+            self._touch_state(state)
+            return record
+
+        return self._update(mutate)
+
+    def register_oauth_client(
+        self,
+        *,
+        client_name: str | None,
+        redirect_uris: list[str],
+        grant_types: list[str] | None = None,
+        response_types: list[str] | None = None,
+        token_endpoint_auth_method: str = "none",
+        scope: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Register one dynamically created OAuth client for public MCP auth.
+
+        This supports MCP clients such as ChatGPT developer mode that expect a
+        Dynamic Client Registration endpoint instead of a pre-provisioned client
+        metadata document URL.
+        """
+
+        normalized_redirect_uris = sorted(
+            {str(item).strip() for item in redirect_uris if str(item).strip()}
+        )
+        if not normalized_redirect_uris:
+            raise ValueError("at least one redirect URI is required")
+
+        normalized_grant_types = sorted(
+            set(grant_types or ["authorization_code", "refresh_token"])
+        )
+        normalized_response_types = sorted(set(response_types or ["code"]))
+        normalized_auth_method = token_endpoint_auth_method.strip() or "none"
+        timestamp = _utc_now()
+        record = {
+            "client_id": f"oauth_client_{secrets.token_hex(12)}",
+            "client_name": (client_name or "Dynamic MCP client").strip(),
+            "redirect_uris": normalized_redirect_uris,
+            "grant_types": normalized_grant_types,
+            "response_types": normalized_response_types,
+            "token_endpoint_auth_method": normalized_auth_method,
+            "scope": (scope or "").strip() or "mcp:tools",
+            "metadata": metadata or {},
+            "status": "active",
+            "created_at": timestamp,
+            "updated_at": timestamp,
+        }
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            state["oauth_clients"].append(record)
+            state["oauth_clients"].sort(key=lambda item: str(item.get("created_at") or ""))
+            self._touch_state(state)
+            return record
+
+        return self._update(mutate)
+
+    def lookup_oauth_client(self, client_id: str) -> dict[str, Any] | None:
+        """Return one active registered OAuth client by its issued client id."""
+
+        normalized_client_id = client_id.strip()
+        if not normalized_client_id:
+            return None
+
+        state = self.load()
+        for record in state["oauth_clients"]:
+            if record.get("status") != "active":
+                continue
+            if record.get("client_id") != normalized_client_id:
+                continue
+            return record
+        return None
+
+    def authenticate_oauth_user(self, *, username: str, password: str) -> dict[str, Any] | None:
+        """Return the active OAuth user matching the provided username/password."""
+
+        normalized_username = username.strip().lower()
+        if not normalized_username or not password.strip():
+            return None
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any] | None:
+            for index, existing in enumerate(state["oauth_users"]):
+                if existing.get("username") != normalized_username:
+                    continue
+                if existing.get("status") != "active":
+                    return None
+                if not self._verify_password(password, str(existing.get("password_hash") or "")):
+                    return None
+                updated = {
+                    **existing,
+                    "last_login_at": _utc_now(),
+                    "updated_at": _utc_now(),
+                }
+                state["oauth_users"][index] = updated
+                self._touch_state(state)
+                return updated
+            return None
+
+        return self._update(mutate)
+
+    def issue_oauth_authorization_code(
+        self,
+        *,
+        user_id: str,
+        username: str,
+        workspace_id: str,
+        client_id: str,
+        redirect_uri: str,
+        resource: str,
+        scopes: list[str],
+        code_challenge: str,
+        code_challenge_method: str,
+        expires_in_seconds: int = 300,
+    ) -> dict[str, Any]:
+        """Issue one short-lived OAuth authorization code."""
+
+        raw_code = secrets.token_urlsafe(32)
+        timestamp = _utc_now()
+        record = {
+            "code_id": f"oc_{secrets.token_hex(8)}",
+            "code_hash": self._hash_api_token(raw_code),
+            "user_id": user_id.strip(),
+            "username": username.strip().lower(),
+            "workspace_id": workspace_id.strip(),
+            "client_id": client_id.strip(),
+            "redirect_uri": redirect_uri.strip(),
+            "resource": _normalize_oauth_resource(resource),
+            "scopes": sorted(set(scopes)),
+            "code_challenge": code_challenge.strip(),
+            "code_challenge_method": code_challenge_method.strip(),
+            "status": "active",
+            "created_at": timestamp,
+            "expires_at": self._future_timestamp(expires_in_seconds),
+            "used_at": None,
+            "updated_at": timestamp,
+        }
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            codes = state["oauth_authorization_codes"]
+            codes.append(record)
+            codes.sort(key=lambda item: item["created_at"])
+            self._touch_state(state)
+            return {**record, "code": raw_code}
+
+        return self._update(mutate)
+
+    def consume_oauth_authorization_code(
+        self,
+        *,
+        raw_code: str,
+        client_id: str,
+        redirect_uri: str,
+        resource: str,
+    ) -> dict[str, Any] | None:
+        """Mark an authorization code used and return its record when valid."""
+
+        token_hash = self._hash_api_token(raw_code)
+        if not token_hash:
+            return None
+
+        normalized_client_id = client_id.strip()
+        normalized_redirect_uri = redirect_uri.strip()
+        normalized_resource = _normalize_oauth_resource(resource)
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any] | None:
+            for index, existing in enumerate(state["oauth_authorization_codes"]):
+                if existing.get("code_hash") != token_hash:
+                    continue
+                if existing.get("status") != "active":
+                    return None
+                if self._is_expired(existing.get("expires_at")):
+                    return None
+                if existing.get("client_id") != normalized_client_id:
+                    return None
+                if existing.get("redirect_uri") != normalized_redirect_uri:
+                    return None
+                if existing.get("resource") != normalized_resource:
+                    return None
+
+                updated = {
+                    **existing,
+                    "status": "consumed",
+                    "used_at": _utc_now(),
+                    "updated_at": _utc_now(),
+                }
+                state["oauth_authorization_codes"][index] = updated
+                self._touch_state(state)
+                return updated
+            return None
+
+        return self._update(mutate)
+
+    def issue_oauth_token_pair(
+        self,
+        *,
+        user_id: str,
+        username: str,
+        workspace_id: str,
+        client_id: str,
+        resource: str,
+        scopes: list[str],
+        access_expires_in_seconds: int = 3600,
+        refresh_expires_in_seconds: int = 2592000,
+    ) -> dict[str, Any]:
+        """Issue one access-token/refresh-token pair for OAuth public MCP auth."""
+
+        raw_access_token = secrets.token_urlsafe(36)
+        raw_refresh_token = secrets.token_urlsafe(42)
+        timestamp = _utc_now()
+        access_record = {
+            "token_id": f"at_{secrets.token_hex(8)}",
+            "token_hash": self._hash_api_token(raw_access_token),
+            "token_prefix": raw_access_token[:8],
+            "user_id": user_id.strip(),
+            "username": username.strip().lower(),
+            "workspace_id": workspace_id.strip(),
+            "client_id": client_id.strip(),
+            "resource": _normalize_oauth_resource(resource),
+            "scopes": sorted(set(scopes)),
+            "status": "active",
+            "created_at": timestamp,
+            "expires_at": self._future_timestamp(access_expires_in_seconds),
+            "last_used_at": None,
+            "updated_at": timestamp,
+        }
+        refresh_record = {
+            "token_id": f"rt_{secrets.token_hex(8)}",
+            "token_hash": self._hash_api_token(raw_refresh_token),
+            "token_prefix": raw_refresh_token[:8],
+            "user_id": user_id.strip(),
+            "username": username.strip().lower(),
+            "workspace_id": workspace_id.strip(),
+            "client_id": client_id.strip(),
+            "resource": _normalize_oauth_resource(resource),
+            "scopes": sorted(set(scopes)),
+            "status": "active",
+            "created_at": timestamp,
+            "expires_at": self._future_timestamp(refresh_expires_in_seconds),
+            "rotated_at": None,
+            "updated_at": timestamp,
+        }
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            state["oauth_access_tokens"].append(access_record)
+            state["oauth_refresh_tokens"].append(refresh_record)
+            self._touch_state(state)
+            return {
+                "token_type": "Bearer",
+                "access_token": raw_access_token,
+                "expires_in": access_expires_in_seconds,
+                "refresh_token": raw_refresh_token,
+                "refresh_token_expires_in": refresh_expires_in_seconds,
+                "scope": " ".join(sorted(set(scopes))),
+            }
+
+        return self._update(mutate)
+
+    def lookup_oauth_access_token(
+        self,
+        raw_token: str,
+        *,
+        resource: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Return the active OAuth access-token record matching a raw token."""
+
+        token_hash = self._hash_api_token(raw_token)
+        if not token_hash:
+            return None
+
+        normalized_resource = _normalize_oauth_resource(resource) if resource else None
+        state = self.load()
+        for record in state["oauth_access_tokens"]:
+            if record.get("status") != "active":
+                continue
+            if record.get("token_hash") != token_hash:
+                continue
+            if self._is_expired(record.get("expires_at")):
+                continue
+            if normalized_resource and record.get("resource") != normalized_resource:
+                continue
+            return record
+        return None
+
+    def touch_oauth_access_token_use(self, token_id: str) -> dict[str, Any] | None:
+        """Update last-used timestamp for one OAuth access token."""
+
+        normalized_token_id = token_id.strip()
+        if not normalized_token_id:
+            raise ValueError("token_id is required")
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any] | None:
+            for index, existing in enumerate(state["oauth_access_tokens"]):
+                if existing.get("token_id") != normalized_token_id:
+                    continue
+                updated = {
+                    **existing,
+                    "last_used_at": _utc_now(),
+                    "updated_at": _utc_now(),
+                }
+                state["oauth_access_tokens"][index] = updated
+                self._touch_state(state)
+                return updated
+            return None
+
+        return self._update(mutate)
+
+    def rotate_oauth_refresh_token(
+        self,
+        *,
+        raw_refresh_token: str,
+        client_id: str,
+        resource: str,
+    ) -> dict[str, Any] | None:
+        """Consume one refresh token and issue a fresh token pair."""
+
+        token_hash = self._hash_api_token(raw_refresh_token)
+        if not token_hash:
+            return None
+
+        normalized_client_id = client_id.strip()
+        normalized_resource = _normalize_oauth_resource(resource)
+        refresh_record = None
+
+        def consume(state: dict[str, Any]) -> dict[str, Any] | None:
+            for index, existing in enumerate(state["oauth_refresh_tokens"]):
+                if existing.get("token_hash") != token_hash:
+                    continue
+                if existing.get("status") != "active":
+                    return None
+                if self._is_expired(existing.get("expires_at")):
+                    return None
+                if existing.get("client_id") != normalized_client_id:
+                    return None
+                if existing.get("resource") != normalized_resource:
+                    return None
+                updated = {
+                    **existing,
+                    "status": "rotated",
+                    "rotated_at": _utc_now(),
+                    "updated_at": _utc_now(),
+                }
+                state["oauth_refresh_tokens"][index] = updated
+                self._touch_state(state)
+                return updated
+            return None
+
+        refresh_record = self._update(consume)
+        if not refresh_record:
+            return None
+
+        return self.issue_oauth_token_pair(
+            user_id=str(refresh_record.get("user_id") or ""),
+            username=str(refresh_record.get("username") or ""),
+            workspace_id=str(refresh_record.get("workspace_id") or ""),
+            client_id=normalized_client_id,
+            resource=normalized_resource,
+            scopes=list(refresh_record.get("scopes", [])),
+        )
+
+    def record_usage_counter(
+        self,
+        *,
+        workspace_id: str,
+        metric: str,
+        amount: int = 1,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Increment one workspace-scoped usage counter for hosted beta."""
+
+        normalized_workspace_id = workspace_id.strip()
+        normalized_metric = metric.strip()
+        if not normalized_workspace_id or not normalized_metric:
+            raise ValueError("workspace_id and metric are required")
+        if amount < 0:
+            raise ValueError("amount must be non-negative")
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            counters = state["usage_counters"]
+            for index, existing in enumerate(counters):
+                if (
+                    existing.get("workspace_id") == normalized_workspace_id
+                    and existing.get("metric") == normalized_metric
+                ):
+                    updated = {
+                        **existing,
+                        "count": int(existing.get("count", 0)) + amount,
+                        "metadata": {
+                            **(existing.get("metadata", {}) if isinstance(existing.get("metadata"), dict) else {}),
+                            **(metadata or {}),
+                        },
+                        "updated_at": _utc_now(),
+                    }
+                    counters[index] = updated
+                    self._touch_state(state)
+                    return updated
+
+            record = {
+                "workspace_id": normalized_workspace_id,
+                "metric": normalized_metric,
+                "count": amount,
+                "metadata": metadata or {},
+                "updated_at": _utc_now(),
+            }
+            counters.append(record)
+            counters.sort(key=lambda item: (item["workspace_id"], item["metric"]))
+            self._touch_state(state)
+            return record
+
+        return self._update(mutate)
+
+    def get_usage_summary(self, workspace_id: str | None = None) -> list[dict[str, Any]]:
+        """Return hosted usage counters, optionally filtered to one workspace."""
+
+        rows = self.load()["usage_counters"]
+        if workspace_id is None:
+            return rows
+        normalized_workspace_id = workspace_id.strip()
+        return [row for row in rows if row.get("workspace_id") == normalized_workspace_id]
+
+    def set_component_status(
+        self,
+        component: str,
+        *,
+        status: str,
+        details: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Update one runtime component health entry."""
+
+        component_name = component.strip()
+        if component_name not in DEFAULT_COMPONENTS:
+            raise ValueError(f"unsupported component: {component_name}")
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            components = state["runtime"]["components"]
+            components[component_name] = {
+                "status": status.strip(),
+                "details": details or {},
+                "updated_at": _utc_now(),
+            }
+            self._touch_state(state)
+            return components[component_name]
+
+        return self._update(mutate)
+
+    def record_event(
+        self,
+        *,
+        event_type: str,
+        actor: str,
+        status: str = "ok",
+        details: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Append an event to the bounded rolling event buffer."""
+
+        event = {
+            "event_type": event_type.strip(),
+            "actor": actor.strip(),
+            "status": status.strip(),
+            "details": details or {},
+            "timestamp": _utc_now(),
+        }
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            events = state["events"]
+            events.append(event)
+            if len(events) > DEFAULT_EVENT_CAP:
+                del events[:-DEFAULT_EVENT_CAP]
+            self._touch_state(state)
+            return event
+
+        return self._update(mutate)
+
+    def update_onboarding_step(self, step: str, *, completed: bool = True) -> dict[str, Any]:
+        """Mark an onboarding step complete or incomplete."""
+
+        step_name = step.strip()
+        if not step_name:
+            raise ValueError("step is required")
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            onboarding = state["app"]["onboarding"]
+            completed_steps = set(onboarding.get("completed_steps", []))
+            if completed:
+                completed_steps.add(step_name)
+            else:
+                completed_steps.discard(step_name)
+            onboarding["completed_steps"] = sorted(completed_steps)
+            onboarding["updated_at"] = _utc_now()
+            self._touch_state(state)
+            return onboarding
+
+        return self._update(mutate)
+
+    def status_payload(self, *, repo_root: Path | None = None) -> dict[str, Any]:
+        """Return the public control-plane payload used by CLI and desktop routes."""
+
+        state = self.touch()
+        onboarding = state["app"]["onboarding"]
+        required_steps = onboarding.get("required_steps", [])
+        completed_steps = set(onboarding.get("completed_steps", []))
+
+        payload = {
+            "state_path": str(self.state_path),
+            "schema_version": state["schema_version"],
+            "app": state["app"],
+            "repos": state["repos"],
+            "integrations": state["integrations"],
+            "projects": state["projects"],
+            "active_projects": state["active_projects"],
+            "project_automations": state["project_automations"],
+            "hosted_api_keys": [
+                {
+                    "key_id": record["key_id"],
+                    "workspace_id": record["workspace_id"],
+                    "label": record["label"],
+                    "token_prefix": record["token_prefix"],
+                    "status": record["status"],
+                    "created_by": record["created_by"],
+                    "created_at": record["created_at"],
+                    "updated_at": record["updated_at"],
+                    "last_used_at": record["last_used_at"],
+                }
+                for record in state["hosted_api_keys"]
+            ],
+            "oauth_clients": [
+                {
+                    "client_id": record["client_id"],
+                    "client_name": record["client_name"],
+                    "redirect_uris": list(record["redirect_uris"]),
+                    "grant_types": list(record["grant_types"]),
+                    "response_types": list(record["response_types"]),
+                    "token_endpoint_auth_method": record["token_endpoint_auth_method"],
+                    "scope": record["scope"],
+                    "status": record["status"],
+                    "created_at": record["created_at"],
+                    "updated_at": record["updated_at"],
+                }
+                for record in state["oauth_clients"]
+            ],
+            "oauth": {
+                "oauth_client_count": len(state["oauth_clients"]),
+                "oauth_user_count": len(state["oauth_users"]),
+                "oauth_access_token_count": len(state["oauth_access_tokens"]),
+                "oauth_refresh_token_count": len(state["oauth_refresh_tokens"]),
+                "oauth_authorization_code_count": len(state["oauth_authorization_codes"]),
+            },
+            "usage_counters": state["usage_counters"],
+            "events": state["events"],
+            "runtime": state["runtime"],
+            "summary": {
+                "repo_count": len(state["repos"]),
+                "integration_count": len(state["integrations"]),
+                "project_count": len(state["projects"]),
+                "active_project_count": len(state["active_projects"]),
+                "project_automation_count": len(state["project_automations"]),
+                "hosted_api_key_count": len(state["hosted_api_keys"]),
+                "oauth_client_count": len(state["oauth_clients"]),
+                "oauth_user_count": len(state["oauth_users"]),
+                "usage_counter_count": len(state["usage_counters"]),
+                "event_count": len(state["events"]),
+                "component_count": len(state["runtime"]["components"]),
+                "onboarding_completed": bool(required_steps)
+                and all(step in completed_steps for step in required_steps),
+            },
+        }
+        if repo_root is not None:
+            payload["repo"] = self._repo_status(state, repo_root)
+        return payload
+
+    def _repo_status(self, state: dict[str, Any], repo_root: Path) -> dict[str, Any]:
+        resolved = repo_root.expanduser().resolve()
+        tracked = next((repo for repo in state["repos"] if repo["path"] == str(resolved)), None)
+        return {
+            "path": str(resolved),
+            "tracked": tracked is not None,
+            "initialized": self._repo_initialized(resolved),
+            "record": tracked,
+        }
+
+    def _repo_initialized(self, repo_root: Path) -> bool:
+        legacy_config = repo_root / ".codememory" / "config.json"
+        renamed_config = repo_root / ".agentic-memory" / "config.json"
+        return legacy_config.exists() or renamed_config.exists()
+
+    def _normalize(self, payload: dict[str, Any]) -> dict[str, Any]:
+        state = self._default_state()
+        state.update(
+            {
+                "schema_version": payload.get("schema_version", state["schema_version"]),
+                "app": {**state["app"], **payload.get("app", {})},
+                "repos": list(payload.get("repos", [])),
+                "integrations": list(payload.get("integrations", [])),
+                "projects": list(payload.get("projects", [])),
+                "active_projects": list(payload.get("active_projects", [])),
+                "project_automations": list(payload.get("project_automations", [])),
+                "hosted_api_keys": list(payload.get("hosted_api_keys", [])),
+                "oauth_clients": list(payload.get("oauth_clients", [])),
+                "oauth_users": list(payload.get("oauth_users", [])),
+                "oauth_authorization_codes": list(payload.get("oauth_authorization_codes", [])),
+                "oauth_access_tokens": list(payload.get("oauth_access_tokens", [])),
+                "oauth_refresh_tokens": list(payload.get("oauth_refresh_tokens", [])),
+                "usage_counters": list(payload.get("usage_counters", [])),
+                "events": list(payload.get("events", []))[-DEFAULT_EVENT_CAP:],
+                "runtime": {**state["runtime"], **payload.get("runtime", {})},
+            }
+        )
+        components = dict(state["runtime"].get("components", {}))
+        for component, default_status in DEFAULT_COMPONENTS.items():
+            record = components.get(component, {})
+            components[component] = {
+                "status": record.get("status", default_status),
+                "details": record.get("details", {}),
+                "updated_at": record.get("updated_at", _utc_now()),
+            }
+        state["runtime"]["components"] = components
+
+        onboarding = dict(state["app"].get("onboarding", {}))
+        onboarding["required_steps"] = list(onboarding.get("required_steps", DEFAULT_ONBOARDING_STEPS))
+        onboarding["completed_steps"] = sorted(set(onboarding.get("completed_steps", [])))
+        onboarding["updated_at"] = onboarding.get("updated_at", _utc_now())
+        state["app"]["onboarding"] = onboarding
+        state["app"]["updated_at"] = state["app"].get("updated_at", _utc_now())
+        state["app"]["last_seen_at"] = state["app"].get("last_seen_at")
+        state["hosted_api_keys"] = [
+            {
+                "key_id": record.get("key_id"),
+                "workspace_id": record.get("workspace_id"),
+                "label": record.get("label", ""),
+                "token_hash": record.get("token_hash", ""),
+                "token_prefix": record.get("token_prefix", ""),
+                "status": record.get("status", "active"),
+                "created_by": record.get("created_by", "operator"),
+                "created_at": record.get("created_at", _utc_now()),
+                "updated_at": record.get("updated_at", _utc_now()),
+                "last_used_at": record.get("last_used_at"),
+            }
+            for record in state.get("hosted_api_keys", [])
+            if isinstance(record, dict) and record.get("workspace_id")
+        ]
+        state["oauth_users"] = [
+            {
+                "user_id": record.get("user_id"),
+                "username": str(record.get("username") or "").strip().lower(),
+                "display_name": record.get("display_name", ""),
+                "workspace_id": record.get("workspace_id"),
+                "password_hash": record.get("password_hash", ""),
+                "scopes": sorted(set(record.get("scopes", ["mcp:tools"]))),
+                "status": record.get("status", "active"),
+                "created_by": record.get("created_by", "operator"),
+                "created_at": record.get("created_at", _utc_now()),
+                "updated_at": record.get("updated_at", _utc_now()),
+                "last_login_at": record.get("last_login_at"),
+            }
+            for record in state.get("oauth_users", [])
+            if isinstance(record, dict) and record.get("username") and record.get("workspace_id")
+        ]
+        state["oauth_clients"] = [
+            {
+                "client_id": str(record.get("client_id") or "").strip(),
+                "client_name": str(record.get("client_name") or "").strip() or "Dynamic MCP client",
+                "redirect_uris": sorted(
+                    {str(item).strip() for item in record.get("redirect_uris", []) if str(item).strip()}
+                ),
+                "grant_types": sorted(
+                    set(record.get("grant_types", ["authorization_code", "refresh_token"]))
+                ),
+                "response_types": sorted(set(record.get("response_types", ["code"]))),
+                "token_endpoint_auth_method": str(
+                    record.get("token_endpoint_auth_method") or "none"
+                ).strip()
+                or "none",
+                "scope": str(record.get("scope") or "mcp:tools").strip() or "mcp:tools",
+                "metadata": record.get("metadata", {}) if isinstance(record.get("metadata"), dict) else {},
+                "status": str(record.get("status") or "active").strip() or "active",
+                "created_at": record.get("created_at", _utc_now()),
+                "updated_at": record.get("updated_at", _utc_now()),
+            }
+            for record in state.get("oauth_clients", [])
+            if isinstance(record, dict) and str(record.get("client_id") or "").strip()
+        ]
+        state["oauth_authorization_codes"] = [
+            {
+                "code_id": record.get("code_id"),
+                "code_hash": record.get("code_hash", ""),
+                "user_id": record.get("user_id"),
+                "username": str(record.get("username") or "").strip().lower(),
+                "workspace_id": record.get("workspace_id"),
+                "client_id": record.get("client_id", ""),
+                "redirect_uri": record.get("redirect_uri", ""),
+                "resource": record.get("resource", ""),
+                "scopes": sorted(set(record.get("scopes", []))),
+                "code_challenge": record.get("code_challenge", ""),
+                "code_challenge_method": record.get("code_challenge_method", "S256"),
+                "status": record.get("status", "active"),
+                "created_at": record.get("created_at", _utc_now()),
+                "expires_at": record.get("expires_at", _utc_now()),
+                "used_at": record.get("used_at"),
+                "updated_at": record.get("updated_at", _utc_now()),
+            }
+            for record in state.get("oauth_authorization_codes", [])
+            if isinstance(record, dict) and record.get("code_hash") and record.get("client_id")
+        ]
+        state["oauth_access_tokens"] = [
+            {
+                "token_id": record.get("token_id"),
+                "token_hash": record.get("token_hash", ""),
+                "token_prefix": record.get("token_prefix", ""),
+                "user_id": record.get("user_id"),
+                "username": str(record.get("username") or "").strip().lower(),
+                "workspace_id": record.get("workspace_id"),
+                "client_id": record.get("client_id", ""),
+                "resource": record.get("resource", ""),
+                "scopes": sorted(set(record.get("scopes", []))),
+                "status": record.get("status", "active"),
+                "created_at": record.get("created_at", _utc_now()),
+                "expires_at": record.get("expires_at", _utc_now()),
+                "last_used_at": record.get("last_used_at"),
+                "updated_at": record.get("updated_at", _utc_now()),
+            }
+            for record in state.get("oauth_access_tokens", [])
+            if isinstance(record, dict) and record.get("token_hash") and record.get("client_id")
+        ]
+        state["oauth_refresh_tokens"] = [
+            {
+                "token_id": record.get("token_id"),
+                "token_hash": record.get("token_hash", ""),
+                "token_prefix": record.get("token_prefix", ""),
+                "user_id": record.get("user_id"),
+                "username": str(record.get("username") or "").strip().lower(),
+                "workspace_id": record.get("workspace_id"),
+                "client_id": record.get("client_id", ""),
+                "resource": record.get("resource", ""),
+                "scopes": sorted(set(record.get("scopes", []))),
+                "status": record.get("status", "active"),
+                "created_at": record.get("created_at", _utc_now()),
+                "expires_at": record.get("expires_at", _utc_now()),
+                "rotated_at": record.get("rotated_at"),
+                "updated_at": record.get("updated_at", _utc_now()),
+            }
+            for record in state.get("oauth_refresh_tokens", [])
+            if isinstance(record, dict) and record.get("token_hash") and record.get("client_id")
+        ]
+        state["usage_counters"] = [
+            {
+                "workspace_id": record.get("workspace_id"),
+                "metric": record.get("metric"),
+                "count": int(record.get("count", 0)),
+                "metadata": record.get("metadata", {}) if isinstance(record.get("metadata"), dict) else {},
+                "updated_at": record.get("updated_at", _utc_now()),
+            }
+            for record in state.get("usage_counters", [])
+            if isinstance(record, dict) and record.get("workspace_id") and record.get("metric")
+        ]
+        return state
+
+    @staticmethod
+    def _hash_api_token(raw_token: str) -> str:
+        """Return a stable SHA256 digest for one raw API token."""
+
+        normalized = raw_token.strip()
+        if not normalized:
+            return ""
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _hash_password(password: str) -> str:
+        """Return a salted scrypt password hash."""
+
+        normalized = password.strip()
+        if not normalized:
+            return ""
+        salt = secrets.token_bytes(16)
+        derived = hashlib.scrypt(
+            normalized.encode("utf-8"),
+            salt=salt,
+            n=2**14,
+            r=8,
+            p=1,
+            dklen=32,
+        )
+        return f"{salt.hex()}:{derived.hex()}"
+
+    @staticmethod
+    def _verify_password(password: str, stored_hash: str) -> bool:
+        """Return whether `password` matches the stored salted scrypt hash."""
+
+        normalized = password.strip()
+        if not normalized or ":" not in stored_hash:
+            return False
+        salt_hex, derived_hex = stored_hash.split(":", 1)
+        try:
+            salt = bytes.fromhex(salt_hex)
+            expected = bytes.fromhex(derived_hex)
+        except ValueError:
+            return False
+        derived = hashlib.scrypt(
+            normalized.encode("utf-8"),
+            salt=salt,
+            n=2**14,
+            r=8,
+            p=1,
+            dklen=len(expected),
+        )
+        return hmac.compare_digest(derived, expected)
+
+    @staticmethod
+    def _future_timestamp(seconds: int) -> str:
+        """Return an ISO timestamp `seconds` in the future."""
+
+        return (datetime.now(timezone.utc) + timedelta(seconds=max(seconds, 1))).isoformat()
+
+    @staticmethod
+    def _is_expired(timestamp: Any) -> bool:
+        """Return whether an ISO timestamp is missing, malformed, or in the past."""
+
+        if not timestamp:
+            return True
+        try:
+            expires_at = datetime.fromisoformat(str(timestamp))
+        except ValueError:
+            return True
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        return expires_at <= datetime.now(timezone.utc)
+
+    def _touch_state(self, state: dict[str, Any]) -> dict[str, Any]:
+        timestamp = _utc_now()
+        state["app"]["last_seen_at"] = timestamp
+        state["app"]["updated_at"] = timestamp
+        return state
+
+    def _initialize_store(self) -> None:
+        """Create or migrate the SQLite store at `state_path`.
+
+        We keep using the configured path directly so existing environment
+        variables and status payloads do not need to change.
+        """
+
+        if self.state_path.exists() and not self._is_sqlite_file(self.state_path):
+            self._migrate_legacy_json_file()
+
+        with self._connect() as conn:
+            self._ensure_schema(conn)
+            self._ensure_state_row(conn)
+
+    @staticmethod
+    def _is_sqlite_file(path: Path) -> bool:
+        """Return whether the existing file is already a SQLite database."""
+
+        if not path.exists() or path.stat().st_size < len(_SQLITE_MAGIC):
+            return False
+        with path.open("rb") as handle:
+            return handle.read(len(_SQLITE_MAGIC)) == _SQLITE_MAGIC
+
+    def _migrate_legacy_json_file(self) -> None:
+        """Migrate an existing JSON state file into the SQLite-backed store."""
+
+        try:
+            legacy_payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            legacy_payload = self._default_state()
+
+        backup_path = self.state_path.with_name(f"{self.state_path.name}.legacy-json.bak")
+        self.state_path.replace(backup_path)
+
+        with self._connect() as conn:
+            self._ensure_schema(conn)
+            self._write_state_to_connection(conn, self._normalize(legacy_payload))
+
+    def _connect(self) -> sqlite3.Connection:
+        """Return a configured SQLite connection for the state store."""
+
+        conn = sqlite3.connect(str(self.state_path), timeout=30, isolation_level=None)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=FULL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        return conn
+
+    def _ensure_schema(self, conn: sqlite3.Connection) -> None:
+        """Create the single-row state table if it does not exist yet."""
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS product_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                payload TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+
+    def _ensure_state_row(self, conn: sqlite3.Connection) -> None:
+        """Insert the default state row if the store is still empty."""
+
+        row = conn.execute("SELECT 1 FROM product_state WHERE id = 1").fetchone()
+        if row is None:
+            self._write_state_to_connection(conn, self._default_state())
+
+    def _load_state_from_connection(self, conn: sqlite3.Connection) -> dict[str, Any]:
+        """Load and normalize the current state payload from SQLite."""
+
+        self._ensure_schema(conn)
+        row = conn.execute("SELECT payload FROM product_state WHERE id = 1").fetchone()
+        if row is None:
+            state = self._default_state()
+            self._write_state_to_connection(conn, state)
+            return self._normalize(state)
+
+        try:
+            payload = json.loads(str(row[0]))
+        except json.JSONDecodeError:
+            payload = self._default_state()
+            self._write_state_to_connection(conn, payload)
+        return self._normalize(payload)
+
+    def _write_state_to_connection(self, conn: sqlite3.Connection, state: dict[str, Any]) -> None:
+        """Persist one normalized state payload to SQLite."""
+
+        normalized = self._normalize(state)
+        conn.execute(
+            """
+            INSERT INTO product_state (id, payload, updated_at)
+            VALUES (1, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                payload = excluded.payload,
+                updated_at = excluded.updated_at
+            """,
+            (json.dumps(normalized, indent=2, sort_keys=True), _utc_now()),
+        )
+
+    @contextmanager
+    def _transaction(self) -> Generator[sqlite3.Connection, None, None]:
+        """Yield a connection wrapped in an explicit write transaction."""
+
+        conn = self._connect()
+        self._ensure_schema(conn)
+        self._ensure_state_row(conn)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def _update(self, mutate: Any) -> Any:
+        """Load, mutate, and persist the state inside one SQLite transaction."""
+
+        with self._transaction() as conn:
+            state = self._load_state_from_connection(conn)
+            result = mutate(state)
+            self._write_state_to_connection(conn, state)
+            return result

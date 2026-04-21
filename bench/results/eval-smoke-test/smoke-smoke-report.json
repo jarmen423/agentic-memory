@@ -1,0 +1,1232 @@
+{
+  "backend": "smoke",
+  "profile": "smoke",
+  "pool_limit": 10,
+  "aggregates": {
+    "code": {
+      "baseline": {
+        "query_count": 5,
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_p50_ms": 0.06910000229254365,
+        "latency_p95_ms": 0.12649999553104863,
+        "rerank_applied_rate": 0.0,
+        "rerank_fallback_rate": 1.0,
+        "rerank_abstained_rate": 0.0
+      },
+      "graph": {
+        "query_count": 5,
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_p50_ms": 0.18229999841423705,
+        "latency_p95_ms": 0.25830000231508166,
+        "rerank_applied_rate": 0.0,
+        "rerank_fallback_rate": 1.0,
+        "rerank_abstained_rate": 0.0
+      },
+      "graph_rerank": {
+        "query_count": 5,
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_p50_ms": 0.22370000078808516,
+        "latency_p95_ms": 0.2629000009619631,
+        "rerank_applied_rate": 1.0,
+        "rerank_fallback_rate": 0.0,
+        "rerank_abstained_rate": 0.0
+      }
+    },
+    "conversation": {
+      "baseline": {
+        "query_count": 5,
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_p50_ms": 0.18489999638404697,
+        "latency_p95_ms": 0.22009999520378187,
+        "rerank_applied_rate": 0.0,
+        "rerank_fallback_rate": 1.0,
+        "rerank_abstained_rate": 0.0
+      },
+      "temporal": {
+        "query_count": 5,
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_p50_ms": 0.08520000119460747,
+        "latency_p95_ms": 0.20710000535473228,
+        "rerank_applied_rate": 0.0,
+        "rerank_fallback_rate": 1.0,
+        "rerank_abstained_rate": 0.0
+      },
+      "temporal_rerank": {
+        "query_count": 5,
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_p50_ms": 0.11280000035185367,
+        "latency_p95_ms": 0.12070000229869038,
+        "rerank_applied_rate": 1.0,
+        "rerank_fallback_rate": 0.0,
+        "rerank_abstained_rate": 0.0
+      }
+    },
+    "research": {
+      "baseline": {
+        "query_count": 5,
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_p50_ms": 0.19969999993918464,
+        "latency_p95_ms": 0.3862000012304634,
+        "rerank_applied_rate": 0.0,
+        "rerank_fallback_rate": 1.0,
+        "rerank_abstained_rate": 0.0
+      },
+      "temporal": {
+        "query_count": 5,
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_p50_ms": 0.09369999315822497,
+        "latency_p95_ms": 0.13380000018514693,
+        "rerank_applied_rate": 0.0,
+        "rerank_fallback_rate": 1.0,
+        "rerank_abstained_rate": 0.0
+      },
+      "temporal_rerank": {
+        "query_count": 5,
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_p50_ms": 0.10489999840501696,
+        "latency_p95_ms": 0.1253000009455718,
+        "rerank_applied_rate": 1.0,
+        "rerank_fallback_rate": 0.0,
+        "rerank_abstained_rate": 0.0
+      }
+    }
+  },
+  "results": [
+    {
+      "query_id": "code-smoke-001",
+      "domain": "code",
+      "mode": "baseline",
+      "expected_ids": [
+        "src/agentic_memory/server/reranking.py::rerank_documents"
+      ],
+      "returned_ids": [
+        "src/agentic_memory/server/reranking.py::rerank_documents",
+        "src/agentic_memory/server/research_search.py::search_research"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.12649999553104863,
+        "result_count": 2,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "code-smoke-001",
+      "domain": "code",
+      "mode": "graph",
+      "expected_ids": [
+        "src/agentic_memory/server/reranking.py::rerank_documents"
+      ],
+      "returned_ids": [
+        "src/agentic_memory/server/reranking.py::rerank_documents",
+        "src/agentic_memory/server/reranking.py"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.25830000231508166,
+        "result_count": 2,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "code-smoke-001",
+      "domain": "code",
+      "mode": "graph_rerank",
+      "expected_ids": [
+        "src/agentic_memory/server/reranking.py::rerank_documents"
+      ],
+      "returned_ids": [
+        "src/agentic_memory/server/reranking.py::rerank_documents",
+        "src/agentic_memory/server/reranking.py"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.2629000009619631,
+        "result_count": 2,
+        "rerank_applied": true,
+        "rerank_fallback_reason": null,
+        "rerank_provider": "deterministic_smoke",
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "code-smoke-002",
+      "domain": "code",
+      "mode": "baseline",
+      "expected_ids": [
+        "src/agentic_memory/server/code_search.py::_run_personalized_page_rank"
+      ],
+      "returned_ids": [
+        "src/agentic_memory/server/code_search.py::_run_personalized_page_rank",
+        "src/agentic_memory/server/code_search.py::_materialize_ranked_rows"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.06910000229254365,
+        "result_count": 2,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "code-smoke-002",
+      "domain": "code",
+      "mode": "graph",
+      "expected_ids": [
+        "src/agentic_memory/server/code_search.py::_run_personalized_page_rank"
+      ],
+      "returned_ids": [
+        "src/agentic_memory/server/code_search.py::_run_personalized_page_rank",
+        "src/agentic_memory/server/code_search.py::_materialize_ranked_rows"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.1807000007829629,
+        "result_count": 2,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "code-smoke-002",
+      "domain": "code",
+      "mode": "graph_rerank",
+      "expected_ids": [
+        "src/agentic_memory/server/code_search.py::_run_personalized_page_rank"
+      ],
+      "returned_ids": [
+        "src/agentic_memory/server/code_search.py::_run_personalized_page_rank",
+        "src/agentic_memory/server/code_search.py::_materialize_ranked_rows"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.2286000017193146,
+        "result_count": 2,
+        "rerank_applied": true,
+        "rerank_fallback_reason": null,
+        "rerank_provider": "deterministic_smoke",
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "code-smoke-003",
+      "domain": "code",
+      "mode": "baseline",
+      "expected_ids": [
+        "src/agentic_memory/server/research_search.py::search_research"
+      ],
+      "returned_ids": [
+        "src/agentic_memory/server/research_search.py::search_research",
+        "src/agentic_memory/server/research_search.py::_normalize_temporal_results"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.06330000178422779,
+        "result_count": 2,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "code-smoke-003",
+      "domain": "code",
+      "mode": "graph",
+      "expected_ids": [
+        "src/agentic_memory/server/research_search.py::search_research"
+      ],
+      "returned_ids": [
+        "src/agentic_memory/server/research_search.py::search_research",
+        "src/agentic_memory/server/research_search.py::_normalize_temporal_results"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.18229999841423705,
+        "result_count": 2,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "code-smoke-003",
+      "domain": "code",
+      "mode": "graph_rerank",
+      "expected_ids": [
+        "src/agentic_memory/server/research_search.py::search_research"
+      ],
+      "returned_ids": [
+        "src/agentic_memory/server/research_search.py::search_research",
+        "src/agentic_memory/server/research_search.py::_normalize_temporal_results"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.21629999537253752,
+        "result_count": 2,
+        "rerank_applied": true,
+        "rerank_fallback_reason": null,
+        "rerank_provider": "deterministic_smoke",
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "code-smoke-004",
+      "domain": "code",
+      "mode": "baseline",
+      "expected_ids": [
+        "src/agentic_memory/server/tools.py::search_conversation_turns_sync"
+      ],
+      "returned_ids": [
+        "src/agentic_memory/server/tools.py::search_conversation_turns_sync",
+        "src/agentic_memory/server/tools.py::_apply_conversation_rerank"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.0777000022935681,
+        "result_count": 2,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "code-smoke-004",
+      "domain": "code",
+      "mode": "graph",
+      "expected_ids": [
+        "src/agentic_memory/server/tools.py::search_conversation_turns_sync"
+      ],
+      "returned_ids": [
+        "src/agentic_memory/server/tools.py::search_conversation_turns_sync",
+        "src/agentic_memory/server/tools.py::_apply_conversation_rerank"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.22370000078808516,
+        "result_count": 2,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "code-smoke-004",
+      "domain": "code",
+      "mode": "graph_rerank",
+      "expected_ids": [
+        "src/agentic_memory/server/tools.py::search_conversation_turns_sync"
+      ],
+      "returned_ids": [
+        "src/agentic_memory/server/tools.py::search_conversation_turns_sync",
+        "src/agentic_memory/server/tools.py::_apply_conversation_rerank"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.22059999901102856,
+        "result_count": 2,
+        "rerank_applied": true,
+        "rerank_fallback_reason": null,
+        "rerank_provider": "deterministic_smoke",
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "code-smoke-005",
+      "domain": "code",
+      "mode": "baseline",
+      "expected_ids": [
+        "src/am_server/routes/dashboard.py::_build_recent_searches"
+      ],
+      "returned_ids": [
+        "src/am_server/routes/dashboard.py::_build_recent_searches",
+        "src/am_server/routes/dashboard.py::dashboard_recent_searches"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.0594000011915341,
+        "result_count": 2,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "code-smoke-005",
+      "domain": "code",
+      "mode": "graph",
+      "expected_ids": [
+        "src/am_server/routes/dashboard.py::_build_recent_searches"
+      ],
+      "returned_ids": [
+        "src/am_server/routes/dashboard.py::_build_recent_searches",
+        "src/am_server/routes/dashboard.py::dashboard_recent_searches"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.17179999849759042,
+        "result_count": 2,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "code-smoke-005",
+      "domain": "code",
+      "mode": "graph_rerank",
+      "expected_ids": [
+        "src/am_server/routes/dashboard.py::_build_recent_searches"
+      ],
+      "returned_ids": [
+        "src/am_server/routes/dashboard.py::_build_recent_searches",
+        "src/am_server/routes/dashboard.py::dashboard_recent_searches"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.22370000078808516,
+        "result_count": 2,
+        "rerank_applied": true,
+        "rerank_fallback_reason": null,
+        "rerank_provider": "deterministic_smoke",
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "research-smoke-001",
+      "domain": "research",
+      "mode": "baseline",
+      "expected_ids": [
+        "research_finding:finding-neo4j"
+      ],
+      "returned_ids": [
+        "research_finding:finding-neo4j",
+        "research_finding:finding-stdb"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.3862000012304634,
+        "result_count": 2,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "research-smoke-001",
+      "domain": "research",
+      "mode": "temporal",
+      "expected_ids": [
+        "research_finding:finding-neo4j"
+      ],
+      "returned_ids": [
+        "research_finding:finding-neo4j"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.13380000018514693,
+        "result_count": 1,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "research-smoke-001",
+      "domain": "research",
+      "mode": "temporal_rerank",
+      "expected_ids": [
+        "research_finding:finding-neo4j"
+      ],
+      "returned_ids": [
+        "research_finding:finding-neo4j"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.1253000009455718,
+        "result_count": 1,
+        "rerank_applied": true,
+        "rerank_fallback_reason": null,
+        "rerank_provider": "deterministic_smoke",
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "research-smoke-002",
+      "domain": "research",
+      "mode": "baseline",
+      "expected_ids": [
+        "research_finding:finding-stdb"
+      ],
+      "returned_ids": [
+        "research_finding:finding-stdb",
+        "research_finding:finding-neo4j"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.31989999843062833,
+        "result_count": 2,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "research-smoke-002",
+      "domain": "research",
+      "mode": "temporal",
+      "expected_ids": [
+        "research_finding:finding-stdb"
+      ],
+      "returned_ids": [
+        "research_finding:finding-stdb"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.09369999315822497,
+        "result_count": 1,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "research-smoke-002",
+      "domain": "research",
+      "mode": "temporal_rerank",
+      "expected_ids": [
+        "research_finding:finding-stdb"
+      ],
+      "returned_ids": [
+        "research_finding:finding-stdb"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.10869999823626131,
+        "result_count": 1,
+        "rerank_applied": true,
+        "rerank_fallback_reason": null,
+        "rerank_provider": "deterministic_smoke",
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "research-smoke-003",
+      "domain": "research",
+      "mode": "baseline",
+      "expected_ids": [
+        "research_finding:finding-cohere-endpoint"
+      ],
+      "returned_ids": [
+        "research_finding:finding-cohere-endpoint",
+        "research_finding:finding-openrouter-fallback"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.19969999993918464,
+        "result_count": 2,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "research-smoke-003",
+      "domain": "research",
+      "mode": "temporal",
+      "expected_ids": [
+        "research_finding:finding-cohere-endpoint"
+      ],
+      "returned_ids": [
+        "research_finding:finding-cohere-endpoint"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.08150000212481245,
+        "result_count": 1,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "research-smoke-003",
+      "domain": "research",
+      "mode": "temporal_rerank",
+      "expected_ids": [
+        "research_finding:finding-cohere-endpoint"
+      ],
+      "returned_ids": [
+        "research_finding:finding-cohere-endpoint"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.08849999721860513,
+        "result_count": 1,
+        "rerank_applied": true,
+        "rerank_fallback_reason": null,
+        "rerank_provider": "deterministic_smoke",
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "research-smoke-004",
+      "domain": "research",
+      "mode": "baseline",
+      "expected_ids": [
+        "research_finding:finding-openrouter-fallback"
+      ],
+      "returned_ids": [
+        "research_finding:finding-openrouter-fallback",
+        "research_finding:finding-cohere-endpoint"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.163800003065262,
+        "result_count": 2,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "research-smoke-004",
+      "domain": "research",
+      "mode": "temporal",
+      "expected_ids": [
+        "research_finding:finding-openrouter-fallback"
+      ],
+      "returned_ids": [
+        "research_finding:finding-openrouter-fallback"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.10409999958937988,
+        "result_count": 1,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "research-smoke-004",
+      "domain": "research",
+      "mode": "temporal_rerank",
+      "expected_ids": [
+        "research_finding:finding-openrouter-fallback"
+      ],
+      "returned_ids": [
+        "research_finding:finding-openrouter-fallback"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.10090000432683155,
+        "result_count": 1,
+        "rerank_applied": true,
+        "rerank_fallback_reason": null,
+        "rerank_provider": "deterministic_smoke",
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "research-smoke-005",
+      "domain": "research",
+      "mode": "baseline",
+      "expected_ids": [
+        "research_finding:finding-eval-metrics"
+      ],
+      "returned_ids": [
+        "research_finding:finding-eval-metrics",
+        "research_finding:finding-openrouter-fallback"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.1697999978205189,
+        "result_count": 2,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "research-smoke-005",
+      "domain": "research",
+      "mode": "temporal",
+      "expected_ids": [
+        "research_finding:finding-eval-metrics"
+      ],
+      "returned_ids": [
+        "research_finding:finding-eval-metrics"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.08860000525601208,
+        "result_count": 1,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "research-smoke-005",
+      "domain": "research",
+      "mode": "temporal_rerank",
+      "expected_ids": [
+        "research_finding:finding-eval-metrics"
+      ],
+      "returned_ids": [
+        "research_finding:finding-eval-metrics"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.10489999840501696,
+        "result_count": 1,
+        "rerank_applied": true,
+        "rerank_fallback_reason": null,
+        "rerank_provider": "deterministic_smoke",
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "conversation-smoke-001",
+      "domain": "conversation",
+      "mode": "baseline",
+      "expected_ids": [
+        "sess-001:0"
+      ],
+      "returned_ids": [
+        "sess-001:0"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.18489999638404697,
+        "result_count": 1,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "conversation-smoke-001",
+      "domain": "conversation",
+      "mode": "temporal",
+      "expected_ids": [
+        "sess-001:0"
+      ],
+      "returned_ids": [
+        "sess-001:0"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.08520000119460747,
+        "result_count": 1,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "conversation-smoke-001",
+      "domain": "conversation",
+      "mode": "temporal_rerank",
+      "expected_ids": [
+        "sess-001:0"
+      ],
+      "returned_ids": [
+        "sess-001:0"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.10969999857479706,
+        "result_count": 1,
+        "rerank_applied": true,
+        "rerank_fallback_reason": null,
+        "rerank_provider": "deterministic_smoke",
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "conversation-smoke-002",
+      "domain": "conversation",
+      "mode": "baseline",
+      "expected_ids": [
+        "sess-001:1"
+      ],
+      "returned_ids": [
+        "sess-001:1"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.14560000272467732,
+        "result_count": 1,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "conversation-smoke-002",
+      "domain": "conversation",
+      "mode": "temporal",
+      "expected_ids": [
+        "sess-001:1"
+      ],
+      "returned_ids": [
+        "sess-001:1"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.0774000000092201,
+        "result_count": 1,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "conversation-smoke-002",
+      "domain": "conversation",
+      "mode": "temporal_rerank",
+      "expected_ids": [
+        "sess-001:1"
+      ],
+      "returned_ids": [
+        "sess-001:1"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.12009999772999436,
+        "result_count": 1,
+        "rerank_applied": true,
+        "rerank_fallback_reason": null,
+        "rerank_provider": "deterministic_smoke",
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "conversation-smoke-003",
+      "domain": "conversation",
+      "mode": "baseline",
+      "expected_ids": [
+        "sess-001:2"
+      ],
+      "returned_ids": [
+        "sess-001:2"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.1788000008673407,
+        "result_count": 1,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "conversation-smoke-003",
+      "domain": "conversation",
+      "mode": "temporal",
+      "expected_ids": [
+        "sess-001:2"
+      ],
+      "returned_ids": [
+        "sess-001:2"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.08719999459572136,
+        "result_count": 1,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "conversation-smoke-003",
+      "domain": "conversation",
+      "mode": "temporal_rerank",
+      "expected_ids": [
+        "sess-001:2"
+      ],
+      "returned_ids": [
+        "sess-001:2"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.11280000035185367,
+        "result_count": 1,
+        "rerank_applied": true,
+        "rerank_fallback_reason": null,
+        "rerank_provider": "deterministic_smoke",
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "conversation-smoke-004",
+      "domain": "conversation",
+      "mode": "baseline",
+      "expected_ids": [
+        "sess-001:3"
+      ],
+      "returned_ids": [
+        "sess-001:3"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.22009999520378187,
+        "result_count": 1,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "conversation-smoke-004",
+      "domain": "conversation",
+      "mode": "temporal",
+      "expected_ids": [
+        "sess-001:3"
+      ],
+      "returned_ids": [
+        "sess-001:3"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.20710000535473228,
+        "result_count": 1,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "conversation-smoke-004",
+      "domain": "conversation",
+      "mode": "temporal_rerank",
+      "expected_ids": [
+        "sess-001:3"
+      ],
+      "returned_ids": [
+        "sess-001:3"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.12070000229869038,
+        "result_count": 1,
+        "rerank_applied": true,
+        "rerank_fallback_reason": null,
+        "rerank_provider": "deterministic_smoke",
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "conversation-smoke-005",
+      "domain": "conversation",
+      "mode": "baseline",
+      "expected_ids": [
+        "sess-001:4"
+      ],
+      "returned_ids": [
+        "sess-001:4"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.2106000029016286,
+        "result_count": 1,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "conversation-smoke-005",
+      "domain": "conversation",
+      "mode": "temporal",
+      "expected_ids": [
+        "sess-001:4"
+      ],
+      "returned_ids": [
+        "sess-001:4"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.07470000127796084,
+        "result_count": 1,
+        "rerank_applied": false,
+        "rerank_fallback_reason": "disabled_for_eval_mode",
+        "rerank_provider": null,
+        "rerank_abstained": false
+      }
+    },
+    {
+      "query_id": "conversation-smoke-005",
+      "domain": "conversation",
+      "mode": "temporal_rerank",
+      "expected_ids": [
+        "sess-001:4"
+      ],
+      "returned_ids": [
+        "sess-001:4"
+      ],
+      "metrics": {
+        "recall_at_10": 1.0,
+        "recall_at_pool": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "success_at_5": 1.0,
+        "latency_ms": 0.09359999967273325,
+        "result_count": 1,
+        "rerank_applied": true,
+        "rerank_fallback_reason": null,
+        "rerank_provider": "deterministic_smoke",
+        "rerank_abstained": false
+      }
+    }
+  ]
+}

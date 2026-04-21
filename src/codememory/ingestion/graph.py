@@ -1,0 +1,1368 @@
+"""Neo4j code-graph ingestion: multi-pass pipeline and hybrid retrieval.
+
+Builds a **structural + semantic** representation of a repository in Neo4j:
+``File`` / ``Function`` / ``Class`` / ``Chunk`` nodes, ``IMPORTS`` and ``CALLS``
+edges, and vector indexes for chunk embeddings. The design follows the legacy
+four-pass hybrid GraphRAG flow (structure scan → entities/chunks → imports →
+call graph), extended with circuit breaking around read queries and OpenAI
+embedding retries.
+
+Main entry points:
+    ``KnowledgeGraphBuilder.run_pipeline``: Full offline (re)index of a repo root.
+    ``KnowledgeGraphBuilder.ingest``: ``BaseIngestionPipeline`` adapter for the same.
+    ``semantic_search`` / ``get_file_dependencies``: MCP-oriented read helpers.
+
+Dependencies:
+    Neo4j driver, OpenAI client (optional; zero-vector fallback), tree-sitter
+    Python and JavaScript grammars.
+"""
+
+import os
+import hashlib
+import logging
+import time
+import fnmatch
+import math
+import posixpath
+import re
+from pathlib import Path
+from typing import Any, List, Dict, Optional, Tuple, Set
+from functools import wraps
+
+import openai
+import neo4j
+from openai import OpenAI
+from tree_sitter import Language, Parser, Query, QueryCursor
+
+# Import language bindings
+import tree_sitter_python
+import tree_sitter_javascript
+
+from codememory.core.base import BaseIngestionPipeline
+from codememory.core.connection import ConnectionManager
+from codememory.core.registry import register_source
+
+logger = logging.getLogger(__name__)
+
+# Register code ingestion source at module load time
+register_source("code_treesitter", ["Memory", "Code", "Chunk"])
+
+
+class CircuitBreaker:
+    """Fail-fast guard around Neo4j operations after repeated ``ServiceUnavailable``.
+
+    States:
+        CLOSED: Normal operation; failures increment a counter.
+        OPEN: Short-circuit with ``ServiceUnavailable`` until ``recovery_timeout``.
+        HALF_OPEN: One successful call closes the circuit again.
+
+    Attributes:
+        failure_threshold: Consecutive failures before opening the circuit.
+        recovery_timeout: Seconds to wait before attempting HALF_OPEN.
+        failure_count: Current consecutive failure count in CLOSED/HALF_OPEN.
+        last_failure_time: Epoch seconds of the last recorded failure.
+        state: ``"CLOSED"``, ``"OPEN"``, or ``"HALF_OPEN"``.
+    """
+
+    def __init__(self, failure_threshold=5, recovery_timeout=30):
+        """Create a breaker with the given thresholds.
+
+        Args:
+            failure_threshold: Number of Neo4j ``ServiceUnavailable`` errors
+                before the circuit opens. Defaults to 5.
+            recovery_timeout: Seconds after opening before trying HALF_OPEN.
+                Defaults to 30.
+        """
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.failure_count = 0
+        self.last_failure_time = None
+        self.state = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
+        
+    def call(self, func, *args, **kwargs):
+        """Run ``func`` unless the circuit is open, recording Neo4j failures.
+
+        Args:
+            func: Callable to invoke (typically a lambda wrapping a session query).
+            *args: Positional arguments forwarded to ``func``.
+            **kwargs: Keyword arguments forwarded to ``func``.
+
+        Returns:
+            The return value of ``func``.
+
+        Raises:
+            neo4j.exceptions.ServiceUnavailable: When the circuit is OPEN and
+                still within ``recovery_timeout``, or when ``func`` raises it
+                and the threshold is reached.
+        """
+        if self.state == "OPEN":
+            if time.time() - self.last_failure_time > self.recovery_timeout:
+                self.state = "HALF_OPEN"
+                logger.info("Circuit breaker entering HALF_OPEN state")
+            else:
+                raise neo4j.exceptions.ServiceUnavailable(
+                    "Circuit breaker is OPEN - Neo4j connection temporarily disabled"
+                )
+        
+        try:
+            result = func(*args, **kwargs)
+            if self.state == "HALF_OPEN":
+                self.state = "CLOSED"
+                self.failure_count = 0
+                logger.info("Circuit breaker reset to CLOSED")
+            return result
+        except neo4j.exceptions.ServiceUnavailable as e:
+            self._record_failure()
+            raise e
+            
+    def _record_failure(self):
+        """Increment failure count and open the circuit when at threshold."""
+        self.failure_count += 1
+        self.last_failure_time = time.time()
+        
+        if self.failure_count >= self.failure_threshold:
+            if self.state != "OPEN":
+                self.state = "OPEN"
+                logger.error(f"Circuit breaker OPENED after {self.failure_count} failures")
+
+
+def retry_on_openai_error(max_retries=3, delay=1.0):
+    """Decorator factory that retries a function on transient OpenAI API errors.
+
+    Wraps the decorated function with exponential-backoff retry logic for the
+    three OpenAI error classes that indicate a transient condition: rate limits,
+    connection failures, and request timeouts. Non-retryable exceptions
+    (e.g., ``AuthenticationError``, ``InvalidRequestError``) propagate
+    immediately without retrying.
+
+    Implemented as a two-level closure:
+      - ``decorator(func)`` — receives the function being decorated and returns
+        ``wrapper``.
+      - ``wrapper(*args, **kwargs)`` — the actual retry loop. On each attempt
+        it calls the original function; if a transient error occurs and retries
+        remain it sleeps ``delay * 2**attempt`` seconds before retrying.
+
+    Used by ``KnowledgeGraphBuilder`` to guard its embedding calls against
+    the OpenAI rate limiter when indexing large repos.
+
+    Args:
+        max_retries: Maximum number of total attempts (including the first).
+            Defaults to 3.
+        delay: Base delay in seconds between attempts. Doubles on each retry
+            (exponential backoff). Defaults to 1.0 s.
+
+    Returns:
+        A decorator that, when applied to a function, adds retry behaviour for
+        ``openai.RateLimitError``, ``openai.APIConnectionError``, and
+        ``openai.APITimeoutError``.
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except (openai.RateLimitError, openai.APIConnectionError, openai.APITimeoutError) as e:
+                    last_exception = e
+                    if attempt < max_retries - 1:
+                        wait_time = delay * (2 ** attempt)  # Exponential backoff
+                        logger.warning(f"OpenAI API error (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {wait_time:.1f}s...")
+                        time.sleep(wait_time)
+                    else:
+                        logger.error(f"OpenAI API failed after {max_retries} attempts: {e}")
+                        raise
+            raise last_exception
+        return wrapper
+    return decorator
+
+
+class KnowledgeGraphBuilder(BaseIngestionPipeline):
+    """
+    Orchestrates the creation of the Hybrid GraphRAG system.
+
+    Attributes:
+        driver (neo4j.Driver): Database connection.
+        openai_client (OpenAI): Embedding client.
+        parsers (Dict): Tree-sitter parsers for supported languages.
+        repo_root (Path): Root path of the repository being indexed.
+        token_usage (Dict): Tracks OpenAI API token usage and costs.
+    """
+
+    # OpenAI Pricing (as of Dec 2024)
+    EMBEDDING_MODEL = "text-embedding-3-large"
+    COST_PER_1M_TOKENS = 0.13  # USD
+    VECTOR_DIMENSIONS = 3072
+    DOMAIN_LABEL = "Code"
+
+    def __init__(
+        self,
+        uri: str,
+        user: str,
+        password: str,
+        openai_key: Optional[str],
+        repo_root: Optional[Path] = None,
+        ignore_dirs: Optional[Set[str]] = None,
+        ignore_files: Optional[Set[str]] = None,
+        ignore_patterns: Optional[Set[str]] = None,
+    ):
+        """
+        Initialize the KnowledgeGraphBuilder.
+
+        Args:
+            uri: Neo4j connection URI (e.g., "bolt://localhost:7687")
+            user: Neo4j username
+            password: Neo4j password
+            openai_key: OpenAI API key for embeddings (optional; semantic search degrades without it)
+            repo_root: Root path of repository to index (optional, can be set per-method)
+            ignore_dirs: Set of directory names to ignore during indexing
+            ignore_files: Set of file patterns to ignore during indexing
+            ignore_patterns: Set of .graphignore-style path/file patterns to skip
+        """
+        # Create ConnectionManager internally — preserves existing caller interface
+        conn = ConnectionManager(uri=uri, user=user, password=password)
+        super().__init__(conn)
+
+        # Keep existing driver reference for backward compat with internal methods
+        self.driver = self._conn.driver
+        
+        # Circuit breaker for Neo4j connection failures
+        self.circuit_breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=30)
+        self.openai_client = OpenAI(api_key=openai_key) if openai_key else None
+        self.parsers = self._init_parsers()
+        self.repo_root = repo_root
+        self.token_usage = {
+            "embedding_tokens": 0,
+            "embedding_calls": 0,
+            "total_cost_usd": 0.0,
+        }
+
+        # Default ignore patterns
+        self.ignore_dirs = ignore_dirs or {
+            "node_modules",
+            "__pycache__",
+            ".git",
+            "dist",
+            "build",
+            ".venv",
+            "venv",
+            ".pytest_cache",
+            ".mypy_cache",
+            "target",
+            "bin",
+            "obj",
+        }
+        self.ignore_files = ignore_files or set()
+        self.ignore_patterns = ignore_patterns or set()
+
+    def _should_ignore_dir(self, dir_name: str) -> bool:
+        """Return True when a directory should be excluded from scanning."""
+        if any(fnmatch.fnmatch(dir_name, pattern) for pattern in self.ignore_dirs):
+            return True
+        # Catch common virtualenv naming patterns like .venv-foo / venv-test.
+        return dir_name.startswith(".venv") or dir_name.startswith("venv")
+
+    def _should_ignore_path(self, rel_path: str) -> bool:
+        """Return True when a relative path matches .graphignore patterns."""
+        if not self.ignore_patterns:
+            return False
+
+        normalized = rel_path.replace("\\", "/")
+        basename = Path(normalized).name
+        for pattern in self.ignore_patterns:
+            p = pattern.strip().replace("\\", "/")
+            if not p:
+                continue
+            if p.endswith("/"):
+                prefix = p.rstrip("/")
+                if normalized == prefix or normalized.startswith(prefix + "/"):
+                    return True
+            if "/" in p:
+                if fnmatch.fnmatch(normalized, p):
+                    return True
+            else:
+                if fnmatch.fnmatch(basename, p):
+                    return True
+        return False
+
+    def _should_prune_file(
+        self, rel_path: str, repo_path: Path, supported_extensions: Set[str]
+    ) -> bool:
+        """Return True if an existing File node should be removed from the graph."""
+        normalized = rel_path.replace("\\", "/")
+        rel_obj = Path(normalized)
+
+        if rel_obj.name in self.ignore_files:
+            return True
+        if rel_obj.suffix not in supported_extensions:
+            return True
+        if any(self._should_ignore_dir(part) for part in rel_obj.parts[:-1]):
+            return True
+        if self._should_ignore_path(normalized):
+            return True
+
+        return not (repo_path / rel_obj).exists()
+
+    def _delete_file_subgraph(self, session: neo4j.Session, rel_path: str):
+        """Delete one File node and all derived entities/chunks."""
+        session.run(
+            """
+            MATCH (f:File {path: $path})-[:DEFINES]->(entity)
+            OPTIONAL MATCH (chunk:Chunk)-[:DESCRIBES]->(entity)
+            DETACH DELETE chunk, entity
+            """,
+            path=rel_path,
+        )
+        session.run("MATCH (f:File {path: $path}) DETACH DELETE f", path=rel_path)
+
+    def _init_parsers(self) -> Dict[str, Parser]:
+        """Initializes Tree-sitter parsers for Python and JS/TS."""
+        parsers = {}
+
+        # Python
+        py_lang = Language(tree_sitter_python.language())
+        parsers[".py"] = Parser(py_lang)
+
+        # JavaScript/TypeScript
+        js_lang = Language(tree_sitter_javascript.language())
+        js_parser = Parser(js_lang)
+        for ext in [".js", ".jsx", ".ts", ".tsx"]:
+            parsers[ext] = js_parser
+
+        return parsers
+
+    def ingest(self, source: Any) -> dict[str, Any]:
+        """Ingest a repository directory. Wraps the existing multi-pass pipeline.
+
+        Implements the BaseIngestionPipeline ABC contract.
+
+        Args:
+            source: Path to the repository root (str or Path).
+
+        Returns:
+            Dict summarizing the ingestion result.
+        """
+        repo_path = Path(source) if isinstance(source, str) else source
+        self.repo_root = repo_path
+        self.run_pipeline(repo_path)
+        return {"status": "complete", "domain": self.DOMAIN_LABEL}
+
+    def close(self):
+        """Closes database connection."""
+        self.driver.close()
+
+    # =========================================================================
+    # DATABASE SETUP
+    # =========================================================================
+
+    def setup_database(self):
+        """
+        Pass 0: Pre-flight Configuration.
+        Creates constraints and vector indexes to optimize ingestion and retrieval.
+        """
+        # Ingestion pipeline — Pass 0: schema guarantees MERGE keys and hybrid indexes
+        # before any file scan (Pass 1) writes nodes.
+        logger.info("🚀 [Pass 0] Configuring Database Constraints & Indexes...")
+
+        queries = [
+            # 1. Uniqueness Constraints (Critical for Merge performance)
+            "CREATE CONSTRAINT file_path_unique IF NOT EXISTS FOR (f:File) REQUIRE f.path IS UNIQUE",
+            "CREATE CONSTRAINT function_sig_unique IF NOT EXISTS FOR (f:Function) REQUIRE f.signature IS UNIQUE",
+            "CREATE CONSTRAINT class_name_unique IF NOT EXISTS FOR (c:Class) REQUIRE c.qualified_name IS UNIQUE",
+            # 2. Vector Index for Hybrid Search
+            f"""
+            CREATE VECTOR INDEX code_embeddings IF NOT EXISTS
+            FOR (c:Chunk) ON (c.embedding)
+            OPTIONS {{indexConfig: {{
+             `vector.dimensions`: {self.VECTOR_DIMENSIONS},
+             `vector.similarity_function`: 'cosine'
+            }} }}
+            """,
+            # 3. Fulltext Index for Keyword Search
+            """
+            CREATE FULLTEXT INDEX entity_text_search IF NOT EXISTS
+            FOR (n:Function|Class|File) ON EACH [n.name, n.docstring, n.path]
+            """,
+        ]
+
+        with self.driver.session() as session:
+            for q in queries:
+                try:
+                    session.run(q)
+                except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
+                    logger.warning(f"Constraint/Index check: {e}")
+        logger.info("✅ Database configured.")
+
+    # =========================================================================
+    # EMBEDDING GENERATION
+    # =========================================================================
+
+    def _calculate_ohash(self, file_path: Path) -> str:
+        """Calculates MD5 hash of file content for change detection."""
+        try:
+            return hashlib.md5(file_path.read_bytes()).hexdigest()
+        except (OSError, IOError):
+            return ""
+
+    @retry_on_openai_error(max_retries=3, delay=1.0)
+    def get_embedding(self, text: str) -> List[float]:
+        """
+        Generates embedding using OpenAI text-embedding-3-large with token tracking and truncation.
+
+        Args:
+            text: The text to embed
+
+        Returns:
+            List of floats representing the embedding vector
+        """
+        if self.openai_client is None:
+            logger.warning("OPENAI_API_KEY not configured; returning zero-vector embedding.")
+            return [0.0] * self.VECTOR_DIMENSIONS
+
+        # Truncate text to avoid OpenAI 400 Bad Request (Limit is 8192 tokens)
+        # Using 24000 chars as safety margin for most code files.
+        MAX_CHARS = 24000
+
+        if len(text) > MAX_CHARS:
+            logger.warning(
+                f"⚠️ Truncating text chunk of size {len(text)} to {MAX_CHARS} chars."
+            )
+            text = text[:MAX_CHARS] + "...[TRUNCATED]"
+
+        text = text.replace("\n", " ")
+
+        try:
+            response = self.openai_client.embeddings.create(
+                input=[text], model=self.EMBEDDING_MODEL
+            )
+
+            # Track token usage
+            tokens_used = response.usage.total_tokens
+            self.token_usage["embedding_tokens"] += tokens_used
+            self.token_usage["embedding_calls"] += 1
+            self.token_usage["total_cost_usd"] = (
+                self.token_usage["embedding_tokens"] / 1_000_000
+            ) * self.COST_PER_1M_TOKENS
+
+            return response.data[0].embedding
+        except (openai.APIError, openai.RateLimitError, openai.APIConnectionError) as e:
+            logger.error(f"❌ OpenAI Embedding Error: {e}")
+            # Return zero-vector on failure to allow pipeline to continue
+            return [0.0] * self.VECTOR_DIMENSIONS
+
+    # =========================================================================
+    # PASS 1: STRUCTURE SCAN & CHANGE DETECTION
+    # =========================================================================
+
+    def pass_1_structure_scan(
+        self, repo_path: Optional[Path] = None, supported_extensions: Optional[Set[str]] = None
+    ):
+        """
+        Scans the directory structure.
+        Creates File nodes if they are new or modified. Skips if oHash matches.
+
+        Args:
+            repo_path: Path to repository root (defaults to self.repo_root)
+            supported_extensions: Set of file extensions to process
+        """
+        repo_path = repo_path or self.repo_root
+        if not repo_path:
+            raise ValueError("repo_path must be provided either in __init__ or as parameter")
+
+        supported_extensions = supported_extensions or {".py", ".js", ".ts", ".tsx", ".jsx"}
+
+        # Pass 1: walk the repo, upsert File nodes when content hash changes, prune stale paths.
+        logger.info("📂 [Pass 1] Scanning Directory Structure...")
+
+        count = 0
+        pruned_count = 0
+        with self.driver.session() as session:
+            for root, dirs, files in os.walk(repo_path):
+                # Filter directories
+                dirs[:] = [d for d in dirs if not self._should_ignore_dir(d)]
+
+                for file_name in files:
+                    if file_name in self.ignore_files:
+                        continue
+                    file_path = Path(root) / file_name
+                    if file_path.suffix not in supported_extensions:
+                        continue
+
+                    rel_path = str(file_path.relative_to(repo_path))
+                    if self._should_ignore_path(rel_path):
+                        continue
+                    current_ohash = self._calculate_ohash(file_path)
+
+                    # Check if file exists and hash matches (Change Detection)
+                    result = session.run(
+                        "MATCH (f:File {path: $path}) RETURN f.ohash as hash", path=rel_path
+                    ).single()
+
+                    if result and result["hash"] == current_ohash:
+                        # Skip processing, but mark as visited if needed
+                        continue
+
+                    # Create/Update File Node
+                    session.run(
+                        """
+                        MERGE (f:File {path: $path})
+                        SET f.name = $name,
+                            f.ohash = $ohash,
+                            f.last_updated = datetime()
+                    """,
+                        path=rel_path,
+                        name=file_name,
+                        ohash=current_ohash,
+                    )
+                    count += 1
+
+            # Prune File nodes that are no longer indexable under current rules.
+            existing_paths = [
+                record["path"]
+                for record in session.run("MATCH (f:File) RETURN f.path as path")
+            ]
+            for rel_path in existing_paths:
+                if self._should_prune_file(rel_path, repo_path, supported_extensions):
+                    self._delete_file_subgraph(session, rel_path)
+                    pruned_count += 1
+
+        logger.info(f"✅ [Pass 1] Processed {count} new/modified files.")
+        if pruned_count:
+            logger.info(f"🧹 [Pass 1] Pruned {pruned_count} excluded/stale files from graph.")
+
+    # =========================================================================
+    # PASS 2: ENTITY DEFINITION & HYBRID CHUNKING
+    # =========================================================================
+
+    def pass_2_entity_definition(self, repo_path: Optional[Path] = None):
+        """
+        Parses files using Tree-sitter.
+        1. Extracts Classes/Functions.
+        2. Creates 'Chunk' nodes with "Contextual Prefixing".
+
+        Args:
+            repo_path: Path to repository root (defaults to self.repo_root)
+        """
+        repo_path = repo_path or self.repo_root
+        if not repo_path:
+            raise ValueError("repo_path must be provided either in __init__ or as parameter")
+
+        # Pass 2: Tree-sitter definitions → Class/Function nodes + Chunk embeddings (contextual prefix).
+        logger.info("🧠 [Pass 2] Extracting Entities & Creating Chunks...")
+
+        with self.driver.session() as session:
+            # Fetch all files that need indexing
+            result = session.run("MATCH (f:File) RETURN f.path as path")
+            files_to_process = [record["path"] for record in result]
+
+            for i, rel_path in enumerate(files_to_process):
+                print(f"[{i+1}/{len(files_to_process)}] 🧠 Processing: {rel_path}...", end="\r")
+
+                full_path = repo_path / rel_path
+                if not full_path.exists():
+                    continue
+
+                code_content = full_path.read_text(errors="ignore")
+                extension = full_path.suffix
+                parser = self.parsers.get(extension)
+                if not parser:
+                    continue
+
+                tree = parser.parse(bytes(code_content, "utf8"))
+
+                # Language-specific query to find definitions
+                if extension == ".py":
+                    query_scm = """
+                    (class_definition
+                        name: (identifier) @name
+                        body: (block) @body) @class
+                    (function_definition
+                        name: (identifier) @name
+                        body: (block) @body) @function
+                    """
+                else:  # Simple JS/TS fallback
+                    query_scm = """
+                    (class_declaration name: (identifier) @name) @class
+                    (function_declaration name: (identifier) @name) @function
+                    """
+
+                # Use updated querycursor for executing queries
+                lang = (
+                    Language(tree_sitter_python.language())
+                    if extension == ".py"
+                    else Language(tree_sitter_javascript.language())
+                )
+
+                query = Query(lang, query_scm)
+                cursor = QueryCursor(query)
+                captures = cursor.captures(tree.root_node)
+
+                # Process captures
+                for tag, nodes in captures.items():
+                    for node in nodes:
+                        node_text = code_content[node.start_byte:node.end_byte]
+                        name = ""
+
+                        # Try to extract name from identifier child
+                        for child in node.children:
+                            if child.type == "identifier":
+                                name = code_content[child.start_byte:child.end_byte]
+                                break
+
+                        if not name:
+                            continue
+
+                        signature = f"{rel_path}:{name}"
+
+                        if tag == "class":
+                            # 1. Create Class Node
+                            session.run(
+                                """
+                                MATCH (f:File {path: $path})
+                                MERGE (c:Class {qualified_name: $sig})
+                                SET c.name = $name, c.code = $code
+                                MERGE (f)-[:DEFINES]->(c)
+                            """,
+                                path=rel_path,
+                                sig=signature,
+                                name=name,
+                                code=node_text,
+                            )
+
+                            # 2. Hybrid Chunking: Class Context
+                            # Skip if chunk already exists (avoid re-embedding)
+                            existing = session.run(
+                                """
+                                MATCH (c:Class {qualified_name: $sig})
+                                OPTIONAL MATCH (ch:Chunk)-[:DESCRIBES]->(c)
+                                RETURN ch.id as chunk_id LIMIT 1
+                            """,
+                                sig=signature,
+                            ).single()
+
+                            if not existing or not existing["chunk_id"]:
+                                # Prepend context to the vector
+                                enriched_text = f"Context: File {rel_path} > Class {name}\n\n{node_text}"
+                                embedding = self.get_embedding(enriched_text)
+
+                                session.run(
+                                    """
+                                    MATCH (c:Class {qualified_name: $sig})
+                                    CREATE (ch:Chunk {id: randomUUID()})
+                                    SET ch.text = $text,
+                                        ch.embedding = $embedding,
+                                        ch.created_at = datetime()
+                                    MERGE (ch)-[:DESCRIBES]->(c)
+                                """,
+                                    sig=signature,
+                                    text=node_text,
+                                    embedding=embedding,
+                                )
+
+                        elif tag == "function":
+                            # Check parent for Class context
+                            parent_class = ""
+                            current = node.parent
+                            while current:
+                                if current.type == "class_definition":
+                                    for child in current.children:
+                                        if child.type == "identifier":
+                                            parent_class = code_content[
+                                                child.start_byte:child.end_byte
+                                            ]
+                                            break
+                                current = current.parent
+
+                            qual_name = f"{parent_class}.{name}" if parent_class else name
+                            full_sig = f"{rel_path}:{qual_name}"
+
+                            # 1. Create Function Node
+                            session.run(
+                                """
+                                MATCH (f:File {path: $path})
+                                MERGE (fn:Function {signature: $sig})
+                                SET fn.name = $name, fn.code = $code
+                                MERGE (f)-[:DEFINES]->(fn)
+                            """,
+                                path=rel_path,
+                                sig=full_sig,
+                                name=name,
+                                code=node_text,
+                            )
+
+                            # Link to parent class if exists
+                            if parent_class:
+                                class_sig = f"{rel_path}:{parent_class}"
+                                session.run(
+                                    """
+                                    MATCH (c:Class {qualified_name: $csig})
+                                    MATCH (fn:Function {signature: $fsig})
+                                    MERGE (c)-[:HAS_METHOD]->(fn)
+                                """,
+                                    csig=class_sig,
+                                    fsig=full_sig,
+                                )
+
+                            # 2. Hybrid Chunking: Function Context
+                            # Skip if chunk already exists (avoid re-embedding)
+                            existing = session.run(
+                                """
+                                MATCH (fn:Function {signature: $sig})
+                                OPTIONAL MATCH (ch:Chunk)-[:DESCRIBES]->(fn)
+                                RETURN ch.id as chunk_id LIMIT 1
+                            """,
+                                sig=full_sig,
+                            ).single()
+
+                            if not existing or not existing["chunk_id"]:
+                                # The secret sauce: "Contextual Prefixing"
+                                context_prefix = f"File: {rel_path}"
+                                if parent_class:
+                                    context_prefix += f" > Class: {parent_class}"
+
+                                enriched_text = (
+                                    f"Context: {context_prefix} > Method: {name}\n\n{node_text}"
+                                )
+                                embedding = self.get_embedding(enriched_text)
+
+                                session.run(
+                                    """
+                                    MATCH (fn:Function {signature: $sig})
+                                    CREATE (ch:Chunk {id: randomUUID()})
+                                    SET ch.text = $text,
+                                        ch.embedding = $embedding,
+                                        ch.created_at = datetime()
+                                    MERGE (ch)-[:DESCRIBES]->(fn)
+                                """,
+                                    sig=full_sig,
+                                    text=node_text,
+                                    embedding=embedding,
+                                )
+
+        logger.info("✅ [Pass 2] Entities and Semantic Chunks created.")
+
+    # =========================================================================
+    # PASS 3: IMPORT RESOLUTION
+    # =========================================================================
+
+    def _extract_python_import_modules(self, code: str) -> Set[str]:
+        """Extract Python import module names from source text."""
+        parser = self.parsers.get(".py")
+        if not parser:
+            return set()
+
+        query_scm = """
+        (import_statement name: (dotted_name) @module)
+        (import_from_statement module_name: (dotted_name) @module)
+        """
+        modules: Set[str] = set()
+
+        try:
+            tree = parser.parse(bytes(code, "utf8"))
+            lang = Language(tree_sitter_python.language())
+            query = Query(lang, query_scm)
+            cursor = QueryCursor(query)
+            captures = cursor.captures(tree.root_node)
+
+            for node in captures.get("module", []):
+                module_name = code[node.start_byte:node.end_byte].strip()
+                if module_name:
+                    modules.add(module_name)
+        except (RuntimeError, AttributeError, ValueError) as e:
+            logger.warning(f"⚠️ Failed to parse Python imports: {e}")
+
+        return modules
+
+    def _extract_js_ts_import_modules(self, code: str) -> Set[str]:
+        """Extract JS/TS/TSX module specifiers from source text using regex heuristics."""
+        patterns = [
+            # import x from "mod" / import {x} from "mod" / import type {x} from "mod"
+            r'^\s*import\s+(?:type\s+)?(?:[\w*\s{},$]+\s+from\s+)?["\']([^"\']+)["\']',
+            # export {x} from "mod" / export * from "mod"
+            r'^\s*export\s+(?:type\s+)?(?:\*|\{[^}]*\})\s+from\s+["\']([^"\']+)["\']',
+            # const x = require("mod")
+            r'require\(\s*["\']([^"\']+)["\']\s*\)',
+            # import("mod")
+            r'import\(\s*["\']([^"\']+)["\']\s*\)',
+        ]
+
+        modules: Set[str] = set()
+        for pattern in patterns:
+            for match in re.finditer(pattern, code, flags=re.MULTILINE):
+                module_name = match.group(1).strip()
+                if module_name:
+                    modules.add(module_name)
+        return modules
+
+    def _normalize_js_ts_specifier(self, module_name: str) -> str:
+        """Normalize JS/TS module specifier for matching against File.path."""
+        spec = module_name.strip().strip("'\"")
+        spec = spec.split("?", 1)[0].split("#", 1)[0]
+        if spec.startswith("@/"):
+            return spec[2:]
+        if spec.startswith("~/"):
+            return spec[2:]
+        if spec.startswith("/"):
+            return spec[1:]
+        return spec
+
+    def _resolve_import_candidates(
+        self, source_rel_path: str, module_name: str, source_ext: str
+    ) -> Set[str]:
+        """
+        Return candidate file paths for a module specifier.
+
+        For Python imports, converts dotted names to module paths.
+        For JS/TS imports, resolves relative specifiers and common extension/index variants.
+        """
+        candidates: Set[str] = set()
+
+        if source_ext == ".py":
+            normalized = module_name.strip().replace(".", "/")
+            if not normalized:
+                return candidates
+            candidates.add(normalized)
+            candidates.add(f"{normalized}.py")
+            candidates.add(f"{normalized}/__init__.py")
+            return candidates
+
+        spec = self._normalize_js_ts_specifier(module_name)
+        if not spec:
+            return candidates
+
+        source_dir = posixpath.dirname(source_rel_path)
+        if spec.startswith("."):
+            base = posixpath.normpath(posixpath.join(source_dir, spec))
+        else:
+            base = posixpath.normpath(spec)
+
+        # Avoid escaping repo root for relative imports.
+        if base.startswith("../"):
+            return candidates
+
+        js_ts_exts = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]
+        _, ext = os.path.splitext(base)
+
+        if ext:
+            candidates.add(base)
+        else:
+            candidates.add(base)
+            for candidate_ext in js_ts_exts:
+                candidates.add(f"{base}{candidate_ext}")
+                candidates.add(f"{base}/index{candidate_ext}")
+
+        return candidates
+
+    def _module_to_fuzzy_part(self, module_name: str, source_ext: str) -> str:
+        """Return a fuzzy module path fragment for fallback import linking."""
+        if source_ext == ".py":
+            return module_name.replace(".", "/").strip()
+
+        spec = self._normalize_js_ts_specifier(module_name)
+        if spec.startswith("."):
+            # For relative JS/TS imports, fallback matching is less useful than exact candidates.
+            return ""
+        return spec
+
+    def pass_3_imports(self, repo_path: Optional[Path] = None):
+        """
+        Analyzes import statements to link File nodes.
+        Supports Python and JS/TS import patterns.
+
+        Args:
+            repo_path: Path to repository root (defaults to self.repo_root)
+        """
+        repo_path = repo_path or self.repo_root
+        if not repo_path:
+            raise ValueError("repo_path must be provided either in __init__ or as parameter")
+
+        # Pass 3: parse import specifiers per File, rebuild IMPORTS edges (exact + fuzzy fallback).
+        logger.info("🕸️ [Pass 3] Linking Files via Imports...")
+        supported_exts = {".py", ".js", ".jsx", ".ts", ".tsx"}
+
+        with self.driver.session() as session:
+            result = session.run("MATCH (f:File) RETURN f.path as path")
+            all_paths = [r["path"] for r in result]
+            path_set = set(all_paths)
+            files = [path for path in all_paths if Path(path).suffix in supported_exts]
+
+            for rel_path in files:
+                full_path = repo_path / rel_path
+                source_ext = full_path.suffix
+
+                if not full_path.exists():
+                    logger.warning(
+                        f"⚠️ File found in graph but missing on disk (Stale): {rel_path}. Deleting node."
+                    )
+                    session.run("MATCH (f:File {path: $path}) DETACH DELETE f", path=rel_path)
+                    continue
+
+                code = full_path.read_text(errors="ignore")
+                if source_ext == ".py":
+                    modules = self._extract_python_import_modules(code)
+                else:
+                    modules = self._extract_js_ts_import_modules(code)
+
+                # Rebuild imports for this source file to avoid stale edges.
+                session.run(
+                    """
+                    MATCH (source:File {path: $src})-[r:IMPORTS]->()
+                    DELETE r
+                    """,
+                    src=rel_path,
+                )
+
+                exact_targets: Set[str] = set()
+                fuzzy_parts: Set[str] = set()
+                for module_name in modules:
+                    candidates = self._resolve_import_candidates(rel_path, module_name, source_ext)
+                    matched = {candidate for candidate in candidates if candidate in path_set}
+                    if matched:
+                        exact_targets.update(matched)
+                        continue
+
+                    fuzzy_part = self._module_to_fuzzy_part(module_name, source_ext)
+                    if fuzzy_part:
+                        fuzzy_parts.add(fuzzy_part)
+
+                if exact_targets:
+                    session.run(
+                        """
+                        MATCH (source:File {path: $src})
+                        UNWIND $targets as target_path
+                        MATCH (target:File {path: target_path})
+                        MERGE (source)-[:IMPORTS]->(target)
+                        """,
+                        src=rel_path,
+                        targets=sorted(exact_targets),
+                    )
+
+                for mod_part in sorted(fuzzy_parts):
+                    session.run(
+                        """
+                        MATCH (source:File {path: $src})
+                        MATCH (target:File)
+                        WHERE target.path CONTAINS $mod_part
+                        MERGE (source)-[:IMPORTS]->(target)
+                        """,
+                        src=rel_path,
+                        mod_part=mod_part,
+                    )
+
+            logger.info("✅ [Pass 3] Import graph built.")
+
+    # =========================================================================
+    # PASS 4: CALL GRAPH (OPTIMIZED)
+    # =========================================================================
+
+    def pass_4_call_graph(self, repo_path: Optional[Path] = None):
+        """
+        Links functions based on calls.
+        Optimized to parse each file once, then process all functions within it.
+
+        Args:
+            repo_path: Path to repository root (defaults to self.repo_root)
+        """
+        repo_path = repo_path or self.repo_root
+        if not repo_path:
+            raise ValueError("repo_path must be provided either in __init__ or as parameter")
+
+        # Pass 4: per-file call sites (Python identifier calls) → CALLS edges between Function nodes.
+        logger.info("📞 [Pass 4] Constructing Call Graph...")
+
+        query_scm = """(call function: (identifier) @name)"""
+
+        with self.driver.session() as session:
+            # Get all function definitions ordered by file
+            result = session.run(
+                """
+                MATCH (f:File)-[:DEFINES]->(fn:Function)
+                RETURN f.path as path, collect({name: fn.name, sig: fn.signature}) as funcs
+            """
+            )
+            file_records = list(result)
+            total_files = len(file_records)
+
+            for i, record in enumerate(file_records):
+                rel_path = record["path"]
+                funcs_in_file = record["funcs"]
+                full_path = repo_path / rel_path
+
+                # Progress logging
+                print(f"[{i+1}/{total_files}] 📞 Processing calls in: {rel_path}...", end="\r")
+
+                if not full_path.exists():
+                    continue
+
+                try:
+                    code = full_path.read_text(errors="ignore")
+                    tree = self.parsers[".py"].parse(bytes(code, "utf8"))
+
+                    lang = Language(tree_sitter_python.language())
+                    query = Query(lang, query_scm)
+                    cursor = QueryCursor(query)
+                    captures = cursor.captures(tree.root_node)
+
+                    # Extract all calls in the file once
+                    calls_in_file = []
+                    for tag, nodes in captures.items():
+                        for node in nodes:
+                            called_name = code[node.start_byte:node.end_byte]
+                            calls_in_file.append(called_name)
+
+                    if not calls_in_file:
+                        continue
+
+                    # Batch the creation of relationships for performance
+                    for func in funcs_in_file:
+                        caller_sig = func["sig"]
+
+                        # Create relationships for found calls
+                        session.run(
+                            """
+                            UNWIND $calls as called_name
+                            MATCH (caller:Function {signature: $caller_sig})
+                            MATCH (callee:Function {name: called_name})
+                            WHERE caller <> callee
+                            MERGE (caller)-[:CALLS]->(callee)
+                        """,
+                            caller_sig=caller_sig,
+                            calls=calls_in_file,
+                        )
+
+                except (neo4j.exceptions.DatabaseError, neo4j.exceptions.ClientError) as e:
+                    logger.warning(f"⚠️ Failed to process calls in {rel_path}: {e}")
+
+            print(f"\n✅ [Pass 4] Call Graph approximation complete. Processed {total_files} files.")
+
+    # =========================================================================
+    # FULL PIPELINE
+    # =========================================================================
+
+    def run_pipeline(
+        self,
+        repo_path: Optional[Path] = None,
+        supported_extensions: Optional[Set[str]] = None,
+    ) -> Dict:
+        """
+        Executes the full 4-pass pipeline with cost tracking.
+
+        Args:
+            repo_path: Path to repository root (defaults to self.repo_root)
+            supported_extensions: Set of file extensions to process in Pass 1
+
+        Returns:
+            Dict with pipeline execution metrics
+        """
+        repo_path = repo_path or self.repo_root
+        if not repo_path:
+            raise ValueError("repo_path must be provided either in __init__ or as parameter")
+
+        start_time = time.time()
+        print("=" * 60)
+        print("🚀 Starting Hybrid GraphRAG Ingestion")
+        print("=" * 60)
+
+        # Full ingestion DAG: schema → files → entities/chunks → imports → call graph.
+        self.setup_database()
+        self.pass_1_structure_scan(repo_path, supported_extensions=supported_extensions)
+        self.pass_2_entity_definition(repo_path)
+        self.pass_3_imports(repo_path)
+        self.pass_4_call_graph(repo_path)
+
+        elapsed = time.time() - start_time
+
+        # Print cost summary
+        print("\n" + "=" * 60)
+        print("📊 COST SUMMARY")
+        print("=" * 60)
+        print(f"⏱️  Total Time: {elapsed:.2f} seconds")
+        print(f"🔢 Embedding API Calls: {self.token_usage['embedding_calls']:,}")
+        print(f"📝 Total Tokens Used: {self.token_usage['embedding_tokens']:,}")
+        print(f"💰 Estimated Cost: ${self.token_usage['total_cost_usd']:.4f} USD")
+        print(f"📦 Model: {self.EMBEDDING_MODEL}")
+        print("=" * 60)
+        print("✅ Graph is ready for Agent retrieval.")
+        print("=" * 60)
+
+        return {
+            "elapsed_seconds": elapsed,
+            "embedding_calls": self.token_usage["embedding_calls"],
+            "tokens_used": self.token_usage["embedding_tokens"],
+            "cost_usd": self.token_usage["total_cost_usd"],
+        }
+
+    # =========================================================================
+    # SEMANTIC SEARCH (for MCP Server)
+    # =========================================================================
+
+    def semantic_search(self, query: str, limit: int = 5) -> List[Dict]:
+        """
+        Hybrid Search for the Agent using vector similarity.
+
+        Args:
+            query: Natural language query
+            limit: Maximum number of results to return
+
+        Returns:
+            List of dicts with name, signature, score, and text
+        """
+        def _is_valid_vector(vec: List[float]) -> bool:
+            if not vec:
+                return False
+            norm_sq = 0.0
+            for v in vec:
+                if not isinstance(v, (int, float)) or not math.isfinite(v):
+                    return False
+                norm_sq += float(v) * float(v)
+            return math.isfinite(norm_sq) and norm_sq > 0.0
+
+        def _fallback_fulltext_search() -> List[Dict]:
+            cypher = """
+            CALL db.index.fulltext.queryNodes('entity_text_search', $query)
+            YIELD node, score
+            OPTIONAL MATCH (ch:Chunk)-[:DESCRIBES]->(node)
+            RETURN
+                coalesce(node.name, node.path, 'Unknown') as name,
+                coalesce(node.signature, node.qualified_name, '') as sig,
+                score,
+                coalesce(ch.text, node.docstring, node.path, '') as text
+            ORDER BY score DESC
+            LIMIT $limit
+            """
+            with self.driver.session() as session:
+                res = session.run(cypher, query=query, limit=limit)
+                return [dict(r) for r in res]
+
+        def _execute_search():
+            vector = self.get_embedding(query)
+            if not _is_valid_vector(vector):
+                logger.warning(
+                    "Semantic query vector invalid (likely missing OpenAI key or zero-vector); "
+                    "falling back to full-text search."
+                )
+                return _fallback_fulltext_search()
+
+            cypher = """
+            CALL db.index.vector.queryNodes('code_embeddings', $limit, $vec)
+            YIELD node, score
+            MATCH (node)-[:DESCRIBES]->(target)
+            RETURN target.name as name, target.signature as sig, score, node.text as text
+            ORDER BY score DESC
+            """
+            with self.driver.session() as session:
+                res = session.run(cypher, limit=limit, vec=vector)
+                return [dict(r) for r in res]
+        
+        return self.circuit_breaker.call(_execute_search)
+
+    # =========================================================================
+    # DEPENDENCY ANALYSIS (for MCP Server)
+    # =========================================================================
+
+    def get_file_dependencies(self, file_path: str) -> Dict[str, List[str]]:
+        """
+        Get files that this file imports, and files that import this file.
+
+        Args:
+            file_path: Relative path to the file
+
+        Returns:
+            Dict with 'imports' and 'imported_by' lists
+        """
+        cypher = """
+        MATCH (f:File {path: $path})
+        OPTIONAL MATCH (f)-[:IMPORTS]->(imported)
+        OPTIONAL MATCH (dependent)-[:IMPORTS]->(f)
+        RETURN
+            collect(DISTINCT imported.path) as imports,
+            collect(DISTINCT dependent.path) as imported_by
+        """
+        with self.driver.session() as session:
+            result = session.run(cypher, path=file_path).single()
+            if result:
+                return {
+                    "imports": result["imports"] or [],
+                    "imported_by": result["imported_by"] or [],
+                }
+            return {"imports": [], "imported_by": []}
+
+    def identify_impact(
+        self, file_path: str, max_depth: int = 3
+    ) -> Dict[str, List[Dict]]:
+        """
+        Identify the blast radius of changes to a file.
+        Returns all files that transitively depend on this file.
+
+        Args:
+            file_path: Relative path to the file
+            max_depth: Maximum depth to traverse for transitive dependencies
+
+        Returns:
+            Dict with 'affected_files' list containing path, depth, and impact_type
+        """
+        def _execute_impact_analysis():
+            depth = max(1, int(max_depth))
+            cypher = f"""
+            MATCH path = (f:File {{path: $path}})<-[:IMPORTS*1..{depth}]-(dependent)
+            RETURN DISTINCT
+                dependent.path as path,
+                length(path) as depth,
+                'dependents' as impact_type
+            ORDER BY depth, path
+            """
+            with self.driver.session() as session:
+                result = session.run(cypher, path=file_path)
+                affected_files = [
+                    {"path": r["path"], "depth": r["depth"], "impact_type": r["impact_type"]}
+                    for r in result
+                ]
+                return {"affected_files": affected_files, "total_count": len(affected_files)}
+        
+        return self.circuit_breaker.call(_execute_impact_analysis)
+
+    # =========================================================================
+    # GIT GRAPH QUERIES (for MCP Server)
+    # =========================================================================
+
+    def has_git_graph_data(self) -> bool:
+        """Return True if at least one GitCommit node exists."""
+        def _execute_check() -> bool:
+            cypher = "MATCH (c:GitCommit) RETURN count(c) > 0 as has_data"
+            with self.driver.session() as session:
+                result = session.run(cypher).single()
+                return bool(result["has_data"]) if result else False
+
+        return self.circuit_breaker.call(_execute_check)
+
+    def get_git_file_history(self, file_path: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """
+        Return commit history touching a specific file.
+
+        Args:
+            file_path: Relative repository file path
+            limit: Maximum number of commits to return
+
+        Returns:
+            List of commit metadata records sorted by commit time descending
+        """
+        def _execute_history_query() -> List[Dict[str, Any]]:
+            safe_limit = max(1, int(limit))
+            cypher = """
+            MATCH (c:GitCommit)-[:TOUCHES]->(fv:GitFileVersion {path: $path})
+            OPTIONAL MATCH (c)-[:AUTHORED_BY]->(a:GitAuthor)
+            RETURN
+                c.sha as sha,
+                c.committed_at as committed_at,
+                c.message_subject as message_subject,
+                c.message_body as message_body,
+                a.name_latest as author_name,
+                a.email_norm as author_email,
+                fv.change_type as change_type,
+                coalesce(fv.additions, 0) as additions,
+                coalesce(fv.deletions, 0) as deletions
+            ORDER BY c.committed_at DESC
+            LIMIT $limit
+            """
+            with self.driver.session() as session:
+                result = session.run(cypher, path=file_path, limit=safe_limit)
+                return [dict(record) for record in result]
+
+        return self.circuit_breaker.call(_execute_history_query)
+
+    def get_commit_context(
+        self, sha: str, include_diff_stats: bool = True
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Return detailed metadata for a commit.
+
+        Args:
+            sha: Commit SHA
+            include_diff_stats: Whether to include changed file and line-change data
+
+        Returns:
+            Dict with commit metadata and optional diff stats, or None if missing
+        """
+        def _execute_commit_context_query() -> Optional[Dict[str, Any]]:
+            commit_cypher = """
+            MATCH (c:GitCommit {sha: $sha})
+            OPTIONAL MATCH (c)-[:AUTHORED_BY]->(a:GitAuthor)
+            OPTIONAL MATCH (c)-[:PARENT]->(p:GitCommit)
+            OPTIONAL MATCH (c)-[:PART_OF_PR]->(pr:GitPullRequest)
+            OPTIONAL MATCH (c)-[:REFERENCES_ISSUE]->(issue:GitIssue)
+            RETURN
+                c.sha as sha,
+                c.repo_id as repo_id,
+                c.authored_at as authored_at,
+                c.committed_at as committed_at,
+                c.message_subject as message_subject,
+                c.message_body as message_body,
+                coalesce(c.parent_count, 0) as parent_count,
+                coalesce(c.is_merge, false) as is_merge,
+                a.name_latest as author_name,
+                a.email_norm as author_email,
+                collect(DISTINCT p.sha) as parent_shas,
+                collect(DISTINCT CASE
+                    WHEN pr IS NULL THEN NULL
+                    ELSE {
+                        number: pr.number,
+                        title: pr.title,
+                        state: pr.state,
+                        url: pr.url
+                    }
+                END) as pull_requests,
+                collect(DISTINCT CASE
+                    WHEN issue IS NULL THEN NULL
+                    ELSE {
+                        number: issue.number,
+                        title: issue.title,
+                        state: issue.state,
+                        url: issue.url
+                    }
+                END) as issues
+            """
+
+            with self.driver.session() as session:
+                commit_result = session.run(commit_cypher, sha=sha).single()
+                if not commit_result:
+                    return None
+
+                context: Dict[str, Any] = dict(commit_result)
+                context["parent_shas"] = [
+                    parent_sha for parent_sha in (context.get("parent_shas") or []) if parent_sha
+                ]
+                context["pull_requests"] = [
+                    pr for pr in (context.get("pull_requests") or []) if pr is not None
+                ]
+                context["issues"] = [
+                    issue for issue in (context.get("issues") or []) if issue is not None
+                ]
+
+                if not include_diff_stats:
+                    context["files"] = []
+                    context["stats"] = {"files_changed": 0, "additions": 0, "deletions": 0}
+                    return context
+
+                files_cypher = """
+                MATCH (c:GitCommit {sha: $sha})-[:TOUCHES]->(fv:GitFileVersion)
+                RETURN
+                    fv.path as path,
+                    fv.change_type as change_type,
+                    coalesce(fv.additions, 0) as additions,
+                    coalesce(fv.deletions, 0) as deletions
+                ORDER BY fv.path
+                """
+                files_result = session.run(files_cypher, sha=sha)
+                files = [dict(record) for record in files_result]
+                additions = sum(int(file_info.get("additions", 0) or 0) for file_info in files)
+                deletions = sum(int(file_info.get("deletions", 0) or 0) for file_info in files)
+
+                context["files"] = files
+                context["stats"] = {
+                    "files_changed": len(files),
+                    "additions": additions,
+                    "deletions": deletions,
+                }
+                return context
+
+        return self.circuit_breaker.call(_execute_commit_context_query)

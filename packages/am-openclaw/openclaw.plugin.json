@@ -1,0 +1,100 @@
+{
+  "id": "agentic-memory",
+  "name": "Agentic Memory",
+  "description": "Memory capture, retrieval, and optional context augmentation for OpenClaw.",
+  "version": "0.1.6",
+  "kind": [
+    "memory",
+    "context-engine"
+  ],
+  "uiHints": {
+    "backendKind": {
+      "label": "Backend Mode",
+      "help": "Use hosted for the managed Agentic Memory backend and self_hosted for your own local or operator-managed deployment."
+    },
+    "backendUrl": {
+      "label": "Backend URL",
+      "placeholder": "http://127.0.0.1:8765",
+      "help": "Agentic Memory backend URL that exposes the /openclaw endpoints."
+    },
+    "apiKey": {
+      "label": "API Key",
+      "placeholder": "${AGENTIC_MEMORY_API_KEY}",
+      "help": "Bearer token for the Agentic Memory backend. Prefer OpenClaw env interpolation such as ${AGENTIC_MEMORY_API_KEY}."
+    },
+    "workspaceId": {
+      "label": "Workspace ID",
+      "advanced": true,
+      "help": "Optional workspace override. Agentic Memory normally auto-resolves workspace from the current agent/default config."
+    },
+    "deviceId": {
+      "label": "Device ID",
+      "help": "Stable identifier for the current device."
+    },
+    "agentId": {
+      "label": "Agent ID",
+      "help": "Stable identifier for the current OpenClaw agent. Workspace defaults to this agent identity unless explicitly overridden."
+    },
+    "mode": {
+      "label": "Mode",
+      "help": "Use capture_only to capture turns and serve memory without adding custom context blocks. Use augment_context to also assemble Agentic Memory context for each turn."
+    },
+    "projectId": {
+      "label": "Project ID",
+      "advanced": true,
+      "help": "Legacy static project fallback. The preferred model is to start and stop projects at runtime instead of baking one into install-time config."
+    },
+    "contextEngineId": {
+      "label": "Context Engine ID",
+      "advanced": true,
+      "help": "Context engine id to register with OpenClaw. Defaults to agentic-memory. Capture-only mode still uses this slot internally as the turn-lifecycle hook surface."
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "schemaVersion": {
+        "type": "integer",
+        "default": 1
+      },
+      "backendKind": {
+        "type": "string",
+        "enum": [
+          "hosted",
+          "self_hosted"
+        ]
+      },
+      "backendUrl": {
+        "type": "string"
+      },
+      "apiKey": {
+        "type": "string"
+      },
+      "workspaceId": {
+        "type": "string"
+      },
+      "deviceId": {
+        "type": "string"
+      },
+      "agentId": {
+        "type": "string"
+      },
+      "mode": {
+        "type": "string",
+        "enum": [
+          "capture_only",
+          "augment_context"
+        ],
+        "default": "capture_only"
+      },
+      "projectId": {
+        "type": "string"
+      },
+      "contextEngineId": {
+        "type": "string",
+        "default": "agentic-memory"
+      }
+    }
+  }
+}

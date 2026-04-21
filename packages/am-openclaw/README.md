@@ -1,0 +1,241 @@
+# agentic-memory-openclaw
+
+Native OpenClaw plugin package for Agentic Memory.
+
+Install surface:
+
+```bash
+openclaw plugin install agentic-memory-openclaw
+```
+
+Runtime identity inside OpenClaw:
+
+```bash
+openclaw agentic-memory setup
+```
+
+That split is intentional. The npm package is OpenClaw-specific, while the
+plugin id that lives in OpenClaw config remains `agentic-memory`.
+
+This package now contains a real OpenClaw-native runtime surface:
+
+- `openclaw.plugin.json` declares the plugin id `agentic-memory`
+- `src/index.ts` registers:
+  - the Agentic Memory shared-memory runtime
+  - the optional `agentic-memory` context engine
+  - the OpenClaw-native CLI command `openclaw agentic-memory setup`
+- `package.json` exposes the native plugin entry through `openclaw.extensions`
+- `setup-api.js` performs setup-time config migration and stamps a package-side
+  `schemaVersion` so future releases can evolve the install config without
+  guessing which shape an operator already has
+
+## Distribution status
+
+This package is now shaped to produce a publishable npm artifact rather than
+remaining workspace-private only.
+
+Package metadata now includes:
+
+- license, repository, homepage, and issue tracker fields
+- npm publish config for a public artifact
+- explicit package exports for runtime/setup/shared entrypoints
+- a config `schemaVersion` written into the plugin config payload
+
+The public npm package name is now locked to `agentic-memory-openclaw`.
+
+The OpenClaw plugin id intentionally stays `agentic-memory`, so existing slot
+and setup semantics do not need to change.
+
+## How OpenClaw Uses Agentic Memory
+
+OpenClaw uses this package through two different host plugin surfaces that do
+different jobs:
+
+- `plugins.slots.memory = "agentic-memory"`
+  - this is the actual memory runtime
+  - OpenClaw uses it for memory search, canonical reads, and memory-facing
+    status behavior
+- `plugins.slots.contextEngine = "agentic-memory"`
+  - this is currently the lifecycle hook surface we use to observe turns as
+    they happen
+  - in `capture_only` mode it does **not** add custom context to prompts
+  - in `augment_context` mode it both captures turns and assembles custom
+    context through the backend
+
+That split matters because the product model is:
+
+- memory owns capture, storage, retrieval, and canonical reads
+- context augmentation is optional and sits downstream of memory
+
+However, the current OpenClaw host lifecycle callbacks we need for turn capture
+arrive through the context-engine interface. So this package still occupies the
+OpenClaw `contextEngine` slot even when the user only wants memory capture.
+
+In other words:
+
+- `capture_only`
+  - memory is on
+  - context augmentation is off
+  - the context-engine slot is still used under the hood as the turn-capture
+    event tap
+- `augment_context`
+  - memory is on
+  - context augmentation is on
+
+This is a host-integration constraint, not the intended long-term conceptual
+model.
+
+## Current setup flow
+
+After installing the plugin into OpenClaw, configure it from the OpenClaw CLI:
+
+```bash
+openclaw plugin install agentic-memory-openclaw
+openclaw agentic-memory doctor
+openclaw agentic-memory setup
+```
+
+The recommended path is now:
+
+1. `openclaw plugin install agentic-memory-openclaw`
+2. `openclaw agentic-memory doctor`
+3. `openclaw agentic-memory setup`
+
+`doctor` asks the backend for the whole-stack onboarding contract at
+`/health/onboarding` and tells you whether the requested mode is honestly
+ready. `setup` now uses that same contract before it writes config, so it no
+longer reports success when the backend is reachable but the required memory
+path is not actually usable yet.
+
+The setup command can run as:
+
+- an interactive wizard when you omit flags
+- a non-interactive command when you pass flags such as:
+  - `--backend-url`
+  - `--api-key`
+  - `--device-id`
+  - `--agent-id`
+  - `--mode`
+  - `--enable-context-augmentation`
+
+Example:
+
+```bash
+openclaw agentic-memory doctor
+openclaw agentic-memory setup
+```
+
+Build and artifact validation from this repo:
+
+```bash
+npm run build:openclaw
+npm run test:openclaw
+npm run typecheck:openclaw
+npm run pack:openclaw
+```
+
+Normal setup no longer asks for workspace unless you explicitly override it.
+Instead, Agentic Memory resolves workspace in this order:
+
+- explicit `--workspace` / `--workspace-id`
+- existing configured `workspaceId`
+- a stable default derived from the resolved `agentId`
+
+That keeps the default path focused on "memory just works" while still
+allowing an operator to pin a different workspace when needed.
+
+That command writes the plugin's live OpenClaw config under:
+
+- `plugins.entries.agentic-memory.config`
+- `plugins.slots.memory`
+- `plugins.slots.contextEngine`
+
+Project scoping is now a runtime concern, not a setup-time identity. After
+setup, use:
+
+```bash
+openclaw agentic-memory project init <project-id>
+openclaw agentic-memory project use <project-id>
+openclaw agentic-memory project status
+openclaw agentic-memory project stop
+```
+
+Command intent:
+
+- `project init`
+  - create or activate a project for the current session
+- `project use`
+  - switch the current session into an existing project
+- `project start`
+  - legacy alias retained for compatibility
+
+`--session-id` is still accepted as an escape hatch, but it is no longer the
+normal path. The backend now tries to infer the active OpenClaw session from
+the latest registered session for the current workspace/agent identity.
+
+The active project is resolved server-side for that specific
+`workspace_id + agent_id + session_id` tuple, so one agent can work on a
+project temporarily without tagging every future memory forever.
+
+## Doctor and setup truthfulness
+
+The plugin now distinguishes between:
+
+- backend is merely reachable
+- backend is honestly ready for OpenClaw capture-only
+- backend is honestly ready for OpenClaw augment-context mode
+
+The backend's onboarding contract marks these separately. That matters because
+the stack can be partially up while still missing one of the things setup
+actually needs:
+
+- backend API auth configured
+- OpenClaw memory pipeline healthy
+- OpenClaw context engine healthy for `augment_context`
+
+By default, `openclaw agentic-memory setup` refuses to persist config when the
+requested mode is not ready. If you intentionally want to save config early,
+you can override that with:
+
+```bash
+openclaw agentic-memory setup --allow-degraded
+```
+
+## What this package does today
+
+- turns OpenClaw memory lookups into `POST /openclaw/memory/search`
+- turns OpenClaw context assembly into `POST /openclaw/context/resolve`
+- registers sessions through `POST /openclaw/session/register`
+- writes new turns through `POST /openclaw/memory/ingest-turn`
+- activates/deactivates per-session projects through:
+  - `POST /openclaw/project/activate`
+  - `POST /openclaw/project/deactivate`
+  - `POST /openclaw/project/status`
+  - `POST /openclaw/project/automation`
+
+## Important current limitation
+
+The runtime is backend-first and intentionally conservative:
+
+- memory search is real
+- conversation ingestion is real
+- canonical `readFile()` is now real for conversation-turn hits
+- context resolution is real only when the plugin runs in `augment_context`
+  mode
+- non-conversation hits still fall back to the cached snippet from search
+
+That means the next hardening step is to expand canonical read support beyond
+conversation turns so code and research hits can also be re-opened without
+depending on the cached search snippet.
+
+## Publish artifact notes
+
+The package dry-run tarball intentionally contains only:
+
+- `dist/`
+- `setup-api.js`
+- `openclaw.plugin.json`
+- `README.md`
+
+That keeps the shipped plugin artifact small and avoids leaking repo-local test
+or planning files into the install payload.

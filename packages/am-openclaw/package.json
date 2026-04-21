@@ -1,0 +1,80 @@
+{
+  "name": "agentic-memory-openclaw",
+  "version": "0.1.6",
+  "type": "module",
+  "description": "OpenClaw memory and context-engine integration for Agentic Memory",
+  "author": {
+    "name": "Agentic Memory",
+    "url": "https://github.com/jarmen423/agentic-memory"
+  },
+  "homepage": "https://github.com/jarmen423/agentic-memory/tree/main/packages/am-openclaw",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jarmen423/agentic-memory.git",
+    "directory": "packages/am-openclaw"
+  },
+  "bugs": {
+    "url": "https://github.com/jarmen423/agentic-memory/issues"
+  },
+  "license": "MIT",
+  "keywords": [
+    "openclaw",
+    "plugin",
+    "memory",
+    "context-engine",
+    "agentic-memory",
+    "mcp"
+  ],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./setup": {
+      "types": "./dist/setup.d.ts",
+      "default": "./dist/setup.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "default": "./dist/runtime.js"
+    },
+    "./shared": {
+      "types": "./dist/shared.d.ts",
+      "default": "./dist/shared.js"
+    }
+  },
+  "files": [
+    "dist",
+    "setup-api.js",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test ./tests/*.test.ts"
+  },
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ],
+    "setupEntry": "./setup-api.js",
+    "install": {
+      "minHostVersion": ">=2026.4.5"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.3"
+  }
+}

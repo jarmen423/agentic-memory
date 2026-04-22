@@ -1,6 +1,6 @@
 dataset: mid_fhirfix
-tasks_dir: D:\code\agentic-memory-exp1ab-work\experiments\healthcare\tasks
-output_dir: D:\code\agentic-memory-exp1ab-work\experiments\healthcare\results\exp1A_pilot
+tasks_dir: ../tasks
+output_dir: ../results/exp1A_pilot
 project_id: synthea-scale-mid-fhirfix
 
 families:

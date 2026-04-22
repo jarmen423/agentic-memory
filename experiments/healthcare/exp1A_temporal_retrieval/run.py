@@ -139,11 +139,12 @@ def load_config(path: str | Path) -> RunConfig:
     Returns:
         Parsed `RunConfig`.
     """
-    raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    config_path = Path(path).resolve()
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     return RunConfig(
         dataset=str(raw["dataset"]),
-        tasks_dir=Path(raw["tasks_dir"]),
-        output_dir=Path(raw["output_dir"]),
+        tasks_dir=resolve_config_path(config_path, str(raw["tasks_dir"])),
+        output_dir=resolve_config_path(config_path, str(raw["output_dir"])),
         project_id=str(raw["project_id"]),
         families=tuple(str(item) for item in raw["families"]),
         snapshots=tuple(str(item) for item in raw["snapshots"]),
@@ -156,6 +157,22 @@ def load_config(path: str | Path) -> RunConfig:
         seed=int(raw.get("seed", 42)),
         heartbeat_every=int(raw.get("heartbeat_every", 50)),
     )
+
+
+def resolve_config_path(config_path: Path, raw_path: str) -> Path:
+    """Resolve a config path relative to the YAML file when needed.
+
+    Args:
+        config_path: Absolute path to the loaded YAML file.
+        raw_path: Path string taken directly from the YAML payload.
+
+    Returns:
+        Absolute path suitable for file IO on the current machine.
+    """
+    candidate = Path(raw_path)
+    if candidate.is_absolute():
+        return candidate
+    return (config_path.parent / candidate).resolve()
 
 
 def main() -> int:

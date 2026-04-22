@@ -98,6 +98,7 @@ class BaseArm(ABC):
         self.project_id = project_id
         self.bridge = bridge
         self.rng = rng or random.Random()
+        self.last_retrieval_metadata: dict[str, Any] = {}
 
     @abstractmethod
     def retrieve(
@@ -147,7 +148,7 @@ class BaseArm(ABC):
         max_hops: int,
         filter_family: bool,
         require_overlap: bool,
-    ) -> list[Candidate]:
+    ) -> tuple[list[Candidate], dict[str, Any]]:
         """Run ``TemporalBridge.retrieve`` and normalize the returned rows.
 
         Args:
@@ -184,6 +185,7 @@ class BaseArm(ABC):
 
         seen: set[tuple[str, str | None, str | None]] = set()
         candidates: list[Candidate] = []
+        raw_rows = response.get("results", [])
         for index, row in enumerate(response.get("results", []), start=1):
             if row.get("predicate") not in self._allowed_predicates(task):
                 continue
@@ -201,7 +203,16 @@ class BaseArm(ABC):
             candidates.append(candidate)
             if len(candidates) >= k:
                 break
-        return candidates
+        return candidates, {
+            "source": "bridge",
+            "requested_k": k,
+            "half_life_hours": half_life,
+            "max_hops": max_hops,
+            "filter_family": filter_family,
+            "require_overlap": require_overlap,
+            "raw_edge_count": len(raw_rows),
+            "emitted_candidate_count": len(candidates),
+        }
 
     def _bridge_row_to_candidate(
         self,
@@ -265,7 +276,14 @@ class RandomInFamilyArm(BaseArm):
         candidates = self._task_candidates(task)
         shuffled = list(candidates)
         self.rng.shuffle(shuffled)
-        return shuffled[:k]
+        top_k = shuffled[:k]
+        self.last_retrieval_metadata = {
+            "source": "task_fixture",
+            "raw_edge_count": len(candidates),
+            "emitted_candidate_count": len(top_k),
+            "requested_k": k,
+        }
+        return top_k
 
 
 class AlwaysNewestArm(BaseArm):
@@ -291,7 +309,14 @@ class AlwaysNewestArm(BaseArm):
             ),
             reverse=True,
         )
-        return ranked[:k]
+        top_k = ranked[:k]
+        self.last_retrieval_metadata = {
+            "source": "task_fixture",
+            "raw_edge_count": len(candidates),
+            "emitted_candidate_count": len(top_k),
+            "requested_k": k,
+        }
+        return top_k
 
 
 class HardOverlapArm(BaseArm):
@@ -313,7 +338,15 @@ class HardOverlapArm(BaseArm):
             if _interval_overlaps(candidate.valid_from, candidate.valid_to, task["as_of_date"])
         ]
         self.rng.shuffle(overlapping)
-        return overlapping[:k]
+        top_k = overlapping[:k]
+        self.last_retrieval_metadata = {
+            "source": "task_fixture",
+            "raw_edge_count": len(self._task_candidates(task)),
+            "overlap_candidate_count": len(overlapping),
+            "emitted_candidate_count": len(top_k),
+            "requested_k": k,
+        }
+        return top_k
 
 
 class HardOverlapDecayTiebreakArm(BaseArm):
@@ -333,7 +366,7 @@ class HardOverlapDecayTiebreakArm(BaseArm):
         half_life: float,
     ) -> list[Candidate]:
         """Return same-family overlapping bridge candidates ranked by bridge score."""
-        return self._bridge_candidates(
+        candidates, metadata = self._bridge_candidates(
             task,
             k=k,
             half_life=half_life,
@@ -341,6 +374,8 @@ class HardOverlapDecayTiebreakArm(BaseArm):
             filter_family=True,
             require_overlap=True,
         )
+        self.last_retrieval_metadata = metadata
+        return candidates
 
 
 class SoftDecayOnlyArm(BaseArm):
@@ -367,7 +402,7 @@ class SoftDecayOnlyArm(BaseArm):
         back to a patient-scoped bridge call only when the broader call yields
         zero usable candidates.
         """
-        candidates = self._bridge_candidates(
+        candidates, metadata = self._bridge_candidates(
             task,
             k=k,
             half_life=half_life,
@@ -376,8 +411,9 @@ class SoftDecayOnlyArm(BaseArm):
             require_overlap=False,
         )
         if candidates:
+            self.last_retrieval_metadata = {**metadata, "fallback_used": False}
             return candidates
-        return self._bridge_candidates(
+        fallback_candidates, fallback_metadata = self._bridge_candidates(
             task,
             k=k,
             half_life=half_life,
@@ -385,6 +421,14 @@ class SoftDecayOnlyArm(BaseArm):
             filter_family=False,
             require_overlap=False,
         )
+        self.last_retrieval_metadata = {
+            **fallback_metadata,
+            "fallback_used": True,
+            "fallback_from_max_hops": metadata["max_hops"],
+            "first_attempt_raw_edge_count": metadata["raw_edge_count"],
+            "first_attempt_emitted_candidate_count": metadata["emitted_candidate_count"],
+        }
+        return fallback_candidates
 
 
 class SoftDecayHardOverlapArm(BaseArm):
@@ -409,7 +453,7 @@ class SoftDecayHardOverlapArm(BaseArm):
         retrieval. It retries with ``max_hops=1`` only when the broader bridge
         call leaves no same-family overlapping candidates at all.
         """
-        candidates = self._bridge_candidates(
+        candidates, metadata = self._bridge_candidates(
             task,
             k=k,
             half_life=half_life,
@@ -418,8 +462,9 @@ class SoftDecayHardOverlapArm(BaseArm):
             require_overlap=True,
         )
         if candidates:
+            self.last_retrieval_metadata = {**metadata, "fallback_used": False}
             return candidates
-        return self._bridge_candidates(
+        fallback_candidates, fallback_metadata = self._bridge_candidates(
             task,
             k=k,
             half_life=half_life,
@@ -427,6 +472,14 @@ class SoftDecayHardOverlapArm(BaseArm):
             filter_family=True,
             require_overlap=True,
         )
+        self.last_retrieval_metadata = {
+            **fallback_metadata,
+            "fallback_used": True,
+            "fallback_from_max_hops": metadata["max_hops"],
+            "first_attempt_raw_edge_count": metadata["raw_edge_count"],
+            "first_attempt_emitted_candidate_count": metadata["emitted_candidate_count"],
+        }
+        return fallback_candidates
 
 
 def build_phase4_arms(

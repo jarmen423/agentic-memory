@@ -56,8 +56,16 @@ Every task must satisfy all five:
 
 ## Task Families
 
-All five families require multiple same-family candidates per patient. Gold
-is selected by deterministic rules on the Synthea export.
+Exp 1A intentionally covers four ranking families only. The original
+`retrospective_state` use case was removed because it is yes/no
+classification, not ranking: negative cases correctly have no overlapping
+interval and therefore cannot satisfy Exp 1A's load-bearing overlap
+invariant. That query shape now lives in Exp 1B as
+`counterfactual_timing`, which reuses the existing
+`generate_retrospective_state_tasks()` output verbatim.
+
+All four ranking families require multiple same-family candidates per patient.
+Gold is selected by deterministic rules on the Synthea export.
 
 | Family | Query shape | Gold | Distractors |
 |---|---|---|---|
@@ -65,7 +73,6 @@ is selected by deterministic rules on the Synthea export.
 | **Regimen change** | "What was the patient taking for [indication] at the time of their [event]?" | Drug active at the event's date | Same-indication alternatives from different time periods |
 | **Recurring condition** | "Which episode of [recurring condition] was active on [date]?" | Condition episode whose interval overlaps `as_of` | Other episodes of the same condition at other times |
 | **Dose escalation** | "What dose of [drug] was the patient on as of [date]?" | Dose active at `as_of` | Earlier and later doses of the same drug |
-| **Retrospective state** | "Was the patient on [drug] during [year]?" | Yes/No + specific overlapping entries | Same drug's entries outside that year |
 
 ### Anchor Policy
 
@@ -195,7 +202,8 @@ Run before every sweep. Fail fast if any assertion breaks.
 ## Data Flow
 
 1. Load deterministic task JSON from the new generator (see agent
-   prompts — covers five families, sweeps snapshots, tags anchor source).
+   prompts — covers four ranking families, sweeps snapshots, tags anchor
+   source).
 2. For each task, resolve `as_of_us` from the task's `as_of_date`, never
    from the gold fact's `START`.
 3. For each arm, invoke the retrieval path with that arm's settings:
@@ -226,7 +234,7 @@ Run before every sweep. Fail fast if any assertion breaks.
 - `experiments/healthcare/tasks/exp1A_tasks_*.json` — generated task fixtures.
 
 ### Modified
-- `experiments/healthcare/qa_generator.py` — add the five task-family generators (supersession, regimen-change, recurring, dose-escalation, retrospective-state).
+- `experiments/healthcare/qa_generator.py` — add the Exp 1A ranking-family generators (supersession, regimen-change, recurring, dose-escalation) and keep `generate_retrospective_state_tasks()` available for Exp 1B reuse.
 - `experiments/healthcare/eval_runner.py` — add time-sliced Hits@1, in-family MRR, interval precision@K, temporal-error helpers. Keep existing metrics for backward compatibility.
 
 ### Read-only

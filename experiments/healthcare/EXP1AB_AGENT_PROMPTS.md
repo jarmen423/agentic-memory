@@ -100,7 +100,7 @@ Infrastructure:
 | 2 — Preflight | **VM** | All assertions must run against real fixtures and the graph-backed retriever. |
 | 3 — New metrics | **VM** | Unit tests should run in the same Python environment used by the runners. |
 | 4 — Arms | **VM** | Arms 4–6 call TemporalBridge, which is expected to be backed by the VM's graph. |
-| 5 — 1A pilot | **VM** | 25-patient × 5-family × 5-halflife × 4-snapshot × 6-arm ≈ 15k retrievals. |
+| 5 — 1A pilot | **VM** | 25-task-per-family-snapshot × 4-family × 5-halflife × 2-snapshot × 6-arm ≈ 6k retrievals on the current four-family fixture corpus. |
 | 6 — 1A full sweep | **VM, in `tmux`** | 50–80 hours. Checkpointing mandatory. |
 | 7 — Judge calibration | **VM** | Keep calibration output next to generated fixtures and runner code. |
 | 8 — 1B pilot | **VM** | 25-patient × 7-family × 4-snapshot × 7-arm with an LLM in the loop. |
@@ -198,10 +198,10 @@ coding task until you have completed this phase.
 
 ## Phase 1 — Shared Task-Family Generator
 
-**Goal:** extend `qa_generator.py` with five deterministic task-family
-generators (supersession, regimen-change, recurring, dose-escalation,
-retrospective-state) that produce tasks meeting the design principles in
-`exp1A_temporal_retrieval/DESIGN.md`.
+**Goal:** extend `qa_generator.py` with the four deterministic Exp 1A
+ranking-family generators (supersession, regimen-change, recurring,
+dose-escalation) plus the reusable `retrospective_state` generator that
+now belongs to Exp 1B's `counterfactual_timing` family.
 
 **Prerequisite:** Phase 0 complete.
 
@@ -221,7 +221,8 @@ retrospective-state) that produce tasks meeting the design principles in
    - `generate_retrospective_state_tasks(patients) -> list[Task]`
 2. A CLI entrypoint script
    `experiments/healthcare/exp1A_temporal_retrieval/generate_tasks.py`
-   that writes `tasks/exp1A_tasks_*.json` for the `synthea-scale-mid-fhirfix`
+   that writes only Exp 1A's four ranking-family fixtures under
+   `tasks/exp1A_tasks_*.json` for the `synthea-scale-mid-fhirfix`
    dataset. It must also tag each task with:
    - `category`, `family`, `anchor_source` (`calendar_sweep` or `clinical_event`),
    - `gold.valid_from`, `gold.valid_to` (nullable),
@@ -254,8 +255,9 @@ retrospective-state) that produce tasks meeting the design principles in
   next to the generator.
 
 **Gate:** before calling Phase 1 complete, run the generator end-to-end
-against the existing `synthea-scale-mid-fhirfix` export and produce five
-JSON fixtures. Spot-check 10 tasks per family by hand and confirm the
+against the existing `synthea-scale-mid-fhirfix` export and produce the four
+Exp 1A JSON fixtures plus the reusable Exp 1B `counterfactual_timing`
+fixture. Spot-check 10 tasks per family by hand and confirm the
 gold and distractors are coherent.
 
 ### Copy-pasteable prompt
@@ -288,8 +290,10 @@ Deliver:
    are.
 2. A CLI at
    experiments/healthcare/exp1A_temporal_retrieval/generate_tasks.py that
-   writes tasks/exp1A_tasks_{family}_mid_fhirfix.json for each of the five
-   families.
+   writes tasks/exp1A_tasks_{family}_mid_fhirfix.json for the four Exp 1A
+   ranking families only. Keep `generate_retrospective_state_tasks()` in
+   qa_generator.py, but do not call it from the Exp 1A corpus builder; Exp 1B
+   reuses its fixture as `counterfactual_timing`.
 3. A small concept_mappings.py module with ATC_CLASS_MAP, INDICATION_MAP,
    and CHRONIC_CONDITION_SET. If Synthea itself exposes these codes, use
    them and cite the source in the file's module docstring.
@@ -425,7 +429,7 @@ Add these functions to eval_runner.py (pure, no global state):
 - time_sliced_hits_at_1(retrieved, gold, as_of) -> float in {0, 1}
 - in_family_mrr(retrieved, gold, family_of_fn) -> float in [0, 1]
 - interval_precision_at_k(retrieved, as_of, k) -> float in [0, 1]
-- temporal_error_days(picked, as_of) -> float ≥ 0
+- temporal_error_days(picked, as_of) -> signed float
 - same_family_retention(retrieved, target_family, family_of_fn, k=20) -> float in [0, 1]
 
 Each function gets a Google-style docstring with Args, Returns, and at
@@ -465,7 +469,7 @@ that the Phase 5 runner will dispatch to.
 - A tiny smoke script `arms_smoke.py` that runs each arm against 5
   random tasks and prints the top-5 for each. Used for manual verification.
 
-**Gate:** smoke script runs clean for all six arms on all five task
+**Gate:** smoke script runs clean for all six arms on all four ranking-task
 families.
 
 ### Copy-pasteable prompt
@@ -514,9 +518,10 @@ Do not advance to Phase 5 until the smoke run is sane by inspection.
 
 ## Phase 5 — Exp 1A Runner & Pilot
 
-**Goal:** run a pilot of Exp 1A on 25 patients × all families × all
-arms × all half-lives × all snapshots to verify the pipeline end-to-end
-before committing to the full sweep.
+**Goal:** run a pilot of Exp 1A on a deterministic task slice across all
+four ranking families, all arms, all half-lives, and the dense snapshot
+buckets that the current fixtures can actually support, so the pipeline is
+verified end-to-end before committing to the full sweep.
 
 **Prerequisite:** Phase 4 smoke complete.
 
@@ -543,12 +548,12 @@ and each `(arm, half_life, snapshot)` cell has ≥ 10 tasks.
 ```text
 [Shared project context above]
 
-Your task is Phase 5: build the Exp 1A runner and execute a 25-patient
-pilot.
+Your task is Phase 5: build the Exp 1A runner and execute a deterministic
+task-slice pilot.
 
 Create experiments/healthcare/exp1A_temporal_retrieval/run.py that:
-- Reads a YAML config (patient count, families, half-lives, snapshots,
-  arms).
+- Reads a YAML config (families, snapshot buckets, tasks per
+  family/snapshot bucket, half-lives, arms).
 - For each (task, arm, half_life, snapshot) cell, calls the arm's
   retrieve(), scores with Phase 3 metrics, and writes one result row
   to results/exp1A_pilot/results.jsonl (or the directory from config).
@@ -559,10 +564,12 @@ Create experiments/healthcare/exp1A_temporal_retrieval/run.py that:
   edge count.
 
 Write experiments/healthcare/exp1A_temporal_retrieval/config.pilot.yaml
-that selects 25 patients, all five families, all five half-lives, all
-four snapshots, all six arms. Grid size ≈ 25 × 5 × 5 × 4 × 6 = 15000
-retrievals; expect ~8 hours at 3s/retrieval. If that's too slow, reduce
-the snapshot sweep to 2 snapshots for the pilot.
+that samples 25 tasks per (family, snapshot bucket), all four ranking
+families, all five half-lives, and all six arms. The current four-family
+fixtures only support the `2012-06-30` and `2016-06-30` snapshot buckets at
+the required ≥ 10 tasks-per-cell density once event-anchored tasks are
+bucketed, so the pilot should use those two buckets first. Grid size
+≈ 25 × 4 × 5 × 2 × 6 = 6000 retrievals.
 
 Run the pilot. Write a short report at
 experiments/healthcare/exp1A_temporal_retrieval/PILOT_REPORT.md covering:
@@ -691,7 +698,8 @@ schema, preflight-friendly, anchor independent of answer). Target ≥ 150
 tasks per family.
 
 Step 2 — Hand-label calibration set. Randomly sample 100 tasks across
-all 8 families (5 from 1A, 3 from 1B). For each, produce the gold
+all 8 families (4 from 1A, `counterfactual_timing`, and the 3 new Exp 1B
+families). For each, produce the gold
 answer manually by reading the patient's Synthea record, and write to
 experiments/healthcare/exp1B_e2e_clinical_qa/calibration_set.jsonl
 with fields: task_id, gold_answer, human_rubric_scores.

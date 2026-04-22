@@ -1,0 +1,33 @@
+dataset: mid_fhirfix
+tasks_dir: D:\code\agentic-memory-exp1ab-work\experiments\healthcare\tasks
+output_dir: D:\code\agentic-memory-exp1ab-work\experiments\healthcare\results\exp1A_pilot
+project_id: synthea-scale-mid-fhirfix
+
+families:
+  - supersession
+  - regimen_change
+  - recurring_condition
+  - dose_escalation
+
+# The current four-family fixtures do not provide >= 10 tasks per family for
+# the 2008 and 2020 buckets once the clinical-event families are grouped into
+# canonical snapshot buckets. The pilot therefore uses the two dense buckets
+# first; the full sweep can widen this after refreshed fixtures if needed.
+snapshots:
+  - 2012-06-30
+  - 2016-06-30
+
+tasks_per_family_snapshot: 25
+min_tasks_per_cell: 10
+
+half_life_hours:
+  - 720
+  - 2160
+  - 4320
+  - 8760
+  - 26280
+
+top_k: 5
+retention_k: 20
+seed: 42
+heartbeat_every: 50

@@ -80,11 +80,26 @@ the gold edge itself:
   anchors that are semantically meaningful to the query text ("at the time
   of their 2014 admission…") but independent of the answer.
 
-**Hard requirement:** at least **40% of supersession and regimen-change
-tasks** must have a gold interval whose `valid_from` ≠ `as_of` and whose
-`valid_to` ≠ `as_of`. Otherwise the decay math is a no-op on that task
-(temporal distance = 0 → weight = 1.0 regardless of half-life). This is
-enforced by preflight (see below).
+**Hard requirements (enforced by preflight):**
+
+- **Gold must overlap `as_of_date`.** The fact is active at the query
+  time — that is the semantic meaning of "what was the patient on as of
+  [date]?" so the gold interval `[valid_from, valid_to]` must contain
+  `as_of_date`. At the gold, temporal distance is 0 and decay weight is
+  1.0, which is correct: the right answer should be at full strength.
+- **`as_of_date` must not equal `gold.valid_from` or `gold.valid_to`.**
+  This avoids degenerate boundary cases where `as_of` lands exactly on
+  the start or stop of the gold interval. Such boundary anchoring is a
+  bookkeeping artifact, not a meaningful temporal test.
+- **At least 40% of supersession and regimen-change tasks must have
+  ≥ 1 same-family distractor whose interval lies entirely outside
+  `as_of_date`** (the distractor's `valid_to` precedes `as_of_date`, or
+  its `valid_from` follows `as_of_date`). This is where soft decay
+  can mechanically fire: the gold stays at weight 1.0 (distance = 0)
+  while out-of-interval distractors get weight < 1.0 (distance > 0).
+  Without out-of-interval distractors on a material fraction of tasks,
+  every candidate sits at weight 1.0 and the half-life axis becomes a
+  no-op — the `Exp 1` §2.1 failure mode.
 
 ## Arms (from floor to ceiling)
 
@@ -145,17 +160,37 @@ signal stabilizes, then scale.
 
 Run before every sweep. Fail fast if any assertion breaks.
 
-1. Every task has **≥ 2 same-family candidates** in the graph for the
-   target patient. (Ensures distractors exist.)
-2. **≥ 40% of supersession and regimen-change tasks** have gold intervals
-   that do NOT contain the anchor. (Ensures soft decay can mechanically
-   fire on a material fraction of the test set.)
-3. The expected predicates (`PRESCRIBED`, `DIAGNOSED_WITH`, `HAS_CONDITION`,
-   dose-change predicate) exist for the `project_id`. Catches silent
-   predicate renames during backfill.
+1. **Every task is well-formed**: ≥ 2 same-family candidates exist for
+   the target patient; `gold.valid_from` ≤ `as_of` ≤ `gold.valid_to`
+   (gold is active at `as_of`); `as_of` ≠ `gold.valid_from` and
+   `as_of` ≠ `gold.valid_to` (no boundary anchoring). Catches
+   malformed tasks — distractor-less, gold-not-active, or boundary-
+   anchored — before any arm runs.
+2. **≥ 40% of supersession and regimen-change tasks** have at least one
+   same-family distractor whose interval lies entirely outside `as_of`
+   (distractor's `valid_to` precedes `as_of`, or distractor's `valid_from`
+   follows `as_of`). Ensures soft decay can mechanically fire on the
+   distractor class — the only class where it can affect ranking since
+   the gold always sits at distance 0.
+3. The **required** predicates (`PRESCRIBED`, `DIAGNOSED_WITH`) exist for
+   the `project_id`. Catches silent predicate renames during backfill.
+   Notes on what the graph should NOT be expected to have:
+   - `HAS_CONDITION` is **not required**. It was a legacy synonym for
+     `DIAGNOSED_WITH` in earlier ingestion eras. Current backfills (e.g.
+     `synthea-scale-mid-fhirfix`) emit only `DIAGNOSED_WITH`, and that is
+     sufficient for the supersession and active-problem families.
+   - There is **no dedicated dose-change predicate**. Dose escalation is
+     detected as multiple `PRESCRIBED` edges for the same drug base
+     (same RxNorm/ingredient) whose description / strength string differs
+     across validity intervals. The task generator must read dose from
+     the edge's description string, not from a relationship type.
+   - `OBSERVED` (labs / observations) and `UNDERWENT` (procedures) may
+     also exist in the graph. Exp 1A does not require them, but they are
+     available for future task families in Exp 1B.
 4. **At least one task** shows different top-1 rankings between
    `half_life=30d` and `half_life=1095d` on arm 5. Catches the `Exp 1`
-   §2.2 invariance bug before the full sweep runs.
+   §2.2 invariance bug end-to-end — if this fires, something earlier
+   in the chain (probably assertion #2) was satisfied vacuously.
 
 ## Data Flow
 

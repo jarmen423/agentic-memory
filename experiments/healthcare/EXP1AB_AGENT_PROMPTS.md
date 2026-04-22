@@ -239,10 +239,17 @@ retrospective-state) that produce tasks meeting the design principles in
 - At least 150 valid tasks per family generated from
   `synthea-scale-mid-fhirfix`. If a family can't hit 150, document why
   in a comment inside the generator function.
-- ≥ 40% of supersession and regimen-change tasks have a gold interval
-  whose `valid_to` precedes `as_of_date` OR whose `valid_from` follows
-  `as_of_date`. (Enforced by the generator, asserted at the end.)
+- **Gold overlaps `as_of_date`** on every task (the gold fact is active
+  at the query time), and `as_of_date` is strictly interior to the gold
+  interval (not equal to `gold.valid_from` or `gold.valid_to`).
 - Each task's distractor list has ≥ 1 entry.
+- **≥ 40% of supersession and regimen-change tasks** have at least one
+  same-family distractor whose interval lies **entirely outside**
+  `as_of_date` (distractor's `valid_to` precedes `as_of_date`, OR
+  distractor's `valid_from` follows `as_of_date`). This is the
+  constraint that lets soft decay mechanically fire; without it, the
+  experiment repeats the `Exp 1` §2.1 failure. Enforce in the generator
+  and assert at the end.
 - Task schema validates against a pydantic model or jsonschema you add
   next to the generator.
 
@@ -292,9 +299,18 @@ Deliver:
 Acceptance:
 - ≥ 150 valid tasks per family on synthea-scale-mid-fhirfix. Document
   shortfalls in the generator docstring if any family can't reach 150.
-- ≥ 40% of supersession and regimen-change tasks have a gold interval
-  that does NOT contain as_of_date. Assert this in the generator.
+- Every task's gold interval contains as_of_date (the gold is active at
+  the query time), AND as_of_date is not equal to gold.valid_from or
+  gold.valid_to. Assert both.
 - Each task has ≥ 1 distractor.
+- ≥ 40% of supersession and regimen-change tasks have at least one
+  same-family distractor whose interval is entirely outside as_of_date
+  (distractor.valid_to precedes as_of_date, OR distractor.valid_from
+  follows as_of_date). Assert this in the generator. Rationale: the
+  gold always sits at decay weight 1.0 because it overlaps as_of; for
+  decay to affect ranking, distractors must be in the decayed zone
+  (weight < 1.0). If every candidate overlaps as_of, half-life is a
+  no-op — the Exp 1 §2.1 failure mode.
 - Schema validation passes for every generated task.
 
 Before declaring Phase 1 done, spot-check 10 tasks per family by hand
@@ -337,15 +353,28 @@ Read experiments/healthcare/exp1A_temporal_retrieval/DESIGN.md
 §Preflight Assertions.
 
 Write experiments/healthcare/exp1A_temporal_retrieval/preflight.py with:
-- assert_distractor_counts(tasks) — every task has ≥ 2 same-family
-  candidates in the graph.
-- assert_non_overlap_fraction(tasks) — ≥ 40% of supersession and
-  regimen-change tasks have gold intervals not containing as_of.
-- assert_predicate_presence(project_id) — PRESCRIBED, DIAGNOSED_WITH,
-  HAS_CONDITION, and the dose-change predicate all exist in the graph.
+- assert_task_wellformed(tasks) — every task has ≥ 2 same-family
+  candidates AND gold overlaps as_of (gold.valid_from ≤ as_of ≤
+  gold.valid_to) AND as_of is not on a gold boundary (as_of ≠
+  gold.valid_from and as_of ≠ gold.valid_to).
+- assert_distractor_gap_fraction(tasks) — ≥ 40% of supersession and
+  regimen-change tasks have at least one same-family distractor whose
+  interval is entirely outside as_of (distractor.valid_to < as_of OR
+  distractor.valid_from > as_of). This is where soft decay can
+  mechanically fire; without it, half-life becomes a no-op.
+- assert_predicate_presence(project_id) — PRESCRIBED and DIAGNOSED_WITH
+  exist in the graph. Do NOT require HAS_CONDITION (legacy synonym for
+  DIAGNOSED_WITH; current backfills drop it). Do NOT require a dedicated
+  dose-change predicate; dose changes are represented as multiple
+  PRESCRIBED edges for the same drug with different description /
+  strength strings across validity intervals. OBSERVED and UNDERWENT
+  may also exist; log their presence but do not fail on it.
 - assert_halflife_sensitivity(sample_tasks) — run a tiny pilot on 20
   supersession tasks with half_life=30d and half_life=1095d; assert at
-  least one task produces different top-1 rankings.
+  least one task produces different top-1 rankings. This is the
+  end-to-end safety net; if this fires while assertion 2 passes, the
+  generator is satisfying the gap constraint vacuously (e.g., all
+  distractor gaps are < 1 day).
 
 Add a main() that runs all four and exits nonzero on any failure.
 

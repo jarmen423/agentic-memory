@@ -253,3 +253,12 @@ Run before every sweep. Fail fast if any assertion breaks.
 - Set-answer variants ("all active medications on date X") are deferred
   to `Exp 1B` where F1 can be scored end-to-end. `Exp 1A` is strictly
   single-answer ranking.
+- The Phase 5 arm-6 forensic captured a bridge/fixture reporting mismatch for
+  medication STOP dates: the task fixture preserved Synthea's closed
+  `valid_to`, while the bridge returned `valid_to=None` for the same
+  prescription (see forensic evidence commit `2f73303`). `Exp 1A` is not
+  sensitive to that mismatch because ranking-at-a-point-in-time only needs the
+  overlap rule `valid_from <= as_of` when `valid_to` is missing, which is the
+  correct semantics for this experiment. `Exp 1B` is more exposed: before
+  trusting counterfactual or active-state conclusions, confirm ingestion
+  preserves STOP dates end-to-end.

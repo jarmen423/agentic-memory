@@ -211,3 +211,12 @@ with 25 patients for a pilot.
 - The task generator's "indication" mapping (for regimen-timeline and
   active-problem-list families) is an approximation. Document the mapping
   tables alongside results so they can be audited.
+- The Phase 5 Exp 1A forensic (commit `2f73303`) found that the temporal
+  bridge can return `valid_to=None` for historically closed prescriptions that
+  the Synthea-derived fixture records with a STOP date. That mismatch does not
+  invalidate Exp 1A's point-in-time ranking metric, but it would bias Exp 1B's
+  `counterfactual_timing` and `active_problem_list` families: a model that sees
+  a discontinued drug as open-ended may treat it as currently active and answer
+  the question anachronistically. Before trusting those family results, verify
+  ingestion preserves STOP dates through the bridge payload actually shown to
+  the model.

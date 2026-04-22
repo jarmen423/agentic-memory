@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from experiments.healthcare.eval_runner import (
+    _candidates_match,
     in_family_mrr,
     interval_precision_at_k,
     same_family_retention,
@@ -184,3 +185,63 @@ def test_same_family_retention_counts_family_mix_in_top_k() -> None:
 
     thin_results = retrieved[:2]
     assert same_family_retention(thin_results, "metformin", _family_of, k=5) == pytest.approx(0.4)
+
+
+def test_candidate_identity_ignores_valid_to_reporting_differences() -> None:
+    """Bridge rows with open-ended `valid_to` must still match the closed fixture fact."""
+    candidate = _candidate(
+        answer="Clopidogrel 75 MG Oral Tablet",
+        family="antiplatelet",
+        valid_from="1997-05-19",
+        valid_to=None,
+        source_id="bridge-edge-id",
+    )
+    gold = _candidate(
+        answer="Clopidogrel 75 MG Oral Tablet",
+        family="antiplatelet",
+        valid_from="1997-05-19",
+        valid_to="2017-04-02",
+        source_id="fixture-composite-id",
+    )
+
+    assert _candidates_match(candidate, gold) is True
+
+
+def test_candidate_identity_requires_matching_valid_from() -> None:
+    """Different start dates must remain distinct facts even when the answer text matches."""
+    candidate = _candidate(
+        answer="Clopidogrel 75 MG Oral Tablet",
+        family="antiplatelet",
+        valid_from="1998-05-19",
+        valid_to=None,
+        source_id="bridge-edge-id",
+    )
+    gold = _candidate(
+        answer="Clopidogrel 75 MG Oral Tablet",
+        family="antiplatelet",
+        valid_from="1997-05-19",
+        valid_to="2017-04-02",
+        source_id="fixture-composite-id",
+    )
+
+    assert _candidates_match(candidate, gold) is False
+
+
+def test_candidate_identity_normalizes_whitespace_and_casing() -> None:
+    """Formatting differences like `MG` vs `mg` or extra spaces must not break matches."""
+    candidate = _candidate(
+        answer="  Clopidogrel   75   mg oral   tablet ",
+        family="antiplatelet",
+        valid_from="1997-05-19",
+        valid_to=None,
+        source_id="bridge-edge-id",
+    )
+    gold = _candidate(
+        answer="Clopidogrel 75 MG Oral Tablet",
+        family="antiplatelet",
+        valid_from="1997-05-19",
+        valid_to="2017-04-02",
+        source_id="fixture-composite-id",
+    )
+
+    assert _candidates_match(candidate, gold) is True

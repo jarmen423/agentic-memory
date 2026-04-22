@@ -24,12 +24,24 @@ Metric definitions:
 Role in the project:
   Imported by exp1_temporal_decay.py and exp2_multihop.py. Can also be used
   standalone to re-score previously collected raw retrieval outputs.
+
+Exp 1A / Exp 1B fact-identity note:
+  Fact identity intentionally ignores `source_id` and `valid_to` for interval
+  matching across provenance sources. The fixture generator emits a
+  Synthea-derived composite `source_id` and may carry the medication STOP date,
+  while the temporal bridge can return the same underlying prescription with a
+  bridge-specific id and `valid_to=None`. Those differences are provenance and
+  reporting artifacts, not evidence that the underlying fact changed. Identity
+  therefore keys on normalized answer text plus `valid_from`, while `valid_to`
+  remains interval content used by overlap/error metrics rather than fact
+  identity.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -295,24 +307,27 @@ def same_family_retention(
 def _candidates_match(candidate: dict[str, Any], gold: dict[str, Any]) -> bool:
     """Return whether two interval-bearing payloads resolve to the same fact.
 
-    Source ids are the strongest identity signal when they are available. When
-    they are not, we fall back to the tuple that Exp 1A scoring actually cares
-    about: answer/description plus interval boundaries.
+    Fact identity is based on normalized answer text plus the interval's start
+    date. We intentionally do not use `source_id` here because fixture rows and
+    bridge rows describe the same underlying fact with different provenance
+    identifiers. We also exclude `valid_to` from identity because closed-vs-
+    open interval reporting differs across those two sources for the same fact.
     """
-    candidate_source_id = candidate.get("source_id")
-    gold_source_id = gold.get("source_id")
-    if candidate_source_id and gold_source_id:
-        return candidate_source_id == gold_source_id
     return _candidate_identity_key(candidate) == _candidate_identity_key(gold)
 
 
 def _candidate_identity_key(candidate: dict[str, Any]) -> tuple[Any, ...]:
-    """Build the fallback identity tuple used for interval-level matching."""
+    """Build the fact-identity tuple used for interval-level matching."""
     return (
-        (candidate.get("answer") or candidate.get("description") or "").strip().lower(),
+        _normalize_object_name(candidate.get("answer") or candidate.get("description") or ""),
         _normalize_date_text(candidate.get("valid_from")),
-        _normalize_date_text(candidate.get("valid_to")),
     )
+
+
+def _normalize_object_name(value: Any) -> str:
+    """Normalize answer text so scoring ignores whitespace/casing noise."""
+    text = str(value or "").strip().lower()
+    return re.sub(r"\s+", " ", text)
 
 
 def _interval_overlaps_as_of(

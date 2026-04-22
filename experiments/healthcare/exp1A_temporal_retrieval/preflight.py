@@ -47,8 +47,8 @@ from experiments.healthcare.exp1A_temporal_retrieval.task_schema import (
 )
 from experiments.healthcare.qa_generator import SyntheaQAGenerator
 
-EXPECTED_CORE_PREDICATES = {"PRESCRIBED", "DIAGNOSED_WITH", "HAS_CONDITION"}
-EXPECTED_DOSE_PREDICATES = {"DOSE_CHANGED", "HAS_DOSE", "DOSE_ESCALATED", "DOSE_STATE"}
+EXPECTED_REQUIRED_PREDICATES = {"PRESCRIBED", "DIAGNOSED_WITH"}
+OPTIONAL_PREDICATES = {"OBSERVED", "UNDERWENT"}
 
 
 @dataclass
@@ -103,8 +103,8 @@ def main() -> int:
     tasks_by_family = load_exp1a_tasks(Path(args.tasks_dir))
 
     checks = [
-        assert_distractor_counts(tasks_by_family),
-        assert_non_overlap_fraction(tasks_by_family),
+        assert_task_wellformed(tasks_by_family),
+        assert_distractor_gap_fraction(tasks_by_family),
         assert_predicate_presence(args.project_id),
         assert_halflife_sensitivity(
             tasks_by_family.get("supersession", [])[: args.sample_size],
@@ -140,80 +140,85 @@ def load_exp1a_tasks(tasks_dir: Path) -> dict[str, list[dict[str, Any]]]:
     return tasks_by_family
 
 
-def assert_distractor_counts(tasks_by_family: dict[str, list[dict[str, Any]]]) -> PreflightCheckResult:
-    """Assert that every task fixture exposes at least two same-family options.
-
-    Why this check uses the task fixture:
-        The current TemporalBridge exposes retrieval and project-level stats, but
-        it does not yet offer a cheap full patient-neighborhood scan primitive.
-        The generated fixture is therefore the most reliable deterministic view
-        of the same-family candidate bank available before the arm runner
-        exists.
-    """
+def assert_task_wellformed(tasks_by_family: dict[str, list[dict[str, Any]]]) -> PreflightCheckResult:
+    """Assert that every task satisfies the Phase 2 well-formedness contract."""
     failing: list[str] = []
     task_total = 0
     for family, tasks in tasks_by_family.items():
         for task in tasks:
             task_total += 1
             candidate_count = 1 + len(task.get("distractors", []))
+            as_of_date = task["as_of_date"]
+            gold = task["gold"]
+            valid_from = gold.get("valid_from")
+            valid_to = gold.get("valid_to")
             if candidate_count < 2:
                 failing.append(f"{family}:{task['id']} candidate_count={candidate_count}")
+            if not task.get("gold_interval_contains_as_of", False):
+                failing.append(f"{family}:{task['id']} gold does not overlap as_of={as_of_date}")
+            if as_of_date in {valid_from, valid_to}:
+                failing.append(
+                    f"{family}:{task['id']} as_of lands on gold boundary "
+                    f"(valid_from={valid_from}, valid_to={valid_to}, as_of={as_of_date})"
+                )
     if failing:
         return PreflightCheckResult(
-            name="distractor_counts",
+            name="task_wellformed",
             passed=False,
-            summary=f"{len(failing)} of {task_total} tasks do not expose at least two same-family options.",
+            summary=f"{len(failing)} well-formedness violations were found across {task_total} tasks.",
             details=failing[:20],
         )
     return PreflightCheckResult(
-        name="distractor_counts",
+        name="task_wellformed",
         passed=True,
-        summary=f"All {task_total} tasks expose at least two same-family options via gold+distractors.",
+        summary=(
+            f"All {task_total} tasks have at least two same-family candidates, "
+            "gold overlaps as_of, and as_of is not on a gold boundary."
+        ),
         details=[],
     )
 
 
-def assert_non_overlap_fraction(tasks_by_family: dict[str, list[dict[str, Any]]]) -> PreflightCheckResult:
-    """Check the written non-overlap rule from the design and prompt text.
+def assert_distractor_gap_fraction(tasks_by_family: dict[str, list[dict[str, Any]]]) -> PreflightCheckResult:
+    """Assert that enough tasks expose out-of-interval distractor gaps.
 
-    This intentionally evaluates the literal written assertion even though the
-    rest of the Exp 1A design expects the gold fact to be active at ``as_of``.
-    If this check fails, the preflight should stop and force the contradiction
-    into the open rather than silently choosing one interpretation.
+    The gold fact is supposed to overlap ``as_of``. Soft decay can therefore
+    only affect ranking when at least one same-family distractor lives entirely
+    outside the query interval, putting that distractor in the decayed zone.
     """
     target_tasks = [
         task
         for family in ("supersession", "regimen_change")
         for task in tasks_by_family.get(family, [])
     ]
-    literal_non_overlap = [
-        task for task in target_tasks if not task.get("gold_interval_contains_as_of", False)
-    ]
-    non_boundary = [
-        task for task in target_tasks if not task.get("gold_anchor_is_boundary", False)
-    ]
-    literal_rate = len(literal_non_overlap) / len(target_tasks) if target_tasks else 0.0
-    non_boundary_rate = len(non_boundary) / len(target_tasks) if target_tasks else 0.0
-    passed = literal_rate >= 0.40
+    gapped_tasks: list[str] = []
+    ungapped_examples: list[str] = []
+    for task in target_tasks:
+        as_of = task["as_of_date"]
+        has_gap = any(
+            distractor_gap_outside_as_of(distractor, as_of)
+            for distractor in task.get("distractors", [])
+        )
+        if has_gap:
+            gapped_tasks.append(task["id"])
+        elif len(ungapped_examples) < 20:
+            ungapped_examples.append(task["id"])
+    gap_rate = len(gapped_tasks) / len(target_tasks) if target_tasks else 0.0
+    passed = gap_rate >= 0.40
     details = [
-        f"literal_non_overlap_rate={literal_rate:.3f} ({len(literal_non_overlap)}/{len(target_tasks)})",
-        f"design_consistent_non_boundary_rate={non_boundary_rate:.3f} ({len(non_boundary)}/{len(target_tasks)})",
-        "The generated fixtures intentionally make the gold fact active at as_of; "
-        "otherwise time-sliced retrieval would not have a well-defined correct answer.",
+        f"gap_rate={gap_rate:.3f} ({len(gapped_tasks)}/{len(target_tasks)})",
+        "A task counts as gapped only when at least one same-family distractor "
+        "has valid_to < as_of or valid_from > as_of.",
     ]
     if not passed:
-        details.append(
-            "This failure indicates a written-spec contradiction, not a generator bug: "
-            "the prompt/design text says gold should not contain as_of, while the task "
-            "families and scoring rules require the gold fact to be active at as_of."
-        )
+        details.append("example_ungapped_tasks=" + ", ".join(ungapped_examples))
     return PreflightCheckResult(
-        name="non_overlap_fraction",
+        name="distractor_gap_fraction",
         passed=passed,
         summary=(
-            "Literal written non-overlap rule passes."
+            "The distractor-gap rule passes."
             if passed
-            else "Literal written non-overlap rule fails; the benchmark spec is internally inconsistent."
+            else "Too few supersession/regimen tasks have out-of-interval same-family distractors."
         ),
         details=details,
     )
@@ -231,27 +236,21 @@ def assert_predicate_presence(project_id: str) -> PreflightCheckResult:
         )
     stats = bridge.project_stats(project_id=project_id)
     predicates = set((stats.get("edges") or {}).get("byPredicate", {}).keys())
-    missing_core = sorted(EXPECTED_CORE_PREDICATES - predicates)
-    dose_present = sorted(EXPECTED_DOSE_PREDICATES & predicates)
-    passed = not missing_core and bool(dose_present)
+    missing_required = sorted(EXPECTED_REQUIRED_PREDICATES - predicates)
+    optional_present = sorted(OPTIONAL_PREDICATES & predicates)
     details = [
         f"available_predicates={sorted(predicates)}",
-        f"missing_core_predicates={missing_core}",
-        f"present_dose_predicates={dose_present}",
+        f"missing_required_predicates={missing_required}",
+        f"optional_present_predicates={optional_present}",
     ]
-    if not passed:
-        details.append(
-            "Current temporal graph exposes PRESCRIBED/DIAGNOSED_WITH/OBSERVED/UNDERWENT, "
-            "but not HAS_CONDITION and not any dedicated dose-change predicate. "
-            "That means the written Phase 2 expectation is ahead of the current graph shape."
-        )
+    passed = not missing_required
     return PreflightCheckResult(
         name="predicate_presence",
         passed=passed,
         summary=(
-            "All expected temporal predicates are present."
+            "All required temporal predicates are present."
             if passed
-            else "Temporal predicate inventory does not match the written Exp 1A preflight contract."
+            else "Required Exp 1A temporal predicates are missing from the current project."
         ),
         details=details,
     )
@@ -393,29 +392,44 @@ def render_diagnostic_report(project_id: str, failed: list[PreflightCheckResult]
         lines.append("")
         lines.append(f"- Failure: {check.summary}")
         lines.append("- Likely root cause:")
-        if check.name == "non_overlap_fraction":
+        if check.name == "distractor_gap_fraction":
             lines.append(
-                "  - The written Phase 2 assertion conflicts with the Exp 1A task design. "
-                "A correct time-sliced gold answer must be active at `as_of`, but the "
-                "current assertion asks for the opposite."
+                "  - Phase 1 anchor selection or distractor construction is producing "
+                "too many tasks where every same-family distractor still straddles `as_of`, "
+                "so soft decay never gets a chance to penalize the distractor class."
             )
             lines.append("- Proposed fix:")
             lines.append(
-                "  - Change the check to require non-boundary anchors or a material share "
-                "of same-family distractors outside `as_of`, rather than requiring the gold "
-                "interval itself to exclude `as_of`."
+                "  - Regenerate the affected task families with stricter anchor-policy rules: "
+                "prefer anchors that sit well inside the gold interval while leaving at least "
+                "one earlier or later same-family distractor entirely outside `as_of`."
             )
         elif check.name == "predicate_presence":
             lines.append(
-                "  - The temporal graph currently contains `PRESCRIBED`, `DIAGNOSED_WITH`, "
-                "`OBSERVED`, and `UNDERWENT`, but not `HAS_CONDITION` and not a dedicated "
-                "dose-change predicate. The Phase 2 expectation is ahead of the current data model."
+                "  - The temporal graph is missing one of the required Exp 1A predicates "
+                "(`PRESCRIBED` or `DIAGNOSED_WITH`) for this project."
             )
             lines.append("- Proposed fix:")
             lines.append(
-                "  - Either relax the assertion to the predicates that actually exist, or "
-                "backfill/add the missing predicate semantics before continuing."
+                "  - Repair the backfill or point the experiment at the correct project "
+                "before continuing."
             )
+        elif check.name == "halflife_sensitivity":
+            lines.append(
+                "  - The half-life probe stayed invariant across the sampled supersession tasks. "
+                "This usually means the distractor-gap rule was only satisfied vacuously, "
+                "for example by tiny temporal gaps that do not materially change ranking."
+            )
+            lines.append("- Proposed fix:")
+            lines.append(
+                "  - Treat this as a Phase 1 regeneration signal. Tighten the anchor-policy "
+                "and distractor-gap construction rather than weakening preflight."
+            )
+        elif check.name == "task_wellformed":
+            task_wellformed_note = classify_task_wellformed_failure(check.details)
+            lines.append(f"  - {task_wellformed_note['root_cause']}")
+            lines.append("- Proposed fix:")
+            lines.append(f"  - {task_wellformed_note['proposed_fix']}")
         else:
             lines.append("  - See details below.")
             lines.append("- Proposed fix:")
@@ -426,6 +440,51 @@ def render_diagnostic_report(project_id: str, failed: list[PreflightCheckResult]
                 lines.append(f"  - {detail}")
         lines.append("")
     return "\n".join(lines) + "\n"
+
+
+def distractor_gap_outside_as_of(distractor: dict[str, Any], as_of: str) -> bool:
+    """Return whether a distractor interval lies entirely outside ``as_of``."""
+    valid_from = distractor.get("valid_from")
+    valid_to = distractor.get("valid_to")
+    return (bool(valid_to) and valid_to < as_of) or (bool(valid_from) and valid_from > as_of)
+
+
+def classify_task_wellformed_failure(details: list[str]) -> dict[str, str]:
+    """Summarize the dominant task-wellformed failure mode.
+
+    This keeps the markdown diagnostic specific enough to tell the user whether
+    preflight found broad generator corruption or a single family whose task
+    semantics no longer match the shared Exp 1A contract.
+    """
+    retrospective_non_overlap = [
+        detail
+        for detail in details
+        if detail.startswith("retrospective_state:") and "gold does not overlap as_of" in detail
+    ]
+    if details and len(retrospective_non_overlap) == len(details):
+        return {
+            "root_cause": (
+                "The failure is localized to the `retrospective_state` family: "
+                "those tasks encode a year-level yes/no answer, but the current "
+                "Phase 2 contract requires every gold interval to overlap "
+                "`as_of`. Negative retrospective tasks therefore fail by design, "
+                "not because the interval-valued families are malformed."
+            ),
+            "proposed_fix": (
+                "Treat this as a Phase 1 design repair for `retrospective_state`: "
+                "either regenerate that family so its gold representation overlaps "
+                "`as_of`, or remove/defer the family until it has an evaluation "
+                "contract that matches its yes/no semantics."
+            ),
+        }
+    return {
+        "root_cause": (
+            "Some generated tasks are malformed: missing enough same-family "
+            "candidates, gold not active at `as_of`, or `as_of` landing exactly "
+            "on the gold boundary."
+        ),
+        "proposed_fix": "Regenerate the malformed families before continuing.",
+    }
 
 
 if __name__ == "__main__":

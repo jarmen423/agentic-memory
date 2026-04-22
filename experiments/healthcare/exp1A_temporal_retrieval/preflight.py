@@ -49,6 +49,12 @@ from experiments.healthcare.qa_generator import SyntheaQAGenerator
 
 EXPECTED_REQUIRED_PREDICATES = {"PRESCRIBED", "DIAGNOSED_WITH"}
 OPTIONAL_PREDICATES = {"OBSERVED", "UNDERWENT"}
+EXP1A_RANKING_FAMILIES = (
+    "supersession",
+    "regimen_change",
+    "recurring_condition",
+    "dose_escalation",
+)
 
 
 @dataclass
@@ -123,16 +129,26 @@ def main() -> int:
             encoding="utf-8",
         )
         return 1
+    diagnostic_path = Path(args.diagnostic_path)
+    if diagnostic_path.exists():
+        diagnostic_path.unlink()
     return 0
 
 
 def load_exp1a_tasks(tasks_dir: Path) -> dict[str, list[dict[str, Any]]]:
-    """Load and validate every generated Exp 1A fixture file."""
+    """Load and validate Exp 1A's four ranking-family fixture files.
+
+    Exp 1A and Exp 1B intentionally share the same tasks directory. We therefore
+    load the four ranking families explicitly instead of globbing every
+    ``exp1A_tasks_*`` file. This prevents the counterfactual/yes-no fixture from
+    being silently pulled back into Exp 1A if someone leaves an old
+    ``retrospective_state`` artifact beside the ranking bundles.
+    """
     tasks_by_family: dict[str, list[dict[str, Any]]] = {}
-    for path in sorted(tasks_dir.glob("exp1A_tasks_*_mid_fhirfix.json")):
-        if "summary" in path.name:
-            continue
-        family = path.name.replace("exp1A_tasks_", "").replace("_mid_fhirfix.json", "")
+    for family in EXP1A_RANKING_FAMILIES:
+        path = tasks_dir / f"exp1A_tasks_{family}_mid_fhirfix.json"
+        if not path.exists():
+            raise FileNotFoundError(f"Missing Exp 1A fixture for family {family!r}: {path}")
         tasks = json.loads(path.read_text(encoding="utf-8"))
         for task in tasks:
             validate_exp1a_task(task)
@@ -464,17 +480,17 @@ def classify_task_wellformed_failure(details: list[str]) -> dict[str, str]:
     if details and len(retrospective_non_overlap) == len(details):
         return {
             "root_cause": (
-                "The failure is localized to the `retrospective_state` family: "
-                "those tasks encode a year-level yes/no answer, but the current "
-                "Phase 2 contract requires every gold interval to overlap "
-                "`as_of`. Negative retrospective tasks therefore fail by design, "
-                "not because the interval-valued families are malformed."
+                "The failure is localized to the `retrospective_state` family. "
+                "That family is a year-level yes/no classification task, but "
+                "Exp 1A is a ranking benchmark whose contract requires every "
+                "gold interval to overlap `as_of`. Negative retrospective tasks "
+                "therefore violate the ranking invariant by design."
             ),
             "proposed_fix": (
-                "Treat this as a Phase 1 design repair for `retrospective_state`: "
-                "either regenerate that family so its gold representation overlaps "
-                "`as_of`, or remove/defer the family until it has an evaluation "
-                "contract that matches its yes/no semantics."
+                "Treat this as a Phase 0 scoping error, not a rule-weakening or "
+                "gold-regeneration signal. Remove `retrospective_state` from the "
+                "Exp 1A bundle and consume it under Exp 1B's "
+                "`counterfactual_timing` family instead."
             ),
         }
     return {

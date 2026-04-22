@@ -837,12 +837,21 @@ class SyntheaQAGenerator:
         state plus the overlapping intervals for positive examples; distractors
         are the same drug's intervals outside the requested year.
 
+        Project role:
+            This generator stays in ``qa_generator.py`` even after
+            ``retrospective_state`` was removed from Exp 1A. Exp 1B's
+            ``counterfactual_timing`` family reuses these fixtures as-is, so the
+            implementation remains valuable even though Exp 1A no longer calls
+            it from its corpus builder.
+
         Args:
             patients: Optional patient IDs to include.
             max_tasks: Optional cap for fixture-size control.
 
         Returns:
-            Exp 1A task dictionaries for the ``retrospective_state`` family.
+            Task dictionaries whose raw family label is
+            ``retrospective_state``. Exp 1A excludes them; Exp 1B loads the
+            saved fixture under its ``counterfactual_timing`` use case.
         """
         medications_by_patient = self._load_medications_by_patient()
         patient_filter = set(patients) if patients is not None else None

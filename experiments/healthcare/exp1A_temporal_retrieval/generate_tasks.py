@@ -2,10 +2,15 @@
 
 This script is intentionally a thin command-line wrapper around
 ``SyntheaQAGenerator``. The heavy work stays in ``qa_generator.py`` so Exp 1A
-and Exp 1B can reuse the same deterministic task families. Run this on the
-Hetzner experiment VM against ``/root/embedded-exports``; local Windows runs are
-not authoritative because the corrected export and temporal graph live on the
-VM.
+and Exp 1B can reuse the same deterministic task families. This script writes
+only Exp 1A's four ranking families. The yes/no medication-history generator
+(``generate_retrospective_state_tasks``) stays in ``qa_generator.py`` for Exp
+1B reuse, but is intentionally excluded here because its answer shape does not
+fit Exp 1A's ranking metrics.
+
+Run this on the Hetzner experiment VM against ``/root/embedded-exports``;
+local Windows runs are not authoritative because the corrected export and
+temporal graph live on the VM.
 """
 
 from __future__ import annotations
@@ -31,7 +36,6 @@ from experiments.healthcare.exp1A_temporal_retrieval.task_schema import (  # noq
 from experiments.healthcare.qa_generator import SyntheaQAGenerator  # noqa: E402
 
 LOGGER = logging.getLogger(__name__)
-
 
 def main() -> int:
     """Generate and validate every Exp 1A task-family fixture."""
@@ -87,9 +91,6 @@ def main() -> int:
             max_tasks=max_tasks,
         ),
         "dose_escalation": lambda: generator.generate_dose_escalation_tasks(
-            max_tasks=max_tasks,
-        ),
-        "retrospective_state": lambda: generator.generate_retrospective_state_tasks(
             max_tasks=max_tasks,
         ),
     }

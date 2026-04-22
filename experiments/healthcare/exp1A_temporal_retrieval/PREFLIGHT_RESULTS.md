@@ -1,35 +1,14 @@
 # Exp 1A Preflight Results
 
 - Project: `synthea-scale-mid-fhirfix`
-- Repo root: `/root/agentic-memory`
-- Run date: `2026-04-22T06:58:22`
-- Overall: `FAIL`
+- Repo root: `/root/agentic-memory-exp1ab-verify`
+- Run date: `2026-04-22T08:00:04`
+- Overall: `PASS`
 
 ## task_wellformed
 
-- Status: `FAIL`
-- Summary: 61 well-formedness violations were found across 1250 tasks.
-- Details:
-  - retrospective_state:EXP1A-RETROSPECTIVE-STATE-00000 gold does not overlap as_of=2008-06-30
-  - retrospective_state:EXP1A-RETROSPECTIVE-STATE-00001 gold does not overlap as_of=2012-06-30
-  - retrospective_state:EXP1A-RETROSPECTIVE-STATE-00018 gold does not overlap as_of=1963-06-30
-  - retrospective_state:EXP1A-RETROSPECTIVE-STATE-00020 gold does not overlap as_of=1981-06-30
-  - retrospective_state:EXP1A-RETROSPECTIVE-STATE-00022 gold does not overlap as_of=2006-06-30
-  - retrospective_state:EXP1A-RETROSPECTIVE-STATE-00027 gold does not overlap as_of=2008-06-30
-  - retrospective_state:EXP1A-RETROSPECTIVE-STATE-00037 gold does not overlap as_of=2008-06-30
-  - retrospective_state:EXP1A-RETROSPECTIVE-STATE-00038 gold does not overlap as_of=2012-06-30
-  - retrospective_state:EXP1A-RETROSPECTIVE-STATE-00041 gold does not overlap as_of=2008-06-30
-  - retrospective_state:EXP1A-RETROSPECTIVE-STATE-00042 gold does not overlap as_of=2012-06-30
-  - retrospective_state:EXP1A-RETROSPECTIVE-STATE-00043 gold does not overlap as_of=2013-06-30
-  - retrospective_state:EXP1A-RETROSPECTIVE-STATE-00046 gold does not overlap as_of=1999-06-30
-  - retrospective_state:EXP1A-RETROSPECTIVE-STATE-00055 gold does not overlap as_of=2008-06-30
-  - retrospective_state:EXP1A-RETROSPECTIVE-STATE-00056 gold does not overlap as_of=2012-06-30
-  - retrospective_state:EXP1A-RETROSPECTIVE-STATE-00062 gold does not overlap as_of=2008-06-30
-  - retrospective_state:EXP1A-RETROSPECTIVE-STATE-00063 gold does not overlap as_of=2010-06-30
-  - retrospective_state:EXP1A-RETROSPECTIVE-STATE-00067 gold does not overlap as_of=2008-06-30
-  - retrospective_state:EXP1A-RETROSPECTIVE-STATE-00070 gold does not overlap as_of=2008-06-30
-  - retrospective_state:EXP1A-RETROSPECTIVE-STATE-00071 gold does not overlap as_of=2012-06-30
-  - retrospective_state:EXP1A-RETROSPECTIVE-STATE-00073 gold does not overlap as_of=2015-06-30
+- Status: `PASS`
+- Summary: All 1000 tasks have at least two same-family candidates, gold overlaps as_of, and as_of is not on a gold boundary.
 
 ## distractor_gap_fraction
 

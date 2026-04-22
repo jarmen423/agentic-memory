@@ -1,6 +1,6 @@
 # Exp 1A Task Spot Check
 
-Generated on the Hetzner experiment VM from `/root/embedded-exports` for `synthea-scale-mid-fhirfix`. I sampled 10 tasks per family after schema validation and checked that each task has a coherent query, gold interval, same-family distractors, and the expected anchor source.
+Generated on the Hetzner experiment VM from `/root/embedded-exports` for `synthea-scale-mid-fhirfix`. I sampled 10 tasks per family after schema validation and checked that each task has a coherent query, gold interval, same-family distractors, and the expected anchor source. Exp 1A now contains only the four ranking families below; the yes/no retrospective medication-history tasks were moved to Exp 1B's `counterfactual_timing` fixture.
 
 ## supersession
 
@@ -37,15 +37,6 @@ Generated on the Hetzner experiment VM from `/root/embedded-exports` for `synthe
 - Concept families observed: ['acetaminophen', 'donepezil hydrochloride', 'penicillin potassium']
 - Checked IDs: EXP1A-DOSE-ESCALATION-00000, EXP1A-DOSE-ESCALATION-00025, EXP1A-DOSE-ESCALATION-00050, EXP1A-DOSE-ESCALATION-00075, EXP1A-DOSE-ESCALATION-00100, EXP1A-DOSE-ESCALATION-00125, EXP1A-DOSE-ESCALATION-00150, EXP1A-DOSE-ESCALATION-00175, EXP1A-DOSE-ESCALATION-00200, EXP1A-DOSE-ESCALATION-00225
 - Observation: gold intervals contain `as_of_date`; sampled distractors are same-family alternatives outside `as_of_date`, with inferred stop dates where the source medication row was open-ended.
-
-## retrospective_state
-
-- Fixture: `experiments/healthcare/tasks/exp1A_tasks_retrospective_state_mid_fhirfix.json`
-- Count checked: 10 of 250
-- Anchor sources observed: ['calendar_sweep']
-- Concept families observed: ['acetaminophen', 'amoxicillin', 'etoposide', 'penicillin potassium']
-- Checked IDs: EXP1A-RETROSPECTIVE-STATE-00000, EXP1A-RETROSPECTIVE-STATE-00025, EXP1A-RETROSPECTIVE-STATE-00050, EXP1A-RETROSPECTIVE-STATE-00075, EXP1A-RETROSPECTIVE-STATE-00100, EXP1A-RETROSPECTIVE-STATE-00125, EXP1A-RETROSPECTIVE-STATE-00150, EXP1A-RETROSPECTIVE-STATE-00175, EXP1A-RETROSPECTIVE-STATE-00200, EXP1A-RETROSPECTIVE-STATE-00225
-- Observation: sampled yes/no balance was yes=8, no=2; distractors are same-drug intervals outside the requested year.
 
 ## Notes
 

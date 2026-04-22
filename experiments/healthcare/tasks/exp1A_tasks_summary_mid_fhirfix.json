@@ -42,16 +42,5 @@
     "gold_contains_as_of_rate": 1.0,
     "min_distractors": 1,
     "max_distractors": 4
-  },
-  "retrospective_state": {
-    "task_count": 250,
-    "anchor_sources": [
-      "calendar_sweep"
-    ],
-    "concept_family_count": 14,
-    "non_boundary_gold_anchor_rate": 1.0,
-    "gold_contains_as_of_rate": 0.756,
-    "min_distractors": 1,
-    "max_distractors": 11
   }
 }

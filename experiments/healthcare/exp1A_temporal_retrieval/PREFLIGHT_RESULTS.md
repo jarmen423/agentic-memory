@@ -1,8 +1,8 @@
 # Exp 1A Preflight Results
 
 - Project: `synthea-scale-mid-fhirfix`
-- Repo root: `/root/agentic-memory-exp1ab-verify`
-- Run date: `2026-04-22T08:00:04`
+- Repo root: `/root/agentic-memory`
+- Run date: `2026-04-23T03:36:41`
 - Overall: `PASS`
 
 ## task_wellformed

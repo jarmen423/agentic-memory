@@ -258,6 +258,28 @@ class TemporalBridge:
             }
         )
 
+    def inspect_claim_edges(
+        self,
+        *,
+        project_id: str,
+        claims: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Inspect graph edges for exact claim-shaped lookups.
+
+        This exists for healthcare temporal audits where we need to compare the
+        original Synthea row to the exact edge stored in SpacetimeDB rather than
+        to a ranked retrieval result. Each lookup is keyed by the same semantic
+        identity the backfill uses before hashing: subject, predicate, object,
+        and ``valid_from_us``.
+        """
+        return self._request(
+            {
+                "op": "inspect_claim_edges",
+                "projectId": project_id,
+                "claims": claims,
+            }
+        )
+
     def close(self) -> None:
         """Terminate the child helper process if it is running."""
         with self._lock:

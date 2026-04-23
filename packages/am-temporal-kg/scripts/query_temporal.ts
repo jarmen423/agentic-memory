@@ -143,13 +143,30 @@ type ProjectStatsRequest = {
   projectId: string;
 };
 
+type InspectClaimEdgeLookup = {
+  subjectKind: string;
+  subjectName: string;
+  predicate: string;
+  objectKind: string;
+  objectName: string;
+  validFromUs: number;
+  evidenceSourceId?: string | null;
+};
+
+type InspectClaimEdgesRequest = {
+  op: "inspect_claim_edges";
+  projectId: string;
+  claims: InspectClaimEdgeLookup[];
+};
+
 type BridgeRequest =
   | RetrieveRequest
   | IngestClaimRequest
   | IngestClaimsRequest
   | IngestClaimsBackfillRequest
   | IngestRelationRequest
-  | ProjectStatsRequest;
+  | ProjectStatsRequest
+  | InspectClaimEdgesRequest;
 
 type HelperConfig = {
   stdbUri: string;
@@ -412,6 +429,26 @@ const serializeRetrievalResult = (
   evidence: row.evidenceIds
     .map((evidenceId) => serializeEvidence(evidenceById.get(evidenceId.toString())))
     .filter((item): item is JsonRecord => item !== null),
+});
+
+const serializeEdge = (
+  row: EdgeRow,
+  nodeById: Map<string, NodeRow>,
+): JsonRecord => ({
+  edgeId: row.edgeId.toString(),
+  familyId: row.familyId.toString(),
+  projectId: row.projectId,
+  subject: serializeNode(nodeById.get(row.subjId.toString())),
+  predicate: row.pred,
+  object: serializeNode(nodeById.get(row.objId.toString())),
+  validFromUs: Number(row.validFromUs),
+  validToUs: row.validToUs === null || row.validToUs === undefined ? null : Number(row.validToUs),
+  confidence: row.confidence,
+  supportCount: Number(row.supportCount),
+  contradictionCount: Number(row.contradictionCount),
+  relevance: row.relevance,
+  createdAtUs: Number(row.createdAtUs),
+  updatedAtUs: Number(row.updatedAtUs),
 });
 
 export class TemporalQueryHelper {
@@ -736,6 +773,86 @@ export class TemporalQueryHelper {
     };
   }
 
+  async inspectClaimEdges(request: InspectClaimEdgesRequest): Promise<JsonRecord> {
+    const connection = await this.getConnection();
+    const nodes = Array.from(connection.db.node.iter()) as NodeRow[];
+    const edges = Array.from(connection.db.edge.iter()) as EdgeRow[];
+    const evidenceRows = Array.from(connection.db.evidence.iter()) as EvidenceRow[];
+    const evidenceLinks = Array.from(connection.db.edge_evidence.iter()) as Array<{
+      linkId: bigint;
+      edgeId: bigint;
+      evidenceId: bigint;
+      linkedAtUs: bigint;
+    }>;
+
+    const nodeById = new Map(nodes.map((row) => [row.nodeId.toString(), row]));
+    const evidenceById = new Map(evidenceRows.map((row) => [row.evidenceId.toString(), row]));
+    const nodeIdByIdentity = new Map(
+      nodes.map((row) => [
+        [row.projectId, row.kind, row.nameNorm].join("\u241f"),
+        row.nodeId,
+      ]),
+    );
+    const evidenceIdsByEdgeId = new Map<string, bigint[]>();
+    for (const link of evidenceLinks) {
+      const key = link.edgeId.toString();
+      const current = evidenceIdsByEdgeId.get(key) ?? [];
+      current.push(link.evidenceId);
+      evidenceIdsByEdgeId.set(key, current);
+    }
+
+    const claims = request.claims.map((lookup) => {
+      const predicate = normalizePredicate(lookup.predicate);
+      const subjectNodeId = nodeIdByIdentity.get(
+        [request.projectId, lookup.subjectKind, normalizeName(lookup.subjectName)].join("\u241f"),
+      );
+      const objectNodeId = nodeIdByIdentity.get(
+        [request.projectId, lookup.objectKind, normalizeName(lookup.objectName)].join("\u241f"),
+      );
+      const matches = edges
+        .filter((edge) => (
+          edge.projectId === request.projectId &&
+          edge.pred === predicate &&
+          subjectNodeId !== undefined &&
+          objectNodeId !== undefined &&
+          edge.subjId === subjectNodeId &&
+          edge.objId === objectNodeId &&
+          Number(edge.validFromUs) === Math.trunc(lookup.validFromUs)
+        ))
+        .map((edge) => {
+          const linkedEvidence = (evidenceIdsByEdgeId.get(edge.edgeId.toString()) ?? [])
+            .map((evidenceId) => serializeEvidence(evidenceById.get(evidenceId.toString())))
+            .filter((item): item is JsonRecord => item !== null);
+          const evidenceSourceMatched = Boolean(
+            lookup.evidenceSourceId &&
+            linkedEvidence.some((item) => item.sourceId === lookup.evidenceSourceId),
+          );
+          return {
+            edge: serializeEdge(edge, nodeById),
+            evidence: linkedEvidence,
+            evidenceSourceMatched,
+          };
+        })
+        .sort((left, right) => Number(right.evidenceSourceMatched) - Number(left.evidenceSourceMatched));
+
+      return {
+        lookup: {
+          ...lookup,
+          predicate,
+        },
+        subjectFound: subjectNodeId !== undefined,
+        objectFound: objectNodeId !== undefined,
+        matchCount: matches.length,
+        matches,
+      };
+    });
+
+    return {
+      projectId: request.projectId,
+      claims,
+    };
+  }
+
   async close(): Promise<void> {
     if (this.connectionPromise === null) {
       return;
@@ -815,6 +932,8 @@ export const runBridgeServer = async (): Promise<void> => {
         payload = await helper.ingestRelation(request);
       } else if (request.op === "project_stats") {
         payload = await helper.projectStats(request);
+      } else if (request.op === "inspect_claim_edges") {
+        payload = await helper.inspectClaimEdges(request);
       } else {
         throw new Error(`Unsupported op: ${(request as BridgeRequest).op}`);
       }

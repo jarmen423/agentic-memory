@@ -1,0 +1,4 @@
+# Built UI (run ``npm run build`` in ``../ui/``).
+static/
+
+.venv/

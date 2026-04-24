@@ -1,0 +1,19 @@
+{
+  "project_id": "synthea-scale-mid-fhirfix",
+  "input_dir": "/root/embedded-exports",
+  "run_date_utc": "2026-04-24T00:02:19+00:00",
+  "chunk_count": 145,
+  "medication_rows_seen": 59799,
+  "closed_medication_rows_seen": 0,
+  "closed_rows_considered": 0,
+  "closed_rows_with_match": 0,
+  "closed_rows_exact_stop_match": 0,
+  "closed_rows_mismatch": 0,
+  "closed_rows_graph_open": 0,
+  "closed_rows_missing_in_graph": 0,
+  "closed_rows_unlinked_match_only": 0,
+  "closed_rows_multiple_matches": 0,
+  "mismatch_rate": 0.0,
+  "exact_match_rate": 0.0,
+  "mismatch_csv": "/root/agentic-memory/experiments/healthcare/results/stop_date_blast_radius_mismatches.csv"
+}

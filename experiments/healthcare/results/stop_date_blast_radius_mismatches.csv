@@ -1,0 +1,1 @@
+patient_id,code,start,synthea_stop,graph_valid_to,graph_valid_to_us,match_count,matched_by_evidence_source,missing_in_graph,graph_open,unlinked_match_only,object_name,evidence_source_id,matched_edge_id

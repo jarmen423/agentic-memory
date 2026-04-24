@@ -31,12 +31,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gzip
 import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
-from typing import Any
+from typing import Any, Iterator
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "src"))
@@ -52,7 +53,6 @@ from agentic_memory.temporal.bridge import TemporalBridge
 from backfill_healthcare_temporal import (
     build_claim,
     first_selected_record,
-    iter_chunk_records,
     load_manifest,
     resolve_project_id,
     select_chunk_paths,
@@ -129,13 +129,6 @@ def main() -> int:
         format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
     )
 
-    bridge = TemporalBridge.from_env()
-    if not bridge.is_available():
-        raise SystemExit(
-            "Temporal bridge unavailable for STOP-date audit: "
-            f"{bridge.disabled_reason}"
-        )
-
     input_dir = Path(args.input_dir)
     chunk_paths = select_chunk_paths(
         input_dir,
@@ -169,11 +162,9 @@ def main() -> int:
     }
 
     pending_claims: list[dict[str, Any]] = []
-    for item in iter_chunk_records(chunk_paths):
+    bridge: TemporalBridge | None = None
+    for item in iter_medication_items(chunk_paths):
         row = dict(item.get("row") or {})
-        record_type = str(item.get("record_type") or row.get("record_type") or "")
-        if record_type != "medication":
-            continue
         summary["medication_rows_seen"] += 1
         if not row.get("STOP"):
             continue
@@ -185,6 +176,7 @@ def main() -> int:
             continue
         pending_claims.append(claim)
         if len(pending_claims) >= args.batch_size:
+            bridge = bridge or build_temporal_bridge()
             process_claim_batch(
                 bridge=bridge,
                 claims=pending_claims,
@@ -194,6 +186,7 @@ def main() -> int:
             pending_claims = []
 
     if pending_claims:
+        bridge = bridge or build_temporal_bridge()
         process_claim_batch(
             bridge=bridge,
             claims=pending_claims,
@@ -234,6 +227,33 @@ def main() -> int:
     return 0
 
 
+def iter_medication_items(chunk_paths: list[Path]) -> Iterator[dict[str, Any]]:
+    """Yield medication export rows without parsing every non-medication line.
+
+    The chunked export can contain more than a million JSONL records, but the
+    STOP-date audit only cares about medication rows. A cheap substring guard
+    keeps the all-chunk scan practical while still parsing the matching JSON
+    records with the standard library before using them.
+    """
+    for chunk_path in chunk_paths:
+        with gzip.open(chunk_path, "rt", encoding="utf-8") as handle:
+            for line in handle:
+                if '"record_type": "medication"' not in line:
+                    continue
+                yield json.loads(line)
+
+
+def build_temporal_bridge() -> TemporalBridge:
+    """Create the temporal bridge only when closed medication rows exist."""
+    bridge = TemporalBridge.from_env()
+    if not bridge.is_available():
+        raise SystemExit(
+            "Temporal bridge unavailable for STOP-date audit: "
+            f"{bridge.disabled_reason}"
+        )
+    return bridge
+
+
 def process_claim_batch(
     *,
     bridge: TemporalBridge,
@@ -243,7 +263,7 @@ def process_claim_batch(
 ) -> None:
     """Inspect one claim batch and fold its outcomes into the running summary."""
     response = bridge.inspect_claim_edges(
-            project_id=str(claims[0]["project_id"]),
+        project_id=str(claims[0]["project_id"]),
         claims=[
             {
                 "subjectKind": claim["subject_kind"],
